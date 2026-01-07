@@ -1,0 +1,153 @@
+"""
+Configuration management using Pydantic Settings.
+All environment variables are validated at startup.
+"""
+
+from functools import lru_cache
+from typing import Optional
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+    
+    # ===================
+    # Telegram Configuration
+    # ===================
+    telegram_bot_token: str = Field(..., description="Telegram bot token from @BotFather")
+    admin_telegram_ids: str = Field(default="", description="Comma-separated admin Telegram IDs")
+    
+    # ===================
+    # Database Configuration
+    # ===================
+    database_url: str = Field(..., description="PostgreSQL connection string")
+    
+    # ===================
+    # Security Configuration
+    # ===================
+    encryption_key: str = Field(..., min_length=64, max_length=64, description="64-char hex key for wallet encryption")
+    
+    # ===================
+    # Solana Configuration (for Kalshi/DFlow)
+    # ===================
+    solana_rpc_url: str = Field(
+        default="https://api.mainnet-beta.solana.com",
+        description="Solana RPC endpoint"
+    )
+    solana_ws_url: str = Field(
+        default="wss://api.mainnet-beta.solana.com",
+        description="Solana WebSocket endpoint"
+    )
+    
+    # ===================
+    # EVM Configuration (shared for Polygon & BSC)
+    # ===================
+    polygon_rpc_url: str = Field(
+        default="https://polygon-rpc.com",
+        description="Polygon RPC endpoint"
+    )
+    bsc_rpc_url: str = Field(
+        default="https://bsc-dataseed.binance.org",
+        description="BSC RPC endpoint"
+    )
+    
+    # ===================
+    # Kalshi / DFlow Configuration
+    # ===================
+    dflow_api_key: Optional[str] = Field(default=None, description="DFlow API key")
+    dflow_api_base_url: str = Field(
+        default="https://quote-api.dflow.net",
+        description="DFlow trading API base URL"
+    )
+    dflow_metadata_url: str = Field(
+        default="https://prediction-markets-api.dflow.net",
+        description="DFlow metadata API URL"
+    )
+    kalshi_builder_code: Optional[str] = Field(default=None, description="Kalshi builder code for revenue")
+    
+    # ===================
+    # Polymarket Configuration
+    # ===================
+    polymarket_api_url: str = Field(
+        default="https://clob.polymarket.com",
+        description="Polymarket CLOB API URL"
+    )
+    polymarket_builder_key: Optional[str] = Field(default=None, description="Polymarket builder API key")
+    polymarket_builder_secret: Optional[str] = Field(default=None, description="Polymarket builder secret")
+    polymarket_builder_passphrase: Optional[str] = Field(default=None, description="Polymarket builder passphrase")
+    
+    # ===================
+    # Opinion Labs Configuration
+    # ===================
+    opinion_api_url: str = Field(
+        default="https://proxy.opinion.trade:8443",
+        description="Opinion Labs API URL"
+    )
+    opinion_api_key: Optional[str] = Field(default=None, description="Opinion Labs API key")
+    opinion_multi_sig_addr: Optional[str] = Field(default=None, description="Opinion Labs multi-sig address")
+    
+    # ===================
+    # Rate Limiting
+    # ===================
+    max_requests_per_minute: int = Field(default=30, ge=1, le=100)
+    
+    # ===================
+    # Logging
+    # ===================
+    log_level: str = Field(default="INFO")
+    
+    @field_validator("encryption_key")
+    @classmethod
+    def validate_encryption_key(cls, v: str) -> str:
+        """Ensure encryption key is valid hex."""
+        try:
+            bytes.fromhex(v)
+        except ValueError:
+            raise ValueError("Encryption key must be a valid 64-character hex string")
+        return v
+    
+    @property
+    def admin_ids(self) -> list[int]:
+        """Parse admin IDs from comma-separated string."""
+        if not self.admin_telegram_ids:
+            return []
+        return [int(id.strip()) for id in self.admin_telegram_ids.split(",") if id.strip()]
+    
+    def get_chain_rpc(self, chain: str) -> str:
+        """Get RPC URL for a specific chain."""
+        rpcs = {
+            "solana": self.solana_rpc_url,
+            "polygon": self.polygon_rpc_url,
+            "bsc": self.bsc_rpc_url,
+        }
+        return rpcs.get(chain.lower(), "")
+    
+    def is_platform_configured(self, platform: str) -> bool:
+        """Check if a platform has required configuration."""
+        platform = platform.lower()
+        if platform == "kalshi":
+            return bool(self.dflow_api_key)
+        elif platform == "polymarket":
+            return True  # Public API works without auth for basic operations
+        elif platform == "opinion":
+            return bool(self.opinion_api_key)
+        return False
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Get cached settings instance."""
+    return Settings()
+
+
+# Convenience export
+settings = get_settings()

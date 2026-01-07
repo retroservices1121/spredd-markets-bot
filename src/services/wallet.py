@@ -1,0 +1,486 @@
+"""
+Wallet service for managing Solana and EVM wallets.
+Supports one wallet per chain family, shared across platforms.
+"""
+
+import asyncio
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import Optional, Tuple
+
+from eth_account import Account as EthAccount
+from eth_account.signers.local import LocalAccount
+from solders.keypair import Keypair as SolanaKeypair
+from solders.pubkey import Pubkey
+from solana.rpc.async_api import AsyncClient as SolanaClient
+from solana.rpc.commitment import Confirmed
+from web3 import AsyncWeb3
+from web3.middleware import ExtraDataToPOAMiddleware
+
+from src.config import settings
+from src.db.database import (
+    get_wallet,
+    create_wallet,
+    get_user_wallets,
+)
+from src.db.models import ChainFamily, Chain
+from src.utils.encryption import encrypt, decrypt
+from src.utils.logging import get_logger, LoggerMixin
+
+logger = get_logger(__name__)
+
+# Constants
+LAMPORTS_PER_SOL = 1_000_000_000
+USDC_DECIMALS = 6
+
+# Token addresses
+USDC_ADDRESSES = {
+    Chain.SOLANA: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC on Solana
+    Chain.POLYGON: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # USDC.e on Polygon
+    Chain.BSC: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",      # USDC on BSC
+}
+
+USDT_ADDRESSES = {
+    Chain.BSC: "0x55d398326f99059fF775485246999027B3197955",  # USDT on BSC
+}
+
+
+@dataclass
+class WalletInfo:
+    """Wallet information without private key."""
+    chain_family: ChainFamily
+    public_key: str
+    
+    @property
+    def solana_address(self) -> Optional[str]:
+        return self.public_key if self.chain_family == ChainFamily.SOLANA else None
+    
+    @property
+    def evm_address(self) -> Optional[str]:
+        return self.public_key if self.chain_family == ChainFamily.EVM else None
+
+
+@dataclass
+class Balance:
+    """Token balance information."""
+    token: str
+    symbol: str
+    amount: Decimal
+    decimals: int
+    chain: Chain
+    
+    @property
+    def formatted(self) -> str:
+        return f"{self.amount:.{min(self.decimals, 6)}f} {self.symbol}"
+
+
+class WalletService(LoggerMixin):
+    """Service for managing user wallets across chains."""
+    
+    def __init__(self):
+        self._solana_client: Optional[SolanaClient] = None
+        self._polygon_web3: Optional[AsyncWeb3] = None
+        self._bsc_web3: Optional[AsyncWeb3] = None
+    
+    async def initialize(self) -> None:
+        """Initialize blockchain connections."""
+        # Solana
+        self._solana_client = SolanaClient(settings.solana_rpc_url)
+        
+        # Polygon
+        self._polygon_web3 = AsyncWeb3(
+            AsyncWeb3.AsyncHTTPProvider(settings.polygon_rpc_url)
+        )
+        
+        # BSC (needs POA middleware)
+        self._bsc_web3 = AsyncWeb3(
+            AsyncWeb3.AsyncHTTPProvider(settings.bsc_rpc_url)
+        )
+        self._bsc_web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        
+        self.log.info("Wallet service initialized")
+    
+    async def close(self) -> None:
+        """Close blockchain connections."""
+        if self._solana_client:
+            await self._solana_client.close()
+    
+    # ===================
+    # Wallet Creation
+    # ===================
+    
+    def _generate_solana_keypair(self) -> Tuple[str, bytes]:
+        """Generate a new Solana keypair."""
+        keypair = SolanaKeypair()
+        public_key = str(keypair.pubkey())
+        private_key = bytes(keypair)
+        return public_key, private_key
+    
+    def _generate_evm_keypair(self) -> Tuple[str, bytes]:
+        """Generate a new EVM keypair."""
+        account = EthAccount.create()
+        public_key = account.address
+        private_key = account.key
+        return public_key, private_key
+    
+    async def create_wallet_for_user(
+        self,
+        user_id: str,
+        telegram_id: int,
+        chain_family: ChainFamily,
+    ) -> WalletInfo:
+        """Create a new wallet for a user."""
+        # Check if wallet already exists
+        existing = await get_wallet(user_id, chain_family)
+        if existing:
+            return WalletInfo(
+                chain_family=chain_family,
+                public_key=existing.public_key,
+            )
+        
+        # Generate keypair based on chain family
+        if chain_family == ChainFamily.SOLANA:
+            public_key, private_key = self._generate_solana_keypair()
+        else:
+            public_key, private_key = self._generate_evm_keypair()
+        
+        # Encrypt private key with user-specific encryption
+        encrypted_key = encrypt(
+            private_key,
+            settings.encryption_key,
+            telegram_id,
+        )
+        
+        # Store in database
+        await create_wallet(
+            user_id=user_id,
+            chain_family=chain_family,
+            public_key=public_key,
+            encrypted_private_key=encrypted_key,
+        )
+        
+        self.log.info(
+            "Created wallet",
+            user_id=user_id,
+            chain_family=chain_family.value,
+            public_key=public_key[:8] + "...",
+        )
+        
+        return WalletInfo(
+            chain_family=chain_family,
+            public_key=public_key,
+        )
+    
+    async def get_or_create_wallets(
+        self,
+        user_id: str,
+        telegram_id: int,
+    ) -> dict[ChainFamily, WalletInfo]:
+        """Get or create both Solana and EVM wallets for a user."""
+        wallets = {}
+        
+        for family in ChainFamily:
+            wallets[family] = await self.create_wallet_for_user(
+                user_id=user_id,
+                telegram_id=telegram_id,
+                chain_family=family,
+            )
+        
+        return wallets
+    
+    # ===================
+    # Key Retrieval
+    # ===================
+    
+    async def get_solana_keypair(
+        self,
+        user_id: str,
+        telegram_id: int,
+    ) -> Optional[SolanaKeypair]:
+        """Get decrypted Solana keypair for signing."""
+        wallet = await get_wallet(user_id, ChainFamily.SOLANA)
+        if not wallet:
+            return None
+        
+        private_key = decrypt(
+            wallet.encrypted_private_key,
+            settings.encryption_key,
+            telegram_id,
+        )
+        
+        return SolanaKeypair.from_bytes(private_key)
+    
+    async def get_evm_account(
+        self,
+        user_id: str,
+        telegram_id: int,
+    ) -> Optional[LocalAccount]:
+        """Get decrypted EVM account for signing."""
+        wallet = await get_wallet(user_id, ChainFamily.EVM)
+        if not wallet:
+            return None
+        
+        private_key = decrypt(
+            wallet.encrypted_private_key,
+            settings.encryption_key,
+            telegram_id,
+        )
+        
+        return EthAccount.from_key(private_key)
+    
+    async def export_private_key(
+        self,
+        user_id: str,
+        telegram_id: int,
+        chain_family: ChainFamily,
+    ) -> Optional[str]:
+        """Export private key for user backup."""
+        wallet = await get_wallet(user_id, chain_family)
+        if not wallet:
+            return None
+        
+        private_key = decrypt(
+            wallet.encrypted_private_key,
+            settings.encryption_key,
+            telegram_id,
+        )
+        
+        if chain_family == ChainFamily.SOLANA:
+            # Return base58 encoded for Solana
+            import base58
+            return base58.b58encode(private_key).decode()
+        else:
+            # Return hex for EVM
+            return "0x" + private_key.hex()
+    
+    # ===================
+    # Balance Queries
+    # ===================
+    
+    async def get_solana_balance(self, public_key: str) -> Balance:
+        """Get SOL balance."""
+        if not self._solana_client:
+            raise RuntimeError("Solana client not initialized")
+        
+        pubkey = Pubkey.from_string(public_key)
+        response = await self._solana_client.get_balance(pubkey, commitment=Confirmed)
+        
+        lamports = response.value
+        sol = Decimal(lamports) / Decimal(LAMPORTS_PER_SOL)
+        
+        return Balance(
+            token="SOL",
+            symbol="SOL",
+            amount=sol,
+            decimals=9,
+            chain=Chain.SOLANA,
+        )
+    
+    async def get_solana_usdc_balance(self, public_key: str) -> Balance:
+        """Get USDC balance on Solana."""
+        if not self._solana_client:
+            raise RuntimeError("Solana client not initialized")
+        
+        from solana.rpc.types import TokenAccountOpts
+        
+        pubkey = Pubkey.from_string(public_key)
+        usdc_mint = Pubkey.from_string(USDC_ADDRESSES[Chain.SOLANA])
+        
+        response = await self._solana_client.get_token_accounts_by_owner(
+            pubkey,
+            TokenAccountOpts(mint=usdc_mint),
+            commitment=Confirmed,
+        )
+        
+        total = Decimal(0)
+        for account in response.value:
+            # Parse token account data
+            data = account.account.data
+            # Token account balance is at offset 64, 8 bytes little endian
+            if len(data) >= 72:
+                amount = int.from_bytes(data[64:72], "little")
+                total += Decimal(amount) / Decimal(10**USDC_DECIMALS)
+        
+        return Balance(
+            token=USDC_ADDRESSES[Chain.SOLANA],
+            symbol="USDC",
+            amount=total,
+            decimals=USDC_DECIMALS,
+            chain=Chain.SOLANA,
+        )
+    
+    async def _get_evm_native_balance(
+        self,
+        web3: AsyncWeb3,
+        address: str,
+        chain: Chain,
+        symbol: str,
+    ) -> Balance:
+        """Get native token balance on EVM chain."""
+        balance_wei = await web3.eth.get_balance(address)
+        balance = Decimal(balance_wei) / Decimal(10**18)
+        
+        return Balance(
+            token="native",
+            symbol=symbol,
+            amount=balance,
+            decimals=18,
+            chain=chain,
+        )
+    
+    async def _get_erc20_balance(
+        self,
+        web3: AsyncWeb3,
+        address: str,
+        token_address: str,
+        symbol: str,
+        decimals: int,
+        chain: Chain,
+    ) -> Balance:
+        """Get ERC20 token balance."""
+        # Minimal ERC20 ABI for balanceOf
+        erc20_abi = [
+            {
+                "constant": True,
+                "inputs": [{"name": "_owner", "type": "address"}],
+                "name": "balanceOf",
+                "outputs": [{"name": "balance", "type": "uint256"}],
+                "type": "function",
+            }
+        ]
+        
+        contract = web3.eth.contract(
+            address=web3.to_checksum_address(token_address),
+            abi=erc20_abi,
+        )
+        
+        balance_raw = await contract.functions.balanceOf(address).call()
+        balance = Decimal(balance_raw) / Decimal(10**decimals)
+        
+        return Balance(
+            token=token_address,
+            symbol=symbol,
+            amount=balance,
+            decimals=decimals,
+            chain=chain,
+        )
+    
+    async def get_polygon_balances(self, address: str) -> list[Balance]:
+        """Get balances on Polygon."""
+        if not self._polygon_web3:
+            raise RuntimeError("Polygon client not initialized")
+        
+        balances = []
+        
+        # MATIC
+        matic = await self._get_evm_native_balance(
+            self._polygon_web3,
+            address,
+            Chain.POLYGON,
+            "MATIC",
+        )
+        balances.append(matic)
+        
+        # USDC.e
+        try:
+            usdc = await self._get_erc20_balance(
+                self._polygon_web3,
+                address,
+                USDC_ADDRESSES[Chain.POLYGON],
+                "USDC",
+                USDC_DECIMALS,
+                Chain.POLYGON,
+            )
+            balances.append(usdc)
+        except Exception as e:
+            self.log.warning("Failed to get Polygon USDC balance", error=str(e))
+        
+        return balances
+    
+    async def get_bsc_balances(self, address: str) -> list[Balance]:
+        """Get balances on BSC."""
+        if not self._bsc_web3:
+            raise RuntimeError("BSC client not initialized")
+        
+        balances = []
+        
+        # BNB
+        bnb = await self._get_evm_native_balance(
+            self._bsc_web3,
+            address,
+            Chain.BSC,
+            "BNB",
+        )
+        balances.append(bnb)
+        
+        # USDT
+        try:
+            usdt = await self._get_erc20_balance(
+                self._bsc_web3,
+                address,
+                USDT_ADDRESSES[Chain.BSC],
+                "USDT",
+                18,  # USDT on BSC has 18 decimals
+                Chain.BSC,
+            )
+            balances.append(usdt)
+        except Exception as e:
+            self.log.warning("Failed to get BSC USDT balance", error=str(e))
+        
+        # USDC
+        try:
+            usdc = await self._get_erc20_balance(
+                self._bsc_web3,
+                address,
+                USDC_ADDRESSES[Chain.BSC],
+                "USDC",
+                18,
+                Chain.BSC,
+            )
+            balances.append(usdc)
+        except Exception as e:
+            self.log.warning("Failed to get BSC USDC balance", error=str(e))
+        
+        return balances
+    
+    async def get_all_balances(
+        self,
+        user_id: str,
+    ) -> dict[ChainFamily, list[Balance]]:
+        """Get all balances for a user across chains."""
+        wallets = await get_user_wallets(user_id)
+        
+        result = {
+            ChainFamily.SOLANA: [],
+            ChainFamily.EVM: [],
+        }
+        
+        for wallet in wallets:
+            if wallet.chain_family == ChainFamily.SOLANA:
+                try:
+                    sol = await self.get_solana_balance(wallet.public_key)
+                    result[ChainFamily.SOLANA].append(sol)
+                    
+                    usdc = await self.get_solana_usdc_balance(wallet.public_key)
+                    result[ChainFamily.SOLANA].append(usdc)
+                except Exception as e:
+                    self.log.error("Failed to get Solana balances", error=str(e))
+            
+            elif wallet.chain_family == ChainFamily.EVM:
+                try:
+                    polygon = await self.get_polygon_balances(wallet.public_key)
+                    result[ChainFamily.EVM].extend(polygon)
+                except Exception as e:
+                    self.log.error("Failed to get Polygon balances", error=str(e))
+                
+                try:
+                    bsc = await self.get_bsc_balances(wallet.public_key)
+                    result[ChainFamily.EVM].extend(bsc)
+                except Exception as e:
+                    self.log.error("Failed to get BSC balances", error=str(e))
+        
+        return result
+
+
+# Singleton instance
+wallet_service = WalletService()
