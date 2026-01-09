@@ -47,20 +47,8 @@ app: Optional[Application] = None
 
 
 async def post_init(application: Application) -> None:
-    """Initialize services after bot starts."""
-    logger.info("Initializing services...")
-    
-    # Initialize database
-    await init_db(settings.database_url)
-    await create_tables()
-    
-    # Initialize wallet service
-    await wallet_service.initialize()
-    
-    # Initialize platforms
-    await platform_registry.initialize()
-    
-    logger.info("All services initialized successfully")
+    """Called after bot starts - services already initialized in run_bot."""
+    logger.info("Bot application initialized")
 
 
 async def post_shutdown(application: Application) -> None:
@@ -145,26 +133,38 @@ def create_application() -> Application:
 async def run_bot() -> None:
     """Run the bot with graceful shutdown support."""
     global app
-    
+
     logger.info("Starting Spredd Markets Bot...")
-    
+
+    # Initialize services before starting the bot
+    logger.info("Initializing database...")
+    await init_db(settings.database_url)
+    await create_tables()
+    logger.info("Database ready")
+
+    logger.info("Initializing wallet service...")
+    await wallet_service.initialize()
+
+    logger.info("Initializing platforms...")
+    await platform_registry.initialize()
+
     app = create_application()
-    
+
     # Setup signal handlers for graceful shutdown
     loop = asyncio.get_event_loop()
-    
+
     def signal_handler():
         logger.info("Received shutdown signal")
         if app:
             asyncio.create_task(app.stop())
-    
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, signal_handler)
         except NotImplementedError:
             # Windows doesn't support add_signal_handler
             signal.signal(sig, lambda s, f: signal_handler())
-    
+
     # Run the bot
     async with app:
         await app.start()
