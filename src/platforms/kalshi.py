@@ -3,6 +3,7 @@ Kalshi platform implementation using DFlow API.
 Trades Kalshi prediction markets on Solana.
 """
 
+import asyncio
 from decimal import Decimal
 from typing import Any, Optional
 from datetime import datetime
@@ -13,6 +14,7 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.async_api import AsyncClient as SolanaClient
 from solana.rpc.commitment import Confirmed
 import base64
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
@@ -77,55 +79,69 @@ class KalshiPlatform(BasePlatform):
         if self._solana_client:
             await self._solana_client.close()
     
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(RateLimitError),
+        reraise=True,
+    )
     async def _metadata_request(
         self,
         method: str,
         endpoint: str,
         **kwargs,
     ) -> dict:
-        """Make request to DFlow metadata API."""
+        """Make request to DFlow metadata API with retry on rate limit."""
         if not self._http_client:
             raise RuntimeError("Client not initialized")
-        
+
         url = f"{settings.dflow_metadata_url}{endpoint}"
-        
+
         try:
             response = await self._http_client.request(method, url, **kwargs)
-            
+
             if response.status_code == 429:
+                logger.warning("Rate limited on metadata API, retrying...")
                 raise RateLimitError("Rate limit exceeded", Platform.KALSHI)
-            
+
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             raise PlatformError(
                 f"API error: {e.response.status_code}",
                 Platform.KALSHI,
                 str(e.response.status_code),
             )
-    
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(RateLimitError),
+        reraise=True,
+    )
     async def _trading_request(
         self,
         method: str,
         endpoint: str,
         **kwargs,
     ) -> dict:
-        """Make request to DFlow trading API."""
+        """Make request to DFlow trading API with retry on rate limit."""
         if not self._http_client:
             raise RuntimeError("Client not initialized")
-        
+
         url = f"{settings.dflow_api_base_url}{endpoint}"
-        
+
         try:
             response = await self._http_client.request(method, url, **kwargs)
-            
+
             if response.status_code == 429:
+                logger.warning("Rate limited on trading API, retrying...")
                 raise RateLimitError("Rate limit exceeded", Platform.KALSHI)
-            
+
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             raise PlatformError(
                 f"API error: {e.response.status_code}",
