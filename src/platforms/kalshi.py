@@ -143,6 +143,12 @@ class KalshiPlatform(BasePlatform):
             return response.json()
 
         except httpx.HTTPStatusError as e:
+            # Log response body for debugging
+            try:
+                error_body = e.response.text
+                logger.error("DFlow API error", status=e.response.status_code, body=error_body)
+            except:
+                pass
             raise PlatformError(
                 f"API error: {e.response.status_code}",
                 Platform.KALSHI,
@@ -350,10 +356,8 @@ class KalshiPlatform(BasePlatform):
             "amount": str(amount_raw),
             "slippageBps": 100,  # 1%
         }
-        
-        if self._builder_code:
-            params["platformFeeBps"] = 50  # 0.5% to builder
-        
+
+        logger.debug("Quote request params", params=params)
         data = await self._trading_request("GET", "/order", params=params)
         
         # Parse quote response
