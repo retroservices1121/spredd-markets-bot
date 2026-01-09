@@ -128,8 +128,19 @@ class WalletService(LoggerMixin):
         user_id: str,
         telegram_id: int,
         chain_family: ChainFamily,
+        user_pin: str = "",
     ) -> WalletInfo:
-        """Create a new wallet for a user."""
+        """Create a new wallet for a user.
+
+        Args:
+            user_id: Database user ID
+            telegram_id: Telegram user ID
+            chain_family: SOLANA or EVM
+            user_pin: Optional PIN for non-custodial encryption (recommended)
+
+        Returns:
+            WalletInfo with public key
+        """
         # Check if wallet already exists
         existing = await get_wallet(user_id, chain_family)
         if existing:
@@ -137,35 +148,39 @@ class WalletService(LoggerMixin):
                 chain_family=chain_family,
                 public_key=existing.public_key,
             )
-        
+
         # Generate keypair based on chain family
         if chain_family == ChainFamily.SOLANA:
             public_key, private_key = self._generate_solana_keypair()
         else:
             public_key, private_key = self._generate_evm_keypair()
-        
-        # Encrypt private key with user-specific encryption
+
+        # Encrypt private key with user-specific encryption + optional PIN
+        # If PIN is provided, even the operator cannot decrypt without it
         encrypted_key = encrypt(
             private_key,
             settings.encryption_key,
             telegram_id,
+            user_pin,
         )
-        
+
         # Store in database
         await create_wallet(
             user_id=user_id,
             chain_family=chain_family,
             public_key=public_key,
             encrypted_private_key=encrypted_key,
+            pin_protected=bool(user_pin),
         )
-        
+
         self.log.info(
             "Created wallet",
             user_id=user_id,
             chain_family=chain_family.value,
             public_key=public_key[:8] + "...",
+            pin_protected=bool(user_pin),
         )
-        
+
         return WalletInfo(
             chain_family=chain_family,
             public_key=public_key,
@@ -175,81 +190,156 @@ class WalletService(LoggerMixin):
         self,
         user_id: str,
         telegram_id: int,
+        user_pin: str = "",
     ) -> dict[ChainFamily, WalletInfo]:
-        """Get or create both Solana and EVM wallets for a user."""
+        """Get or create both Solana and EVM wallets for a user.
+
+        Args:
+            user_id: Database user ID
+            telegram_id: Telegram user ID
+            user_pin: PIN for new wallet encryption (only used if creating)
+
+        Returns:
+            Dict mapping ChainFamily to WalletInfo
+        """
         wallets = {}
-        
+
         for family in ChainFamily:
             wallets[family] = await self.create_wallet_for_user(
                 user_id=user_id,
                 telegram_id=telegram_id,
                 chain_family=family,
+                user_pin=user_pin,
             )
-        
+
         return wallets
+
+    async def is_wallet_pin_protected(
+        self,
+        user_id: str,
+        chain_family: ChainFamily,
+    ) -> bool:
+        """Check if a wallet requires PIN to decrypt."""
+        wallet = await get_wallet(user_id, chain_family)
+        if not wallet:
+            return False
+        return wallet.pin_protected
     
     # ===================
     # Key Retrieval
     # ===================
-    
+
     async def get_solana_keypair(
         self,
         user_id: str,
         telegram_id: int,
+        user_pin: str = "",
     ) -> Optional[SolanaKeypair]:
-        """Get decrypted Solana keypair for signing."""
+        """Get decrypted Solana keypair for signing.
+
+        Args:
+            user_id: Database user ID
+            telegram_id: Telegram user ID
+            user_pin: PIN if wallet is PIN-protected
+
+        Returns:
+            SolanaKeypair or None if wallet not found
+
+        Raises:
+            EncryptionError: If PIN is wrong
+        """
         wallet = await get_wallet(user_id, ChainFamily.SOLANA)
         if not wallet:
             return None
-        
+
         private_key = decrypt(
             wallet.encrypted_private_key,
             settings.encryption_key,
             telegram_id,
+            user_pin,
         )
-        
+
         return SolanaKeypair.from_bytes(private_key)
-    
+
     async def get_evm_account(
         self,
         user_id: str,
         telegram_id: int,
+        user_pin: str = "",
     ) -> Optional[LocalAccount]:
-        """Get decrypted EVM account for signing."""
+        """Get decrypted EVM account for signing.
+
+        Args:
+            user_id: Database user ID
+            telegram_id: Telegram user ID
+            user_pin: PIN if wallet is PIN-protected
+
+        Returns:
+            LocalAccount or None if wallet not found
+
+        Raises:
+            EncryptionError: If PIN is wrong
+        """
         wallet = await get_wallet(user_id, ChainFamily.EVM)
         if not wallet:
             return None
-        
+
         private_key = decrypt(
             wallet.encrypted_private_key,
             settings.encryption_key,
             telegram_id,
+            user_pin,
         )
-        
+
         return EthAccount.from_key(private_key)
-    
+
     async def get_private_key(
         self,
         user_id: str,
         telegram_id: int,
         chain_family: ChainFamily,
+        user_pin: str = "",
     ):
         """Get private key/keypair for signing transactions.
 
-        Returns SolanaKeypair for Solana or LocalAccount for EVM.
+        Args:
+            user_id: Database user ID
+            telegram_id: Telegram user ID
+            chain_family: SOLANA or EVM
+            user_pin: PIN if wallet is PIN-protected
+
+        Returns:
+            SolanaKeypair for Solana or LocalAccount for EVM
+
+        Raises:
+            EncryptionError: If PIN is wrong
         """
         if chain_family == ChainFamily.SOLANA:
-            return await self.get_solana_keypair(user_id, telegram_id)
+            return await self.get_solana_keypair(user_id, telegram_id, user_pin)
         else:
-            return await self.get_evm_account(user_id, telegram_id)
+            return await self.get_evm_account(user_id, telegram_id, user_pin)
 
     async def export_private_key(
         self,
         user_id: str,
         telegram_id: int,
         chain_family: ChainFamily,
+        user_pin: str = "",
     ) -> Optional[str]:
-        """Export private key for user backup."""
+        """Export private key for user backup.
+
+        Args:
+            user_id: Database user ID
+            telegram_id: Telegram user ID
+            chain_family: SOLANA or EVM
+            user_pin: PIN if wallet is PIN-protected
+
+        Returns:
+            Base58 string for Solana, hex string for EVM
+
+        Raises:
+            EncryptionError: If PIN is wrong
+        """
         wallet = await get_wallet(user_id, chain_family)
         if not wallet:
             return None
@@ -258,6 +348,7 @@ class WalletService(LoggerMixin):
             wallet.encrypted_private_key,
             settings.encryption_key,
             telegram_id,
+            user_pin,
         )
 
         if chain_family == ChainFamily.SOLANA:

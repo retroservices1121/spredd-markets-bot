@@ -131,21 +131,25 @@ class Wallet(Base):
     One Solana wallet + one EVM wallet per user.
     EVM wallet is shared between Polygon and BSC.
     """
-    
+
     __tablename__ = "wallets"
-    
+
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"))
-    
+
     # Chain family determines wallet type
     chain_family: Mapped[ChainFamily] = mapped_column(SQLEnum(ChainFamily))
-    
+
     # Wallet addresses
     public_key: Mapped[str] = mapped_column(String(255), index=True)
-    
+
     # Encrypted private key (AES-256-GCM)
     encrypted_private_key: Mapped[str] = mapped_column(Text)
-    
+
+    # PIN protection - if True, user PIN is required to decrypt
+    # PIN is never stored, only used in key derivation
+    pin_protected: Mapped[bool] = mapped_column(Boolean, default=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -156,10 +160,10 @@ class Wallet(Base):
         server_default=func.now(),
         onupdate=func.now()
     )
-    
+
     # Relationships
     user: Mapped["User"] = relationship(back_populates="wallets")
-    
+
     # One wallet per chain family per user
     __table_args__ = (
         Index("ix_wallets_user_chain", "user_id", "chain_family", unique=True),
