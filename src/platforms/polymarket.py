@@ -144,33 +144,62 @@ class PolymarketPlatform(BasePlatform):
         """Parse Polymarket market data into Market object."""
         # Polymarket uses different structures for events vs markets
         # Events contain multiple markets (outcomes)
-        
+
+        def get_price_from_market(m: dict) -> Optional[Decimal]:
+            """Extract price from market data, checking multiple fields."""
+            # Try different price fields in order of preference
+            for field in ["price", "lastTradePrice", "bestAsk"]:
+                val = m.get(field)
+                if val is not None and val != "" and val != "0":
+                    try:
+                        price = Decimal(str(val))
+                        if Decimal("0") < price <= Decimal("1"):
+                            return price
+                    except:
+                        pass
+            return None
+
         # Handle both event-level and market-level data
         is_event = "markets" in data
-        
+
         if is_event:
             # This is an event with multiple markets
             markets = data.get("markets", [])
             yes_market = next((m for m in markets if m.get("outcome") == "Yes"), None)
             no_market = next((m for m in markets if m.get("outcome") == "No"), None)
-            
-            yes_price = Decimal(str(yes_market.get("lastTradePrice", 0.5))) if yes_market else None
-            no_price = Decimal(str(no_market.get("lastTradePrice", 0.5))) if no_market else None
-            
+
+            yes_price = get_price_from_market(yes_market) if yes_market else None
+            no_price = get_price_from_market(no_market) if no_market else None
+
+            # If we have one price but not the other, calculate it
+            if yes_price and not no_price:
+                no_price = Decimal("1") - yes_price
+            elif no_price and not yes_price:
+                yes_price = Decimal("1") - no_price
+
             yes_token = yes_market.get("clobTokenId") if yes_market else None
             no_token = no_market.get("clobTokenId") if no_market else None
-            
+
             market_id = data.get("conditionId") or data.get("id")
-            
+
         else:
             # Single market/outcome
-            yes_price = Decimal(str(data.get("outcomePrices", [0.5, 0.5])[0]))
-            no_price = Decimal(str(data.get("outcomePrices", [0.5, 0.5])[1]))
-            
+            outcome_prices = data.get("outcomePrices", [])
+            if outcome_prices and len(outcome_prices) >= 2:
+                try:
+                    yes_price = Decimal(str(outcome_prices[0]))
+                    no_price = Decimal(str(outcome_prices[1]))
+                except:
+                    yes_price = None
+                    no_price = None
+            else:
+                yes_price = None
+                no_price = None
+
             tokens = data.get("clobTokenIds", [])
             yes_token = tokens[0] if len(tokens) > 0 else None
             no_token = tokens[1] if len(tokens) > 1 else None
-            
+
             market_id = data.get("conditionId") or data.get("condition_id")
         
         # Volume
