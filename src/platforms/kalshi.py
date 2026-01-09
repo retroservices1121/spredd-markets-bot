@@ -133,21 +133,29 @@ class KalshiPlatform(BasePlatform):
                 str(e.response.status_code),
             )
     
+    # USDC mint address on Solana
+    USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
     def _parse_market(self, data: dict) -> Market:
         """Parse DFlow market data into Market object."""
-        # Extract pricing
+        # Extract pricing (API returns decimal strings like "0.3600")
         yes_price = None
         no_price = None
-        
+
         if "yesAsk" in data and data["yesAsk"]:
-            yes_price = Decimal(str(data["yesAsk"])) / 100
+            yes_price = Decimal(str(data["yesAsk"]))
         if "noAsk" in data and data["noAsk"]:
-            no_price = Decimal(str(data["noAsk"])) / 100
-        
-        # Extract tokens
-        yes_token = data.get("yesTokenMint") or data.get("yes_token_mint")
-        no_token = data.get("noTokenMint") or data.get("no_token_mint")
-        
+            no_price = Decimal(str(data["noAsk"]))
+
+        # Extract tokens from accounts structure (keyed by collateral mint)
+        yes_token = None
+        no_token = None
+        accounts = data.get("accounts", {})
+        if self.USDC_MINT in accounts:
+            usdc_accounts = accounts[self.USDC_MINT]
+            yes_token = usdc_accounts.get("yesMint")
+            no_token = usdc_accounts.get("noMint")
+
         return Market(
             platform=Platform.KALSHI,
             chain=Chain.SOLANA,
@@ -158,7 +166,7 @@ class KalshiPlatform(BasePlatform):
             category=data.get("category"),
             yes_price=yes_price,
             no_price=no_price,
-            volume_24h=Decimal(str(data.get("volume24h", 0))) if data.get("volume24h") else None,
+            volume_24h=Decimal(str(data.get("volume", 0))) if data.get("volume") else None,
             liquidity=Decimal(str(data.get("openInterest", 0))) if data.get("openInterest") else None,
             is_active=data.get("status") == "active" or data.get("result") is None,
             close_time=data.get("closeTime") or data.get("close_time"),
@@ -182,16 +190,16 @@ class KalshiPlatform(BasePlatform):
         }
         if active_only:
             params["status"] = "active"
-        
-        data = await self._metadata_request("GET", "/v1/markets", params=params)
-        
+
+        data = await self._metadata_request("GET", "/api/v1/markets", params=params)
+
         markets = []
         for item in data.get("markets", data.get("data", [])):
             try:
                 markets.append(self._parse_market(item))
             except Exception as e:
                 logger.warning("Failed to parse market", error=str(e))
-        
+
         return markets
     
     async def search_markets(
@@ -203,10 +211,11 @@ class KalshiPlatform(BasePlatform):
         params = {
             "q": query,
             "limit": limit,
+            "status": "active",
         }
-        
-        data = await self._metadata_request("GET", "/v1/markets/search", params=params)
-        
+
+        data = await self._metadata_request("GET", "/api/v1/markets", params=params)
+
         markets = []
         for item in data.get("markets", data.get("data", [])):
             try:
@@ -219,7 +228,7 @@ class KalshiPlatform(BasePlatform):
     async def get_market(self, market_id: str) -> Optional[Market]:
         """Get a specific market by ticker."""
         try:
-            data = await self._metadata_request("GET", f"/v1/markets/{market_id}")
+            data = await self._metadata_request("GET", f"/api/v1/market/{market_id}")
             return self._parse_market(data.get("market", data))
         except PlatformError:
             return None
@@ -232,48 +241,51 @@ class KalshiPlatform(BasePlatform):
             "status": "active",
         }
         
-        data = await self._metadata_request("GET", "/v1/markets", params=params)
-        
+        data = await self._metadata_request("GET", "/api/v1/markets", params=params)
+
         markets = []
         for item in data.get("markets", data.get("data", [])):
             try:
                 markets.append(self._parse_market(item))
             except Exception as e:
                 logger.warning("Failed to parse market", error=str(e))
-        
+
         return markets
-    
+
     # ===================
     # Order Book
     # ===================
-    
+
     async def get_orderbook(
         self,
         market_id: str,
         outcome: Outcome,
     ) -> OrderBook:
         """Get order book for a market."""
-        data = await self._metadata_request("GET", f"/v1/markets/{market_id}/orderbook")
-        
-        orderbook_data = data.get("orderbook", data)
-        
+        data = await self._metadata_request("GET", f"/api/v1/orderbook/{market_id}")
+
+        # DFlow returns dict format: {"yes_bids": {"0.35": 100, ...}, "no_bids": {...}}
+        # Prices are already decimals (0-1 scale), quantities are integers
         bids = []
         asks = []
-        
+
         side_key = "yes" if outcome == Outcome.YES else "no"
-        
-        for bid in orderbook_data.get(f"{side_key}Bids", []):
-            bids.append((
-                Decimal(str(bid["price"])) / 100,
-                Decimal(str(bid["quantity"])),
-            ))
-        
-        for ask in orderbook_data.get(f"{side_key}Asks", []):
-            asks.append((
-                Decimal(str(ask["price"])) / 100,
-                Decimal(str(ask["quantity"])),
-            ))
-        
+        opposite_key = "no" if outcome == Outcome.YES else "yes"
+
+        # Parse bids (buy orders for this outcome)
+        bids_data = data.get(f"{side_key}_bids", {})
+        for price_str, quantity in bids_data.items():
+            bids.append((Decimal(price_str), Decimal(str(quantity))))
+        bids.sort(key=lambda x: x[0], reverse=True)  # Highest bid first
+
+        # Asks are implied from opposite side bids (buying NO = selling YES)
+        opposite_bids = data.get(f"{opposite_key}_bids", {})
+        for price_str, quantity in opposite_bids.items():
+            # Ask price for YES = 1 - bid price for NO
+            ask_price = Decimal("1") - Decimal(price_str)
+            asks.append((ask_price, Decimal(str(quantity))))
+        asks.sort(key=lambda x: x[0])  # Lowest ask first
+
         return OrderBook(
             market_id=market_id,
             outcome=outcome,
@@ -309,9 +321,8 @@ class KalshiPlatform(BasePlatform):
                 f"Token not found for {outcome.value}",
                 Platform.KALSHI,
             )
-        
-        # USDC on Solana
-        input_token = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+        input_token = self.USDC_MINT
         
         # Convert amount to smallest unit (USDC has 6 decimals)
         amount_raw = int(amount * Decimal(10**self.collateral_decimals))
@@ -327,7 +338,7 @@ class KalshiPlatform(BasePlatform):
         if self._builder_code:
             params["platformFeeBps"] = 50  # 0.5% to builder
         
-        data = await self._trading_request("GET", "/v1/order", params=params)
+        data = await self._trading_request("GET", "/order", params=params)
         
         # Parse quote response
         expected_output = Decimal(str(data.get("outAmount", 0)))
@@ -336,6 +347,13 @@ class KalshiPlatform(BasePlatform):
         
         price_per_token = amount / expected_output if expected_output > 0 else Decimal(0)
         
+        # Handle nullable fields
+        price_impact_raw = data.get("priceImpactPct")
+        price_impact = Decimal(str(price_impact_raw)) if price_impact_raw is not None else Decimal(0)
+
+        platform_fee_raw = data.get("platformFee")
+        platform_fee = Decimal(str(platform_fee_raw)) / Decimal(10**6) if platform_fee_raw is not None else Decimal(0)
+
         return Quote(
             platform=Platform.KALSHI,
             chain=Chain.SOLANA,
@@ -347,8 +365,8 @@ class KalshiPlatform(BasePlatform):
             output_token=output_token if side == "buy" else input_token,
             expected_output=expected_output,
             price_per_token=price_per_token,
-            price_impact=Decimal(str(data.get("priceImpactPct", 0))),
-            platform_fee=Decimal(str(data.get("platformFee", 0))) / Decimal(10**6),
+            price_impact=price_impact,
+            platform_fee=platform_fee,
             network_fee_estimate=Decimal("0.001"),  # ~0.001 SOL
             expires_at=None,
             quote_data=data,
@@ -381,7 +399,7 @@ class KalshiPlatform(BasePlatform):
             
             response = await self._trading_request(
                 "POST",
-                "/v1/swap",
+                "/swap",
                 json=swap_data,
             )
             
