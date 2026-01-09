@@ -516,6 +516,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif action == "menu":
             if parts[1] == "main":
                 await handle_main_menu(query, update.effective_user.id)
+            elif parts[1] == "platform":
+                await handle_platform_menu(query, update.effective_user.id)
         
     except Exception as e:
         logger.error("Callback handler error", error=str(e), data=data)
@@ -565,11 +567,41 @@ Your {info['chain']} Wallet:
         [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
         [InlineKeyboardButton("🔄 Switch Platform", callback_data="menu:platform")],
     ])
-    
+
     await query.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
+    )
+
+
+async def handle_platform_menu(query, telegram_id: int) -> None:
+    """Show platform selection menu."""
+    user = await get_user_by_telegram_id(telegram_id)
+
+    current_text = ""
+    if user:
+        current_info = PLATFORM_INFO[user.active_platform]
+        current_text = f"Current: {current_info['emoji']} <b>{current_info['name']}</b>\n\n"
+
+    text = f"""
+🔄 <b>Switch Platform</b>
+
+{current_text}Select a platform:
+"""
+
+    buttons = []
+    for platform_id in platform_registry.all_platforms:
+        info = PLATFORM_INFO[platform_id]
+        label = f"{info['emoji']} {info['name']}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"platform:{platform_id.value}")])
+
+    buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -659,9 +691,17 @@ Enter the amount in {info['collateral']} you want to spend:
 
 <i>Example: 10 (for 10 {info['collateral']})</i>
 """
-    
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML)
-    
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
+    ])
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
     # Note: In a full implementation, we'd store context and handle the amount input
     # in the message handler. For now, this shows the flow.
 
@@ -699,8 +739,9 @@ async def handle_wallet_refresh(query, telegram_id: int) -> None:
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Refresh", callback_data="wallet:refresh")],
         [InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")],
+        [InlineKeyboardButton("« Back", callback_data="menu:main")],
     ])
-    
+
     await query.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
@@ -726,7 +767,7 @@ Keys will be auto-deleted after 60 seconds.
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔑 Export Solana Key", callback_data="export:solana")],
         [InlineKeyboardButton("🔑 Export EVM Key", callback_data="export:evm")],
-        [InlineKeyboardButton("« Cancel", callback_data="wallet:refresh")],
+        [InlineKeyboardButton("« Back", callback_data="wallet:refresh")],
     ])
     
     await query.edit_message_text(
@@ -779,13 +820,14 @@ async def handle_markets_refresh(query, telegram_id: int) -> None:
             ])
         
         buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh")])
-        
+        buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
+
         await query.edit_message_text(
             text,
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(buttons),
         )
-        
+
     except Exception as e:
         logger.error("Failed to refresh markets", error=str(e))
         await query.edit_message_text(
