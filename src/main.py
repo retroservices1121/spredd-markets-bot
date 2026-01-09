@@ -28,6 +28,7 @@ from src.services.wallet import wallet_service
 from src.handlers.commands import (
     start_command,
     help_command,
+    faq_command,
     platform_command,
     wallet_command,
     balance_command,
@@ -87,10 +88,11 @@ async def error_handler(update: object, context) -> None:
 
 def setup_handlers(application: Application) -> None:
     """Register all command and callback handlers."""
-    
+
     # Command handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("faq", faq_command))
     application.add_handler(CommandHandler("platform", platform_command))
     application.add_handler(CommandHandler("wallet", wallet_command))
     application.add_handler(CommandHandler("balance", balance_command))
@@ -179,6 +181,7 @@ async def run_bot() -> None:
             BotCommand("positions", "View open positions"),
             BotCommand("orders", "View order history"),
             BotCommand("platform", "Switch trading platform"),
+            BotCommand("faq", "Frequently asked questions"),
             BotCommand("help", "Get help & commands"),
         ]
         await app.bot.set_my_commands(commands)

@@ -117,7 +117,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Handle /help command."""
     if not update.message:
         return
-    
+
     help_text = """
 🎯 <b>Spredd Markets Bot Commands</b>
 
@@ -138,6 +138,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /export - Export private keys (use carefully!)
 /settings - Trading preferences
 
+<b>Help</b>
+/faq - Frequently asked questions
+
 <b>Platform Info</b>
 • <b>Kalshi</b> - CFTC regulated, US legal (Solana)
 • <b>Polymarket</b> - Largest market (Polygon)
@@ -145,8 +148,35 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 Need help? @spreddterminal
 """
-    
+
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+
+
+async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /faq command - show FAQ menu."""
+    if not update.message:
+        return
+
+    text = """
+❓ <b>Frequently Asked Questions</b>
+
+Select a topic to learn more:
+"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔐 Is this non-custodial?", callback_data="faq:noncustodial")],
+        [InlineKeyboardButton("🔑 Why do I need a PIN?", callback_data="faq:pin")],
+        [InlineKeyboardButton("💰 What are the fees?", callback_data="faq:fees")],
+        [InlineKeyboardButton("📥 How do I deposit?", callback_data="faq:deposit")],
+        [InlineKeyboardButton("⚠️ Security warnings", callback_data="faq:security")],
+        [InlineKeyboardButton("« Back", callback_data="menu:main")],
+    ])
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
 
 
 async def platform_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -553,6 +583,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await handle_main_menu(query, update.effective_user.id)
             elif parts[1] == "platform":
                 await handle_platform_menu(query, update.effective_user.id)
+
+        elif action == "faq":
+            await handle_faq_topic(query, parts[1])
         
     except Exception as e:
         logger.error("Callback handler error", error=str(e), data=data)
@@ -883,9 +916,9 @@ async def handle_main_menu(query, telegram_id: int) -> None:
     if not user:
         await query.edit_message_text("Please /start first!")
         return
-    
+
     info = PLATFORM_INFO[user.active_platform]
-    
+
     text = f"""
 🎯 <b>Spredd Markets</b>
 
@@ -893,14 +926,171 @@ Current Platform: {info['emoji']} {info['name']}
 
 <b>What would you like to do?</b>
 """
-    
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📈 Browse Markets", callback_data="markets:refresh")],
         [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
         [InlineKeyboardButton("📊 My Positions", callback_data="positions:view")],
         [InlineKeyboardButton("🔄 Switch Platform", callback_data="menu:platform")],
+        [InlineKeyboardButton("❓ FAQ", callback_data="faq:menu")],
     ])
-    
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def handle_faq_topic(query, topic: str) -> None:
+    """Handle FAQ topic display."""
+
+    faq_content = {
+        "menu": {
+            "title": "❓ Frequently Asked Questions",
+            "text": "Select a topic to learn more:",
+            "buttons": [
+                ("🔐 Is this non-custodial?", "faq:noncustodial"),
+                ("🔑 Why do I need a PIN?", "faq:pin"),
+                ("💰 What are the fees?", "faq:fees"),
+                ("📥 How do I deposit?", "faq:deposit"),
+                ("⚠️ Security warnings", "faq:security"),
+            ],
+        },
+        "noncustodial": {
+            "title": "🔐 Is this non-custodial?",
+            "text": """<b>Yes, Spredd is non-custodial.</b>
+
+Your private keys are encrypted with YOUR PIN, which is never stored on our servers.
+
+<b>What this means:</b>
+• We cannot access your funds
+• We cannot sign transactions for you
+• We cannot recover your wallet if you forget your PIN
+• Even if our database is hacked, attackers cannot steal funds without your PIN
+
+<b>How it works:</b>
+Your wallet's private key is encrypted using:
+<code>Key = MasterKey + TelegramID + YourPIN</code>
+
+Without your PIN, decryption is mathematically impossible.
+
+<b>You are fully in control of your funds.</b>""",
+        },
+        "pin": {
+            "title": "🔑 Why do I need a PIN?",
+            "text": """<b>Your PIN makes the bot non-custodial.</b>
+
+Without a PIN, the bot operator could theoretically access your funds. With a PIN, only YOU can sign transactions.
+
+<b>PIN requirements:</b>
+• 4-6 digits
+• Used to encrypt your private key
+• Required for every trade
+• Never stored anywhere
+
+<b>Important:</b>
+• Choose a PIN you'll remember
+• Don't share it with anyone
+• If you forget it, your funds are LOST
+• There is NO recovery option
+
+<b>This is the same security model used by hardware wallets like Ledger and Trezor.</b>""",
+        },
+        "fees": {
+            "title": "💰 What are the fees?",
+            "text": """<b>Fee Structure:</b>
+
+<b>Spredd Bot Fees:</b>
+• No fees for using the bot
+• No deposit/withdrawal fees
+
+<b>Platform Fees (charged by markets):</b>
+• <b>Kalshi:</b> ~2% on winnings
+• <b>Polymarket:</b> ~2% trading fee
+• <b>Opinion Labs:</b> Varies by market
+
+<b>Network Fees (blockchain gas):</b>
+• <b>Solana:</b> ~$0.001 per transaction
+• <b>Polygon:</b> ~$0.01 per transaction
+• <b>BSC:</b> ~$0.10 per transaction
+
+<b>Note:</b> You need native tokens (SOL, MATIC, BNB) in your wallet to pay gas fees.""",
+        },
+        "deposit": {
+            "title": "📥 How do I deposit?",
+            "text": """<b>Depositing Funds:</b>
+
+1️⃣ Go to /wallet to see your addresses
+
+2️⃣ Send funds to the correct address:
+
+<b>For Kalshi (Solana):</b>
+• Send USDC (SPL) to your Solana address
+• Also send small amount of SOL for gas (~0.01 SOL)
+
+<b>For Polymarket (Polygon):</b>
+• Send USDC to your EVM address
+• Also send MATIC for gas (~0.1 MATIC)
+
+<b>For Opinion Labs (BSC):</b>
+• Send USDT to your EVM address
+• Also send BNB for gas (~0.005 BNB)
+
+<b>Important:</b>
+• Double-check the network before sending
+• Your EVM address works on both Polygon and BSC
+• Start with small amounts to test""",
+        },
+        "security": {
+            "title": "⚠️ Security Warnings",
+            "text": """<b>Keep Your Funds Safe:</b>
+
+🔴 <b>NEVER share your PIN</b>
+Anyone with your PIN can access your funds
+
+🔴 <b>NEVER share your private keys</b>
+Use /export only for backup purposes
+
+🔴 <b>Remember your PIN</b>
+Lost PIN = Lost funds (no recovery)
+
+🔴 <b>Verify addresses</b>
+Always double-check before depositing
+
+🔴 <b>Start small</b>
+Test with small amounts first
+
+🔴 <b>Beware of scams</b>
+We will NEVER DM you first
+We will NEVER ask for your PIN
+We will NEVER ask for private keys
+
+<b>If something seems suspicious, stop and verify.</b>
+
+Official support: @spreddterminal""",
+        },
+    }
+
+    content = faq_content.get(topic)
+    if not content:
+        await query.edit_message_text("FAQ topic not found.")
+        return
+
+    text = f"<b>{content['title']}</b>\n\n{content['text']}"
+
+    if "buttons" in content:
+        # Menu with multiple buttons
+        buttons = [[InlineKeyboardButton(label, callback_data=cb)] for label, cb in content["buttons"]]
+        buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
+        keyboard = InlineKeyboardMarkup(buttons)
+    else:
+        # Single FAQ page with back button
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("« Back to FAQ", callback_data="faq:menu")],
+            [InlineKeyboardButton("« Main Menu", callback_data="menu:main")],
+        ])
+
     await query.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
