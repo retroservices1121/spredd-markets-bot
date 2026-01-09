@@ -1376,8 +1376,8 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
     except:
         pass
 
-    # Send executing message
-    executing_msg = await update.message.reply_text(
+    # Send executing message (use chat.send_message since original may be deleted)
+    executing_msg = await update.effective_chat.send_message(
         f"⏳ Executing order...\n\nBuying {outcome.upper()} with {amount_str} {platform_info['collateral']}",
         parse_mode=ParseMode.HTML,
     )
@@ -1492,13 +1492,14 @@ async def handle_wallet_pin_setup(update: Update, context: ContextTypes.DEFAULT_
 
         del context.user_data["pending_wallet_pin"]
 
-        # Delete PIN messages for security
+        # Delete PIN message for security
         try:
             await update.message.delete()
         except:
             pass
 
-        await update.message.reply_text(
+        # Send status message (use chat.send_message since original message may be deleted)
+        status_msg = await update.effective_chat.send_message(
             "🔐 Creating secure wallets...",
             parse_mode=ParseMode.HTML,
         )
@@ -1539,7 +1540,8 @@ Your wallets are protected with your PIN.
                 [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
             ])
 
-            await update.message.reply_text(
+            # Edit the status message with results
+            await status_msg.edit_text(
                 text,
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,
@@ -1547,7 +1549,7 @@ Your wallets are protected with your PIN.
 
         except Exception as e:
             logger.error("Wallet creation failed", error=str(e))
-            await update.message.reply_text(
+            await status_msg.edit_text(
                 f"❌ Failed to create wallets: {escape_html(str(e))}",
                 parse_mode=ParseMode.HTML,
             )
@@ -1564,7 +1566,8 @@ Your wallets are protected with your PIN.
         except:
             pass
 
-        await update.message.reply_text(
+        # Send confirmation prompt (use chat.send_message since original may be deleted)
+        await update.effective_chat.send_message(
             "🔐 <b>Confirm your PIN</b>\n\n"
             "Please enter your PIN again to confirm:",
             parse_mode=ParseMode.HTML,
