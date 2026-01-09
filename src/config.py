@@ -65,11 +65,11 @@ class Settings(BaseSettings):
     # ===================
     dflow_api_key: Optional[str] = Field(default=None, description="DFlow API key")
     dflow_api_base_url: str = Field(
-        default="https://dev-quote-api.dflow.net",
+        default="https://c.quote-api.dflow.net",
         description="DFlow trading API base URL"
     )
     dflow_metadata_url: str = Field(
-        default="https://dev-prediction-markets-api.dflow.net",
+        default="https://c.prediction-markets-api.dflow.net",
         description="DFlow metadata API URL"
     )
     kalshi_builder_code: Optional[str] = Field(default=None, description="Kalshi builder code for revenue")

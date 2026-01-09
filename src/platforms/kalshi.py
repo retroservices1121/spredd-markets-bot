@@ -61,16 +61,16 @@ class KalshiPlatform(BasePlatform):
             "Content-Type": "application/json",
         }
         if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-        
+            headers["x-api-key"] = self._api_key
+
         self._http_client = httpx.AsyncClient(
             timeout=30.0,
             headers=headers,
         )
-        
+
         self._solana_client = SolanaClient(settings.solana_rpc_url)
-        
-        logger.info("Kalshi platform initialized")
+
+        logger.info("Kalshi platform initialized", api_key_set=bool(self._api_key))
     
     async def close(self) -> None:
         """Close connections."""
