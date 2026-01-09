@@ -501,8 +501,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await handle_market_view(query, parts[1], parts[2], update.effective_user.id)
         
         elif action == "buy":
-            await handle_buy_start(query, parts[1], parts[2], parts[3], update.effective_user.id)
-        
+            await handle_buy_start(query, parts[1], parts[2], parts[3], update.effective_user.id, context)
+
+        elif action == "confirm_buy":
+            await handle_buy_confirm(query, parts[1], parts[2], parts[3], parts[4], update.effective_user.id)
+
         elif action == "wallet":
             if parts[1] == "refresh":
                 await handle_wallet_refresh(query, update.effective_user.id)
@@ -662,25 +665,23 @@ Status: {"🟢 Active" if market.is_active else "🔴 Closed"}
     )
 
 
-async def handle_buy_start(query, platform_value: str, market_id: str, outcome: str, telegram_id: int) -> None:
+async def handle_buy_start(query, platform_value: str, market_id: str, outcome: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle starting a buy order."""
     try:
         platform_enum = Platform(platform_value)
     except ValueError:
         await query.edit_message_text("Invalid platform.")
         return
-    
+
     info = PLATFORM_INFO[platform_enum]
-    
-    # Store context for next message
-    context_data = {
-        "action": "buy",
+
+    # Store buy context for message handler
+    context.user_data["pending_buy"] = {
         "platform": platform_value,
         "market_id": market_id,
         "outcome": outcome,
     }
-    
-    # We'll need to handle this in message handler
+
     text = f"""
 💰 <b>Buy {outcome.upper()} Position</b>
 
@@ -690,6 +691,8 @@ Collateral: {info['collateral']}
 Enter the amount in {info['collateral']} you want to spend:
 
 <i>Example: 10 (for 10 {info['collateral']})</i>
+
+Type /cancel to cancel.
 """
 
     keyboard = InlineKeyboardMarkup([
@@ -701,9 +704,6 @@ Enter the amount in {info['collateral']} you want to spend:
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
     )
-
-    # Note: In a full implementation, we'd store context and handle the amount input
-    # in the message handler. For now, this shows the flow.
 
 
 async def handle_wallet_refresh(query, telegram_id: int) -> None:
@@ -868,6 +868,201 @@ Current Platform: {info['emoji']} {info['name']}
 
 
 # ===================
+# Buy Order Processing
+# ===================
+
+async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome: str, amount_str: str, telegram_id: int) -> None:
+    """Execute the confirmed buy order."""
+    try:
+        amount = Decimal(amount_str)
+        platform_enum = Platform(platform_value)
+    except (InvalidOperation, ValueError):
+        await query.edit_message_text("Invalid order data.")
+        return
+
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    platform = get_platform(platform_enum)
+    platform_info = PLATFORM_INFO[platform_enum]
+    chain_family = get_chain_family_for_platform(platform_enum)
+
+    await query.edit_message_text(
+        f"⏳ Executing order...\n\nBuying {outcome.upper()} with {amount} {platform_info['collateral']}",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Get wallet
+        wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
+        wallet = wallets.get(chain_family)
+
+        if not wallet:
+            await query.edit_message_text("❌ Wallet not found. Please try again.")
+            return
+
+        # Get fresh quote
+        from src.db.models import Outcome as OutcomeEnum
+        outcome_enum = OutcomeEnum.YES if outcome == "yes" else OutcomeEnum.NO
+
+        quote = await platform.get_quote(
+            market_id=market_id,
+            outcome=outcome_enum,
+            side="buy",
+            amount=amount,
+        )
+
+        # Get private key
+        private_key = await wallet_service.get_private_key(user.id, chain_family)
+
+        # Execute trade
+        result = await platform.execute_trade(quote, private_key)
+
+        if result.success:
+            text = f"""
+✅ <b>Order Executed!</b>
+
+Bought {outcome.upper()} position
+Amount: {amount} {platform_info['collateral']}
+Received: ~{quote.expected_output:.2f} tokens
+
+<a href="{result.explorer_url}">View Transaction</a>
+"""
+        else:
+            text = f"""
+❌ <b>Order Failed</b>
+
+{escape_html(result.error_message or 'Unknown error')}
+
+Please check your wallet balance and try again.
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 Back to Markets", callback_data="markets:refresh")],
+            [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+            disable_web_page_preview=False,
+        )
+
+    except Exception as e:
+        logger.error("Trade execution failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Trade failed: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, amount_text: str) -> None:
+    """Process buy order amount from user."""
+    if not update.effective_user or not update.message:
+        return
+
+    pending = context.user_data.get("pending_buy")
+    if not pending:
+        return
+
+    # Parse amount
+    try:
+        amount = Decimal(amount_text)
+        if amount <= 0:
+            raise ValueError("Amount must be positive")
+    except (InvalidOperation, ValueError):
+        await update.message.reply_text(
+            "❌ Invalid amount. Please enter a number like: 10 or 5.5\n\n"
+            "Type /cancel to cancel the order.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        return
+
+    platform_value = pending["platform"]
+    market_id = pending["market_id"]
+    outcome = pending["outcome"]
+
+    try:
+        platform_enum = Platform(platform_value)
+    except ValueError:
+        await update.message.reply_text("Invalid platform.")
+        del context.user_data["pending_buy"]
+        return
+
+    platform = get_platform(platform_enum)
+    platform_info = PLATFORM_INFO[platform_enum]
+
+    # Clear pending state
+    del context.user_data["pending_buy"]
+
+    await update.message.reply_text(
+        f"⏳ Getting quote for {amount} {platform_info['collateral']}...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Get market info
+        market = await platform.get_market(market_id)
+        if not market:
+            await update.message.reply_text("❌ Market not found.")
+            return
+
+        # Get quote
+        from src.db.models import Outcome as OutcomeEnum
+        outcome_enum = OutcomeEnum.YES if outcome == "yes" else OutcomeEnum.NO
+
+        quote = await platform.get_quote(
+            market_id=market_id,
+            outcome=outcome_enum,
+            side="buy",
+            amount=amount,
+        )
+
+        # Show quote confirmation
+        expected_tokens = quote.expected_output
+        price = quote.price_per_token
+
+        text = f"""
+📋 <b>Order Quote</b>
+
+Market: {escape_html(market.title[:50])}...
+Side: BUY {outcome.upper()}
+
+💰 <b>You Pay:</b> {amount} {platform_info['collateral']}
+📦 <b>You Receive:</b> ~{expected_tokens:.2f} {outcome.upper()} tokens
+📊 <b>Price:</b> {format_probability(price)} per token
+
+<i>⚠️ This is a quote. Actual execution may vary slightly.</i>
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm Order", callback_data=f"confirm_buy:{platform_value}:{market_id}:{outcome}:{amount}")],
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"market:{platform_value}:{market_id}")],
+        ])
+
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Quote failed", error=str(e))
+        await update.message.reply_text(
+            f"❌ Failed to get quote: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+# ===================
 # Message Handler
 # ===================
 
@@ -875,16 +1070,30 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Handle text messages (for search and trading input)."""
     if not update.effective_user or not update.message or not update.message.text:
         return
-    
+
     text = update.message.text.strip()
-    
+
+    # Handle /cancel command
+    if text.lower() == "/cancel":
+        if "pending_buy" in context.user_data:
+            del context.user_data["pending_buy"]
+            await update.message.reply_text("Order cancelled.")
+        else:
+            await update.message.reply_text("Nothing to cancel.")
+        return
+
+    # Check if user has a pending buy order
+    if "pending_buy" in context.user_data and not text.startswith("/"):
+        await handle_buy_amount(update, context, text)
+        return
+
     # Check if it's a search query (doesn't start with /)
     if not text.startswith("/"):
         user = await get_user_by_telegram_id(update.effective_user.id)
         if not user:
             await update.message.reply_text("Please /start first!")
             return
-        
+
         # Treat as search query
         platform_info = PLATFORM_INFO[user.active_platform]
         platform = get_platform(user.active_platform)
