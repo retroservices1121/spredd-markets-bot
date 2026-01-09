@@ -37,7 +37,7 @@ def setup_logging(log_level: str = "INFO") -> None:
         ]
     else:
         processors = shared_processors + [
-            structlog.processors.dict_tramp,
+            structlog.processors.dict_tracebacks,
             structlog.processors.JSONRenderer()
         ]
     
