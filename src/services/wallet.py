@@ -228,6 +228,21 @@ class WalletService(LoggerMixin):
         
         return EthAccount.from_key(private_key)
     
+    async def get_private_key(
+        self,
+        user_id: str,
+        telegram_id: int,
+        chain_family: ChainFamily,
+    ):
+        """Get private key/keypair for signing transactions.
+
+        Returns SolanaKeypair for Solana or LocalAccount for EVM.
+        """
+        if chain_family == ChainFamily.SOLANA:
+            return await self.get_solana_keypair(user_id, telegram_id)
+        else:
+            return await self.get_evm_account(user_id, telegram_id)
+
     async def export_private_key(
         self,
         user_id: str,
@@ -238,13 +253,13 @@ class WalletService(LoggerMixin):
         wallet = await get_wallet(user_id, chain_family)
         if not wallet:
             return None
-        
+
         private_key = decrypt(
             wallet.encrypted_private_key,
             settings.encryption_key,
             telegram_id,
         )
-        
+
         if chain_family == ChainFamily.SOLANA:
             # Return base58 encoded for Solana
             import base58

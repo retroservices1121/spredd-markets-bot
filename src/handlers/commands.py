@@ -915,7 +915,7 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
         )
 
         # Get private key
-        private_key = await wallet_service.get_private_key(user.id, chain_family)
+        private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family)
 
         # Execute trade
         result = await platform.execute_trade(quote, private_key)
