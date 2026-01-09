@@ -168,14 +168,30 @@ async def run_bot() -> None:
     # Run the bot
     async with app:
         await app.start()
+
+        # Set up menu button with commands
+        from telegram import BotCommand
+        commands = [
+            BotCommand("start", "Welcome & get started"),
+            BotCommand("markets", "Browse trending markets"),
+            BotCommand("search", "Search for markets"),
+            BotCommand("wallet", "View your wallets & balances"),
+            BotCommand("positions", "View open positions"),
+            BotCommand("orders", "View order history"),
+            BotCommand("platform", "Switch trading platform"),
+            BotCommand("help", "Get help & commands"),
+        ]
+        await app.bot.set_my_commands(commands)
+        logger.info("Bot menu commands set")
+
         logger.info("Bot started! Press Ctrl+C to stop.")
-        
+
         # Start polling
         await app.updater.start_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
         )
-        
+
         # Wait until stopped
         await asyncio.Event().wait()
 
