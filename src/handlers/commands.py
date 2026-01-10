@@ -1135,7 +1135,7 @@ Type /cancel to cancel.
     else:
         # No PIN protection - export directly (shouldn't normally happen)
         try:
-            private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family, "")
+            private_key = await wallet_service.export_private_key(user.id, telegram_id, chain_family, "")
             if private_key:
                 text = f"""
 🔑 <b>{chain_name} Private Key</b>
@@ -2140,9 +2140,9 @@ async def handle_export_with_pin(update: Update, context: ContextTypes.DEFAULT_T
     )
 
     try:
-        # Get private key with PIN
+        # Get private key with PIN (export returns string, not account object)
         try:
-            private_key = await wallet_service.get_private_key(user.id, update.effective_user.id, chain_family, pin)
+            private_key = await wallet_service.export_private_key(user.id, update.effective_user.id, chain_family, pin)
         except Exception as decrypt_error:
             if "Decryption failed" in str(decrypt_error):
                 await status_msg.edit_text(
