@@ -581,10 +581,10 @@ async def get_referral_stats(user_id: str) -> dict:
             tier3_count += len(list(t3_result.scalars().all()))
 
         return {
-            "tier1_count": tier1_count,
-            "tier2_count": tier2_count,
-            "tier3_count": tier3_count,
-            "total_count": tier1_count + tier2_count + tier3_count,
+            "tier1": tier1_count,
+            "tier2": tier2_count,
+            "tier3": tier3_count,
+            "total": tier1_count + tier2_count + tier3_count,
         }
 
 
