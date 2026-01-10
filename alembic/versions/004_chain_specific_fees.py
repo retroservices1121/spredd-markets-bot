@@ -21,52 +21,64 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Create enum type for chain_family if not exists
-    chain_family_enum = sa.Enum('solana', 'evm', name='chainfamily')
-    chain_family_enum.create(op.get_bind(), checkfirst=True)
+    # The chainfamily enum already exists from wallets table
+    # It uses uppercase values: 'SOLANA', 'EVM'
 
-    # Add chain_family column to fee_balances
-    op.add_column(
-        'fee_balances',
-        sa.Column('chain_family', sa.Enum('solana', 'evm', name='chainfamily'), nullable=True)
-    )
+    # Check if chain_family column already exists on fee_balances
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'fee_balances' AND column_name = 'chain_family'"
+    ))
+    column_exists = result.fetchone() is not None
 
-    # Set default value for existing records
-    op.execute("UPDATE fee_balances SET chain_family = 'evm' WHERE chain_family IS NULL")
+    if not column_exists:
+        # Add chain_family column to fee_balances (using existing enum with uppercase values)
+        op.add_column(
+            'fee_balances',
+            sa.Column('chain_family', sa.Enum('SOLANA', 'EVM', name='chainfamily', create_type=False), nullable=True)
+        )
 
-    # Make column non-nullable
-    op.alter_column('fee_balances', 'chain_family', nullable=False, server_default='evm')
+        # Set default value for existing records (uppercase!)
+        op.execute("UPDATE fee_balances SET chain_family = 'EVM' WHERE chain_family IS NULL")
 
-    # Drop old unique constraint on user_id
-    # PostgreSQL: constraint is named 'fee_balances_user_id_key'
+        # Make column non-nullable
+        op.alter_column('fee_balances', 'chain_family', nullable=False, server_default='EVM')
+
+    # Drop old unique constraint on user_id if it exists
     op.execute("ALTER TABLE fee_balances DROP CONSTRAINT IF EXISTS fee_balances_user_id_key")
 
-    # Create new unique index on (user_id, chain_family)
-    op.create_index(
-        'ix_fee_balances_user_chain',
-        'fee_balances',
-        ['user_id', 'chain_family'],
-        unique=True
-    )
+    # Create new unique index on (user_id, chain_family) if not exists
+    op.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_fee_balances_user_chain
+        ON fee_balances (user_id, chain_family)
+    """)
 
-    # Add chain_family column to fee_transactions
-    op.add_column(
-        'fee_transactions',
-        sa.Column('chain_family', sa.Enum('solana', 'evm', name='chainfamily'), nullable=True)
-    )
+    # Check if chain_family column already exists on fee_transactions
+    result = conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'fee_transactions' AND column_name = 'chain_family'"
+    ))
+    column_exists = result.fetchone() is not None
 
-    # Set default value for existing records
-    op.execute("UPDATE fee_transactions SET chain_family = 'evm' WHERE chain_family IS NULL")
+    if not column_exists:
+        # Add chain_family column to fee_transactions
+        op.add_column(
+            'fee_transactions',
+            sa.Column('chain_family', sa.Enum('SOLANA', 'EVM', name='chainfamily', create_type=False), nullable=True)
+        )
 
-    # Make column non-nullable
-    op.alter_column('fee_transactions', 'chain_family', nullable=False, server_default='evm')
+        # Set default value for existing records (uppercase!)
+        op.execute("UPDATE fee_transactions SET chain_family = 'EVM' WHERE chain_family IS NULL")
 
-    # Create index on chain_family
-    op.create_index(
-        'ix_fee_tx_chain',
-        'fee_transactions',
-        ['chain_family']
-    )
+        # Make column non-nullable
+        op.alter_column('fee_transactions', 'chain_family', nullable=False, server_default='EVM')
+
+    # Create index on chain_family if not exists
+    op.execute("""
+        CREATE INDEX IF NOT EXISTS ix_fee_tx_chain
+        ON fee_transactions (chain_family)
+    """)
 
 
 def downgrade() -> None:
