@@ -259,7 +259,9 @@ class PolymarketPlatform(BasePlatform):
             if allowance < amount_raw:
                 logger.info("Approving Uniswap router for native USDC", amount=str(amount))
                 nonce = self._sync_web3.eth.get_transaction_count(wallet)
-                gas_price = self._sync_web3.eth.gas_price
+                # Use 1.5x gas price for faster confirmation on Polygon
+                base_gas_price = self._sync_web3.eth.gas_price
+                gas_price = int(base_gas_price * 1.5)
 
                 approve_tx = native_contract.functions.approve(
                     router_address,
@@ -301,7 +303,9 @@ class PolymarketPlatform(BasePlatform):
             )
 
             nonce = self._sync_web3.eth.get_transaction_count(wallet)
-            gas_price = self._sync_web3.eth.gas_price
+            # Use 1.5x gas price for faster confirmation on Polygon
+            base_gas_price = self._sync_web3.eth.gas_price
+            gas_price = int(base_gas_price * 1.5)
 
             swap_tx = router_contract.functions.exactInputSingle(swap_params).build_transaction({
                 "from": wallet,
@@ -318,8 +322,8 @@ class PolymarketPlatform(BasePlatform):
 
             logger.info("Swap transaction sent", tx_hash=swap_hash_hex, amount=str(amount))
 
-            # Wait for confirmation
-            receipt = self._sync_web3.eth.wait_for_transaction_receipt(swap_hash, timeout=60)
+            # Wait for confirmation (120s timeout for Polygon congestion)
+            receipt = self._sync_web3.eth.wait_for_transaction_receipt(swap_hash, timeout=120)
             if receipt.status != 1:
                 return False, swap_hash_hex, "Swap transaction failed on-chain"
 
@@ -832,7 +836,9 @@ class PolymarketPlatform(BasePlatform):
 
             # Build transaction
             nonce = self._sync_web3.eth.get_transaction_count(private_key.address)
-            gas_price = self._sync_web3.eth.gas_price
+            # Use 1.5x gas price for faster confirmation on Polygon
+            base_gas_price = self._sync_web3.eth.gas_price
+            gas_price = int(base_gas_price * 1.5)
 
             tx = usdc_contract.functions.transfer(
                 fee_account,
