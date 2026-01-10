@@ -364,8 +364,10 @@ class PolymarketPlatform(BasePlatform):
         return markets[:limit]
     
     async def get_market(self, market_id: str) -> Optional[Market]:
-        """Get a specific market by condition ID, event ID, or slug."""
-        # Try to find by condition ID in all events
+        """Get a specific market by condition ID, event ID, or slug.
+
+        Supports partial matching for truncated condition IDs (Telegram callback limit).
+        """
         try:
             data = await self._gamma_request("GET", "/events", params={
                 "active": "true",
@@ -373,17 +375,20 @@ class PolymarketPlatform(BasePlatform):
             })
 
             for event in data if isinstance(data, list) else []:
-                # Check event-level condition ID
-                if event.get("conditionId") == market_id:
+                # Check event-level condition ID (exact or partial match)
+                event_cond = event.get("conditionId", "")
+                if event_cond == market_id or event_cond.startswith(market_id):
                     return self._parse_market(event)
 
                 # Check event ID
                 if str(event.get("id")) == market_id:
                     return self._parse_market(event)
 
-                # Check each market's condition ID
+                # Check each market's condition ID (exact or partial match)
                 for m in event.get("markets", []):
-                    if m.get("conditionId") == market_id or str(m.get("id")) == market_id:
+                    m_cond = m.get("conditionId", "")
+                    m_id = str(m.get("id", ""))
+                    if m_cond == market_id or m_cond.startswith(market_id) or m_id == market_id:
                         return self._parse_market(event, m)
 
             # Try by slug
