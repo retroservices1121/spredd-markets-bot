@@ -13,6 +13,7 @@ from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solana.rpc.async_api import AsyncClient as SolanaClient
 from solana.rpc.commitment import Confirmed
+from solana.rpc.types import TxOpts
 import base64
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -456,7 +457,7 @@ class KalshiPlatform(BasePlatform):
 
             result = await self._solana_client.send_transaction(
                 signed_tx,
-                opts={"skip_preflight": False, "preflight_commitment": Confirmed},
+                opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
             )
             
             tx_hash = str(result.value)
