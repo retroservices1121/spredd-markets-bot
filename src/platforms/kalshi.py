@@ -73,11 +73,13 @@ class KalshiPlatform(BasePlatform):
         self._solana_client = SolanaClient(settings.solana_rpc_url)
 
         fee_enabled = bool(self._fee_account and len(self._fee_account) >= 32)
+        # platformFeeScale = fee_bps // 2 (e.g., 100 bps -> scale 50)
+        fee_scale = self._fee_bps // 2 if fee_enabled else 0
         logger.info(
             "Kalshi platform initialized",
             api_key_set=bool(self._api_key),
             fee_collection=fee_enabled,
-            fee_bps=self._fee_bps if fee_enabled else 0,
+            fee_scale=fee_scale,
         )
     
     async def close(self) -> None:
@@ -460,17 +462,19 @@ class KalshiPlatform(BasePlatform):
             }
 
             # Add platform fee collection if configured with valid Solana address
-            # feeAccount must be a USDC token account (ATA), not a wallet address
-            # platformFeeMode=inputMint collects fees in USDC (the input token)
+            # For prediction market (outcome token) trades, must use platformFeeScale
+            # instead of platformFeeBps. platformFeeMode is ignored for outcome tokens.
+            # Fee formula: k * p * (1 - p) * amount, where k = scale/1000
+            # feeAccount must be a USDC token account (ATA) for the settlement mint
             if self._fee_account and len(self._fee_account) >= 32:
                 params["feeAccount"] = self._fee_account
-                params["platformFeeBps"] = self._fee_bps
-                params["platformFeeMode"] = "inputMint"  # Collect fees in USDC
+                # Use platformFeeScale for prediction markets (not platformFeeBps)
+                # Scale of 50 = 0.050, gives ~1% fee at typical probabilities
+                params["platformFeeScale"] = str(self._fee_bps // 2)  # Convert bps to scale
                 logger.debug(
                     "Fee collection enabled",
                     fee_account=self._fee_account[:8] + "...",
-                    fee_bps=self._fee_bps,
-                    fee_mode="inputMint",
+                    fee_scale=params["platformFeeScale"],
                 )
 
             response = await self._trading_request(
