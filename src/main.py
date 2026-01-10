@@ -149,6 +149,10 @@ async def run_bot() -> None:
     logger.info("Initializing wallet service...")
     await wallet_service.initialize()
 
+    logger.info("Initializing withdrawal service...")
+    from src.services.withdrawal import withdrawal_service
+    withdrawal_service.initialize()
+
     logger.info("Initializing platforms...")
     await platform_registry.initialize()
 

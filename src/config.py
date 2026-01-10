@@ -80,7 +80,23 @@ class Settings(BaseSettings):
         default=100,
         description="Platform fee in basis points (100 = 1%)"
     )
-    
+
+    # ===================
+    # Treasury Configuration (for referral withdrawals)
+    # ===================
+    treasury_private_key: Optional[str] = Field(
+        default=None,
+        description="Private key for treasury wallet (hex format, for referral payouts)"
+    )
+    treasury_rpc_url: str = Field(
+        default="https://polygon-rpc.com",
+        description="RPC URL for treasury transactions (Polygon)"
+    )
+    usdc_contract_polygon: str = Field(
+        default="0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+        description="USDC contract address on Polygon"
+    )
+
     # ===================
     # Polymarket Configuration
     # ===================

@@ -2187,7 +2187,7 @@ async def handle_export_with_pin(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def handle_withdrawal_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
-    """Process withdrawal with user's PIN."""
+    """Process withdrawal with user's PIN - sends USDC to user's wallet."""
     if not update.effective_user or not update.message:
         return
 
@@ -2241,27 +2241,62 @@ async def handle_withdrawal_with_pin(update: Update, context: ContextTypes.DEFAU
                 return
             raise
 
-        # Process the withdrawal in database
-        withdrawal = await process_withdrawal(
-            user_id=user.id,
-            amount_usdc=amount,
-            withdrawal_address=None,  # Will be set when actual transfer happens
-            tx_hash=None,  # Will be set when actual transfer happens
+        # Get user's EVM wallet address
+        from src.db.database import get_wallet
+        evm_wallet = await get_wallet(user.id, ChainFamily.EVM)
+        if not evm_wallet:
+            await status_msg.edit_text(
+                "❌ <b>No Wallet Found</b>\n\nYou need an EVM wallet to receive withdrawals.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        user_address = evm_wallet.public_key
+
+        # Check if withdrawal service is available
+        from src.services.withdrawal import withdrawal_service
+        if not withdrawal_service.is_available:
+            await status_msg.edit_text(
+                "❌ <b>Withdrawals Unavailable</b>\n\nWithdrawal service is not configured. Please contact support.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Update status
+        await status_msg.edit_text(
+            "⏳ Sending USDC to your wallet...",
+            parse_mode=ParseMode.HTML,
         )
 
-        if withdrawal:
+        # Send USDC to user's wallet
+        success, tx_hash, error = await withdrawal_service.send_usdc(
+            to_address=user_address,
+            amount_usdc=amount,
+        )
+
+        if success and tx_hash:
+            # Process the withdrawal in database
+            await process_withdrawal(
+                user_id=user.id,
+                amount_usdc=amount,
+                withdrawal_address=user_address,
+                tx_hash=tx_hash,
+            )
+
             claimable_formatted = format_usdc(amount)
             text = f"""
-✅ <b>Withdrawal Processed!</b>
+✅ <b>Withdrawal Complete!</b>
 
 Amount: <b>{claimable_formatted}</b> USDC
+To: <code>{user_address}</code>
 
-Your referral earnings have been marked for withdrawal.
+<b>Transaction:</b>
+<a href="https://polygonscan.com/tx/{tx_hash}">View on PolygonScan</a>
 
-<i>Note: Actual USDC transfer to your wallet will be processed shortly.</i>
+<i>USDC has been sent to your wallet!</i>
 """
         else:
-            text = "❌ <b>Withdrawal Failed</b>\n\nUnable to process withdrawal. Please try again."
+            text = f"❌ <b>Withdrawal Failed</b>\n\n{escape_html(error or 'Unknown error')}"
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("« Back to Referrals", callback_data="referral:refresh")],
@@ -2271,6 +2306,7 @@ Your referral earnings have been marked for withdrawal.
             text,
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard,
+            disable_web_page_preview=True,
         )
 
     except Exception as e:
