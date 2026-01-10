@@ -182,7 +182,7 @@ async def run_bot() -> None:
             BotCommand("wallet", "View your wallets & balances"),
             BotCommand("positions", "View open positions"),
             BotCommand("orders", "View order history"),
-            BotCommand("referral", "Referral hub & earnings"),
+            BotCommand("referral", "Referral Space & earnings"),
             BotCommand("platform", "Switch trading platform"),
             BotCommand("faq", "Frequently asked questions"),
             BotCommand("help", "Get help & commands"),

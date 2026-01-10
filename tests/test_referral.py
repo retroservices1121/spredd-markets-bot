@@ -88,22 +88,23 @@ class TestReferralCodeGeneration:
     """Test referral code generation."""
 
     def test_generate_referral_code_format(self):
-        """Test referral code format."""
+        """Test referral code format - uses Telegram ID."""
         from src.db.database import generate_referral_code
 
-        code = generate_referral_code()
+        telegram_id = 123456789
+        code = generate_referral_code(telegram_id)
 
-        # Should be 12 characters (nanoid default)
-        assert len(code) == 12
-        # Should be alphanumeric
-        assert code.isalnum()
+        # Should be the Telegram ID as a string
+        assert code == "123456789"
+        # Should be numeric
+        assert code.isdigit()
 
     def test_generate_referral_code_unique(self):
-        """Test that generated codes are unique."""
+        """Test that different Telegram IDs produce different codes."""
         from src.db.database import generate_referral_code
 
-        codes = [generate_referral_code() for _ in range(100)]
-        # All codes should be unique
+        codes = [generate_referral_code(i) for i in range(100)]
+        # All codes should be unique (since Telegram IDs are unique)
         assert len(codes) == len(set(codes))
 
 

@@ -452,18 +452,9 @@ async def get_cached_markets(
 # Referral Operations
 # ===================
 
-def generate_referral_code(username: Optional[str] = None) -> str:
-    """Generate a unique referral code."""
-    import random
-    import string
-    if username:
-        # Use username as base, add random suffix
-        base = username[:12].lower().replace(" ", "")
-        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
-        return f"{base}{suffix}"
-    else:
-        # Generate random code
-        return ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
+def generate_referral_code(telegram_id: int) -> str:
+    """Generate referral code from Telegram ID."""
+    return str(telegram_id)
 
 
 async def get_or_create_referral_code(user_id: str) -> str:
@@ -480,17 +471,8 @@ async def get_or_create_referral_code(user_id: str) -> str:
         if user.referral_code:
             return user.referral_code
 
-        # Generate new referral code
-        code = generate_referral_code(user.username)
-
-        # Ensure uniqueness
-        while True:
-            existing = await session.execute(
-                select(User).where(User.referral_code == code)
-            )
-            if existing.scalar_one_or_none() is None:
-                break
-            code = generate_referral_code()
+        # Use Telegram ID as referral code
+        code = generate_referral_code(user.telegram_id)
 
         user.referral_code = code
         await session.flush()

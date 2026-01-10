@@ -166,7 +166,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 <b>Account</b>
 /balance - Check all balances
-/referral - Referral hub & earn commissions
+/referral - Referral Space & earn commissions
 /export - Export private keys (use carefully!)
 /settings - Trading preferences
 
@@ -1463,7 +1463,7 @@ You earn:
 
 
 async def handle_referral_hub(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the referral hub (refresh)."""
+    """Show the referral space (refresh)."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
