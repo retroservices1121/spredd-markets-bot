@@ -418,8 +418,8 @@ class KalshiPlatform(BasePlatform):
                 "userPublicKey": str(private_key.pubkey()),
             }
 
-            if self._builder_code:
-                params["feeAccount"] = self._builder_code
+            # Note: feeAccount requires a valid Solana address, not a UUID
+            # If you have a fee collection address, add: params["feeAccount"] = "your_solana_address"
 
             response = await self._trading_request(
                 "GET",
