@@ -90,27 +90,31 @@ class PositionStatus(str, Enum):
 
 class User(Base):
     """Telegram user with platform preferences."""
-    
+
     __tablename__ = "users"
-    
+
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     first_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     last_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    
+
     # Platform preference
     active_platform: Mapped[Platform] = mapped_column(
-        SQLEnum(Platform), 
+        SQLEnum(Platform),
         default=Platform.KALSHI
     )
-    
+
     # Trading preferences
     default_slippage_bps: Mapped[int] = mapped_column(Integer, default=100)  # 1%
-    
+
+    # Referral system
+    referral_code: Mapped[Optional[str]] = mapped_column(String(32), unique=True, nullable=True, index=True)
+    referred_by_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), 
+        DateTime(timezone=True),
         server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
@@ -118,11 +122,13 @@ class User(Base):
         server_default=func.now(),
         onupdate=func.now()
     )
-    
+
     # Relationships
     wallets: Mapped[list["Wallet"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     positions: Mapped[list["Position"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     orders: Mapped[list["Order"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    referred_by: Mapped[Optional["User"]] = relationship("User", remote_side=[id], foreign_keys=[referred_by_id])
+    fee_balance: Mapped[Optional["FeeBalance"]] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan")
 
 
 class Wallet(Base):
@@ -334,4 +340,84 @@ class MarketCache(Base):
     __table_args__ = (
         Index("ix_market_cache_platform_market", "platform", "market_id", unique=True),
         Index("ix_market_cache_active", "is_active"),
+    )
+
+
+class FeeBalance(Base):
+    """
+    Tracks referral fee earnings for users.
+    Earnings come from referral commissions on trading fees.
+    """
+
+    __tablename__ = "fee_balances"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+
+    # Claimable balance (in USDC, stored as string for precision)
+    claimable_usdc: Mapped[str] = mapped_column(String(78), default="0")
+
+    # Total earned (lifetime)
+    total_earned_usdc: Mapped[str] = mapped_column(String(78), default="0")
+
+    # Total withdrawn
+    total_withdrawn_usdc: Mapped[str] = mapped_column(String(78), default="0")
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    # Relationships
+    user: Mapped["User"] = relationship(back_populates="fee_balance")
+
+
+class FeeTransaction(Base):
+    """
+    Records individual fee transactions for audit trail.
+    Tracks both fee collection and referral distributions.
+    """
+
+    __tablename__ = "fee_transactions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+
+    # The user who earned/paid the fee
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"))
+
+    # Related order (if applicable)
+    order_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("orders.id"), nullable=True)
+
+    # Transaction type
+    tx_type: Mapped[str] = mapped_column(String(32))  # "fee_collected", "referral_tier1", "referral_tier2", "referral_tier3", "withdrawal"
+
+    # Amount in USDC
+    amount_usdc: Mapped[str] = mapped_column(String(78))
+
+    # For referral earnings, track the source user who generated the fee
+    source_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+
+    # Tier level for referral transactions (1, 2, or 3)
+    tier: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Withdrawal details
+    withdrawal_tx_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    withdrawal_address: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_fee_tx_user", "user_id"),
+        Index("ix_fee_tx_type", "tx_type"),
+        Index("ix_fee_tx_order", "order_id"),
     )

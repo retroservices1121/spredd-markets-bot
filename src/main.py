@@ -36,6 +36,7 @@ from src.handlers.commands import (
     search_command,
     positions_command,
     orders_command,
+    referral_command,
     callback_handler,
     message_handler,
 )
@@ -100,7 +101,8 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("positions", positions_command))
     application.add_handler(CommandHandler("orders", orders_command))
-    
+    application.add_handler(CommandHandler("referral", referral_command))
+
     # Callback query handler for inline buttons
     application.add_handler(CallbackQueryHandler(callback_handler))
     
@@ -180,6 +182,7 @@ async def run_bot() -> None:
             BotCommand("wallet", "View your wallets & balances"),
             BotCommand("positions", "View open positions"),
             BotCommand("orders", "View order history"),
+            BotCommand("referral", "Referral hub & earnings"),
             BotCommand("platform", "Switch trading platform"),
             BotCommand("faq", "Frequently asked questions"),
             BotCommand("help", "Get help & commands"),

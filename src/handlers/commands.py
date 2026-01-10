@@ -17,6 +17,12 @@ from src.db.database import (
     update_user_platform,
     get_user_positions,
     get_user_orders,
+    get_or_create_referral_code,
+    get_user_by_referral_code,
+    set_user_referrer,
+    get_referral_stats,
+    get_fee_balance,
+    process_withdrawal,
 )
 from src.db.models import Platform, ChainFamily, PositionStatus
 from src.platforms import (
@@ -27,6 +33,7 @@ from src.platforms import (
     PLATFORM_INFO,
 )
 from src.services.wallet import wallet_service, WalletInfo
+from src.services.fee import format_usdc, can_withdraw, MIN_WITHDRAWAL_USDC, process_trade_fee, calculate_fee
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -88,24 +95,48 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Handle /start command - welcome and platform selection."""
     if not update.effective_user or not update.message:
         return
-    
+
+    # Check for referral code in start parameter
+    referral_code = None
+    if context.args and len(context.args) > 0:
+        arg = context.args[0]
+        if arg.startswith("ref_"):
+            referral_code = arg[4:]  # Remove "ref_" prefix
+
     user = await get_or_create_user(
         telegram_id=update.effective_user.id,
         username=update.effective_user.username,
         first_name=update.effective_user.first_name,
         last_name=update.effective_user.last_name,
     )
-    
+
+    # Process referral code if provided
+    referral_message = ""
+    if referral_code:
+        referrer = await get_user_by_referral_code(referral_code)
+        if referrer and referrer.id != user.id:
+            # Set the referrer
+            success = await set_user_referrer(user.id, referrer.id)
+            if success:
+                referrer_name = referrer.username or referrer.first_name or "Someone"
+                referral_message = f"\n🎁 Referred by @{referrer_name}!\n"
+                logger.info(
+                    "Referral registered",
+                    user_id=user.id,
+                    referrer_id=referrer.id,
+                    referral_code=referral_code,
+                )
+
     welcome_text = f"""
 🎯 <b>Welcome to Spredd Markets!</b>
-
+{referral_message}
 Trade prediction markets across multiple platforms:
 
 {platform_registry.format_platform_list()}
 
 <b>Choose your platform to get started:</b>
 """
-    
+
     await update.message.reply_text(
         welcome_text,
         parse_mode=ParseMode.HTML,
@@ -135,6 +166,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 <b>Account</b>
 /balance - Check all balances
+/referral - Referral hub & earn commissions
 /export - Export private keys (use carefully!)
 /settings - Trading preferences
 
@@ -529,11 +561,83 @@ async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if order.tx_hash:
             text += f"   <a href='{get_platform(user.active_platform).get_explorer_url(order.tx_hash)}'>View TX</a>\n"
         text += "\n"
-    
+
     await update.message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
+    )
+
+
+async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /referral command - show referral hub."""
+    if not update.effective_user or not update.message:
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        return
+
+    # Get or create referral code
+    referral_code = await get_or_create_referral_code(user.id)
+
+    # Get referral stats
+    stats = await get_referral_stats(user.id)
+
+    # Get fee balance
+    fee_balance = await get_fee_balance(user.id)
+
+    # Format amounts
+    claimable = format_usdc(fee_balance.claimable_usdc) if fee_balance else "$0.00"
+    total_earned = format_usdc(fee_balance.total_earned_usdc) if fee_balance else "$0.00"
+
+    # Build invite link
+    bot_username = (await context.bot.get_me()).username
+    invite_link = f"https://t.me/{bot_username}?start=ref_{referral_code}"
+
+    # Calculate total reach
+    total_reach = stats["tier1"] + stats["tier2"] + stats["tier3"]
+
+    text = f"""
+🫂 <b>Referral Hub</b>
+Earn commissions when your referrals trade!
+
+🪪 <b>Your Code:</b> <code>{referral_code}</code>
+🔗 <b>Invite Link:</b>
+<code>{invite_link}</code>
+
+━━━━━━━━━━━━━━━━
+🛰 <b>Network Metrics</b>
+├ Tier 1 (Direct): <b>{stats["tier1"]}</b> users (25%)
+├ Tier 2: <b>{stats["tier2"]}</b> users (5%)
+├ Tier 3: <b>{stats["tier3"]}</b> users (3%)
+└ Total Reach: <b>{total_reach}</b> users
+
+━━━━━━━━━━━━━━━━
+💰 <b>Earnings Dashboard</b>
+├ Claimable: <b>{claimable}</b> USDC
+└ Total Earned: <b>{total_earned}</b> USDC
+
+⚠️ <i>Minimum withdrawal: ${MIN_WITHDRAWAL_USDC} USDC</i>
+"""
+
+    # Build keyboard
+    buttons = [
+        [InlineKeyboardButton("📋 Copy Invite Link", callback_data="referral:copy")],
+    ]
+
+    # Add withdraw button if balance meets minimum
+    if fee_balance and can_withdraw(fee_balance.claimable_usdc):
+        buttons.append([InlineKeyboardButton("💸 Withdraw Earnings", callback_data="referral:withdraw")])
+
+    buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="referral:refresh")])
+    buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -573,7 +677,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await handle_wallet_refresh(query, update.effective_user.id)
             elif parts[1] == "export":
                 await handle_wallet_export(query, update.effective_user.id)
-        
+
+        elif action == "export":
+            await handle_export_key(query, parts[1], update.effective_user.id, context)
+
         elif action == "markets":
             if parts[1] == "refresh":
                 await handle_markets_refresh(query, update.effective_user.id)
@@ -586,7 +693,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         elif action == "faq":
             await handle_faq_topic(query, parts[1])
-        
+
+        elif action == "referral":
+            await handle_referral_action(query, parts[1], update.effective_user.id, context)
+
     except Exception as e:
         logger.error("Callback handler error", error=str(e), data=data)
         await query.edit_message_text(
@@ -851,6 +961,85 @@ Keys will be auto-deleted after 60 seconds.
     )
 
 
+async def handle_export_key(query, chain_type: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle exporting a private key - prompts for PIN."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Determine chain family
+    if chain_type == "solana":
+        chain_family = ChainFamily.SOLANA
+        chain_name = "Solana"
+    elif chain_type == "evm":
+        chain_family = ChainFamily.EVM
+        chain_name = "EVM"
+    else:
+        await query.edit_message_text("Invalid chain type.")
+        return
+
+    # Check if wallet exists and is PIN protected
+    is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
+
+    if is_pin_protected:
+        # Store export request and ask for PIN
+        context.user_data["pending_export"] = {
+            "chain_family": chain_type,
+        }
+
+        text = f"""
+🔑 <b>Export {chain_name} Private Key</b>
+
+⚠️ <b>Warning:</b> Your private key gives full access to your funds!
+
+🔐 <b>Enter your PIN to export:</b>
+<i>(Your PIN is never stored)</i>
+
+Type /cancel to cancel.
+"""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="wallet:export")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+    else:
+        # No PIN protection - export directly (shouldn't normally happen)
+        try:
+            private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family, "")
+            if private_key:
+                text = f"""
+🔑 <b>{chain_name} Private Key</b>
+
+<code>{private_key}</code>
+
+⚠️ <b>WARNING:</b>
+• Anyone with this key can access your funds
+• Never share this with anyone
+• Store it securely offline
+
+<i>This message should be deleted after copying.</i>
+"""
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🗑 Delete", callback_data="wallet:refresh")],
+                ])
+
+                await query.edit_message_text(
+                    text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+            else:
+                await query.edit_message_text("❌ Wallet not found.")
+        except Exception as e:
+            logger.error("Export key failed", error=str(e))
+            await query.edit_message_text(f"❌ Export failed: {escape_html(str(e))}")
+
+
 async def handle_markets_refresh(query, telegram_id: int) -> None:
     """Refresh markets list."""
     user = await get_user_by_telegram_id(telegram_id)
@@ -1002,8 +1191,14 @@ Without a PIN, the bot operator could theoretically access your funds. With a PI
             "text": """<b>Fee Structure:</b>
 
 <b>Spredd Bot Fees:</b>
-• No fees for using the bot
+• <b>1% transaction fee</b> on all trades
 • No deposit/withdrawal fees
+• Fee supports referral program rewards
+
+<b>Referral Rewards (from our 1% fee):</b>
+• Tier 1 referrers earn 25% of fee
+• Tier 2 referrers earn 5% of fee
+• Tier 3 referrers earn 3% of fee
 
 <b>Platform Fees (charged by markets):</b>
 • <b>Kalshi:</b> ~2% on winnings
@@ -1098,6 +1293,172 @@ Official support: @spreddterminal""",
     )
 
 
+async def handle_referral_action(query, action: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle referral-related callback actions."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    if action == "refresh":
+        await handle_referral_hub(query, telegram_id, context)
+
+    elif action == "copy":
+        # Show the invite link prominently for easy copying
+        referral_code = await get_or_create_referral_code(user.id)
+        bot_username = (await context.bot.get_me()).username
+        invite_link = f"https://t.me/{bot_username}?start=ref_{referral_code}"
+
+        text = f"""
+📋 <b>Your Referral Link</b>
+
+Share this link with friends:
+
+<code>{invite_link}</code>
+
+<i>Tap to copy, then share!</i>
+
+You earn:
+• 25% of fees from direct referrals (Tier 1)
+• 5% of fees from their referrals (Tier 2)
+• 3% of fees from Tier 2's referrals (Tier 3)
+"""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("« Back to Referrals", callback_data="referral:refresh")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    elif action == "withdraw":
+        await handle_referral_withdraw(query, telegram_id, context)
+
+
+async def handle_referral_hub(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the referral hub (refresh)."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Get or create referral code
+    referral_code = await get_or_create_referral_code(user.id)
+
+    # Get referral stats
+    stats = await get_referral_stats(user.id)
+
+    # Get fee balance
+    fee_balance = await get_fee_balance(user.id)
+
+    # Format amounts
+    claimable = format_usdc(fee_balance.claimable_usdc) if fee_balance else "$0.00"
+    total_earned = format_usdc(fee_balance.total_earned_usdc) if fee_balance else "$0.00"
+
+    # Build invite link
+    bot_username = (await context.bot.get_me()).username
+    invite_link = f"https://t.me/{bot_username}?start=ref_{referral_code}"
+
+    # Calculate total reach
+    total_reach = stats["tier1"] + stats["tier2"] + stats["tier3"]
+
+    text = f"""
+🫂 <b>Referral Hub</b>
+Earn commissions when your referrals trade!
+
+🪪 <b>Your Code:</b> <code>{referral_code}</code>
+🔗 <b>Invite Link:</b>
+<code>{invite_link}</code>
+
+━━━━━━━━━━━━━━━━
+🛰 <b>Network Metrics</b>
+├ Tier 1 (Direct): <b>{stats["tier1"]}</b> users (25%)
+├ Tier 2: <b>{stats["tier2"]}</b> users (5%)
+├ Tier 3: <b>{stats["tier3"]}</b> users (3%)
+└ Total Reach: <b>{total_reach}</b> users
+
+━━━━━━━━━━━━━━━━
+💰 <b>Earnings Dashboard</b>
+├ Claimable: <b>{claimable}</b> USDC
+└ Total Earned: <b>{total_earned}</b> USDC
+
+⚠️ <i>Minimum withdrawal: ${MIN_WITHDRAWAL_USDC} USDC</i>
+"""
+
+    # Build keyboard
+    buttons = [
+        [InlineKeyboardButton("📋 Copy Invite Link", callback_data="referral:copy")],
+    ]
+
+    # Add withdraw button if balance meets minimum
+    if fee_balance and can_withdraw(fee_balance.claimable_usdc):
+        buttons.append([InlineKeyboardButton("💸 Withdraw Earnings", callback_data="referral:withdraw")])
+
+    buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="referral:refresh")])
+    buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_referral_withdraw(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle withdrawal of referral earnings."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Get fee balance
+    fee_balance = await get_fee_balance(user.id)
+    if not fee_balance or not can_withdraw(fee_balance.claimable_usdc):
+        await query.edit_message_text(
+            f"❌ <b>Cannot Withdraw</b>\n\n"
+            f"Minimum withdrawal is ${MIN_WITHDRAWAL_USDC} USDC.\n"
+            f"Your balance: {format_usdc(fee_balance.claimable_usdc) if fee_balance else '$0.00'}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back to Referrals", callback_data="referral:refresh")],
+            ]),
+        )
+        return
+
+    # Show withdrawal confirmation
+    claimable = format_usdc(fee_balance.claimable_usdc)
+
+    # Store pending withdrawal state
+    context.user_data["pending_withdrawal"] = {
+        "amount": fee_balance.claimable_usdc,
+    }
+
+    text = f"""
+💸 <b>Withdraw Referral Earnings</b>
+
+Amount: <b>{claimable}</b> USDC
+
+Withdrawals are sent to your EVM wallet (Polygon USDC).
+
+<b>Enter your PIN to confirm withdrawal:</b>
+<i>(Your PIN is never stored)</i>
+
+Type /cancel to cancel.
+"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="referral:refresh")],
+    ])
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
 # ===================
 # Buy Order Processing
 # ===================
@@ -1161,11 +1522,23 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
         result = await platform.execute_trade(quote, private_key)
 
         if result.success:
+            # Process trading fee and distribute to referrers
+            order_id = result.tx_hash or f"order_{telegram_id}_{market_id}"
+            fee_result = await process_trade_fee(
+                trader_telegram_id=telegram_id,
+                order_id=order_id,
+                trade_amount_usdc=str(amount),
+            )
+
+            fee_amount = fee_result.get("fee", "0")
+            fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
+            fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
+
             text = f"""
 ✅ <b>Order Executed!</b>
 
 Bought {outcome.upper()} position
-Amount: {amount} {platform_info['collateral']}
+Amount: {amount} {platform_info['collateral']}{fee_line}
 Received: ~{quote.expected_output:.2f} tokens
 
 <a href="{result.explorer_url}">View Transaction</a>
@@ -1269,6 +1642,10 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         expected_tokens = quote.expected_output
         price = quote.price_per_token
 
+        # Calculate fee for display
+        fee = calculate_fee(str(amount))
+        fee_display = format_usdc(fee)
+
         # If PIN protected, ask for PIN before confirming
         if is_pin_protected:
             # Store quote info for PIN confirmation
@@ -1282,6 +1659,7 @@ Market: {escape_html(market.title[:50])}...
 Side: BUY {outcome.upper()}
 
 💰 <b>You Pay:</b> {amount} {platform_info['collateral']}
+💸 <b>Fee (1%):</b> {fee_display}
 📦 <b>You Receive:</b> ~{expected_tokens:.2f} {outcome.upper()} tokens
 📊 <b>Price:</b> {format_probability(price)} per token
 
@@ -1302,6 +1680,7 @@ Market: {escape_html(market.title[:50])}...
 Side: BUY {outcome.upper()}
 
 💰 <b>You Pay:</b> {amount} {platform_info['collateral']}
+💸 <b>Fee (1%):</b> {fee_display}
 📦 <b>You Receive:</b> ~{expected_tokens:.2f} {outcome.upper()} tokens
 📊 <b>Price:</b> {format_probability(price)} per token
 
@@ -1416,11 +1795,23 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
         result = await platform.execute_trade(quote, private_key)
 
         if result.success:
+            # Process trading fee and distribute to referrers
+            order_id = result.tx_hash or f"order_{update.effective_user.id}_{market_id}"
+            fee_result = await process_trade_fee(
+                trader_telegram_id=update.effective_user.id,
+                order_id=order_id,
+                trade_amount_usdc=str(amount),
+            )
+
+            fee_amount = fee_result.get("fee", "0")
+            fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
+            fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
+
             text = f"""
 ✅ <b>Order Executed!</b>
 
 Bought {outcome.upper()} position
-Amount: {amount} {platform_info['collateral']}
+Amount: {amount} {platform_info['collateral']}{fee_line}
 Received: ~{quote.expected_output:.2f} tokens
 
 <a href="{result.explorer_url}">View Transaction</a>
@@ -1574,6 +1965,197 @@ Your wallets are protected with your PIN.
         )
 
 
+async def handle_export_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
+    """Export private key with user's PIN."""
+    if not update.effective_user or not update.message:
+        return
+
+    pending = context.user_data.get("pending_export")
+    if not pending:
+        return
+
+    # Validate PIN format
+    if not pin.isdigit() or len(pin) < 4:
+        await update.message.reply_text(
+            "❌ Invalid PIN format. Please enter your 4-6 digit PIN.\n\n"
+            "Type /cancel to cancel.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        del context.user_data["pending_export"]
+        return
+
+    chain_type = pending["chain_family"]
+
+    # Determine chain family
+    if chain_type == "solana":
+        chain_family = ChainFamily.SOLANA
+        chain_name = "Solana"
+    else:
+        chain_family = ChainFamily.EVM
+        chain_name = "EVM"
+
+    # Clear pending state
+    del context.user_data["pending_export"]
+
+    # Delete the PIN message for security
+    try:
+        await update.message.delete()
+    except:
+        pass
+
+    # Send processing message
+    status_msg = await update.effective_chat.send_message(
+        "🔐 Decrypting private key...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Get private key with PIN
+        try:
+            private_key = await wallet_service.get_private_key(user.id, update.effective_user.id, chain_family, pin)
+        except Exception as decrypt_error:
+            if "Decryption failed" in str(decrypt_error):
+                await status_msg.edit_text(
+                    "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            raise
+
+        if private_key:
+            text = f"""
+🔑 <b>{chain_name} Private Key</b>
+
+<code>{private_key}</code>
+
+⚠️ <b>WARNING:</b>
+• Anyone with this key can access your funds
+• Never share this with anyone
+• Store it securely offline
+• Delete this message after copying!
+
+<i>Click Delete below to remove this message.</i>
+"""
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑 Delete This Message", callback_data="wallet:refresh")],
+            ])
+
+            await status_msg.edit_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        else:
+            await status_msg.edit_text("❌ Wallet not found.")
+
+    except Exception as e:
+        logger.error("Export with PIN failed", error=str(e))
+        await status_msg.edit_text(
+            f"❌ Export failed: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_withdrawal_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
+    """Process withdrawal with user's PIN."""
+    if not update.effective_user or not update.message:
+        return
+
+    pending = context.user_data.get("pending_withdrawal")
+    if not pending:
+        return
+
+    # Validate PIN format
+    if not pin.isdigit() or len(pin) < 4:
+        await update.message.reply_text(
+            "❌ Invalid PIN format. Please enter your 4-6 digit PIN.\n\n"
+            "Type /cancel to cancel.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        del context.user_data["pending_withdrawal"]
+        return
+
+    amount = pending["amount"]
+
+    # Clear pending state
+    del context.user_data["pending_withdrawal"]
+
+    # Delete the PIN message for security
+    try:
+        await update.message.delete()
+    except:
+        pass
+
+    # Send processing message
+    status_msg = await update.effective_chat.send_message(
+        "⏳ Processing withdrawal...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Verify PIN by trying to get private key
+        chain_family = ChainFamily.EVM
+        try:
+            private_key = await wallet_service.get_private_key(user.id, update.effective_user.id, chain_family, pin)
+        except Exception as decrypt_error:
+            if "Decryption failed" in str(decrypt_error):
+                await status_msg.edit_text(
+                    "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            raise
+
+        # Process the withdrawal in database
+        withdrawal = await process_withdrawal(
+            user_id=user.id,
+            amount_usdc=amount,
+            withdrawal_address=None,  # Will be set when actual transfer happens
+            tx_hash=None,  # Will be set when actual transfer happens
+        )
+
+        if withdrawal:
+            claimable_formatted = format_usdc(amount)
+            text = f"""
+✅ <b>Withdrawal Processed!</b>
+
+Amount: <b>{claimable_formatted}</b> USDC
+
+Your referral earnings have been marked for withdrawal.
+
+<i>Note: Actual USDC transfer to your wallet will be processed shortly.</i>
+"""
+        else:
+            text = "❌ <b>Withdrawal Failed</b>\n\nUnable to process withdrawal. Please try again."
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("« Back to Referrals", callback_data="referral:refresh")],
+        ])
+
+        await status_msg.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Withdrawal failed", error=str(e))
+        await status_msg.edit_text(
+            f"❌ Withdrawal failed: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 # ===================
 # Message Handler
 # ===================
@@ -1593,6 +2175,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif "pending_wallet_pin" in context.user_data:
             del context.user_data["pending_wallet_pin"]
             await update.message.reply_text("Wallet creation cancelled.")
+        elif "pending_withdrawal" in context.user_data:
+            del context.user_data["pending_withdrawal"]
+            await update.message.reply_text("Withdrawal cancelled.")
+        elif "pending_export" in context.user_data:
+            del context.user_data["pending_export"]
+            await update.message.reply_text("Export cancelled.")
         else:
             await update.message.reply_text("Nothing to cancel.")
         return
@@ -1600,6 +2188,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Check if user is setting up a new wallet with PIN
     if "pending_wallet_pin" in context.user_data and not text.startswith("/"):
         await handle_wallet_pin_setup(update, context, text)
+        return
+
+    # Check if user has a pending export
+    if "pending_export" in context.user_data and not text.startswith("/"):
+        await handle_export_with_pin(update, context, text)
+        return
+
+    # Check if user has a pending withdrawal
+    if "pending_withdrawal" in context.user_data and not text.startswith("/"):
+        await handle_withdrawal_with_pin(update, context, text)
         return
 
     # Check if user has a pending buy order

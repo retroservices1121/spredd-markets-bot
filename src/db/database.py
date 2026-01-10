@@ -22,6 +22,8 @@ from src.db.models import (
     Position,
     Order,
     MarketCache,
+    FeeBalance,
+    FeeTransaction,
     ChainFamily,
     Platform,
     Chain,
@@ -29,6 +31,7 @@ from src.db.models import (
     PositionStatus,
 )
 from src.utils.logging import get_logger
+from decimal import Decimal
 
 logger = get_logger(__name__)
 
@@ -419,11 +422,311 @@ async def get_cached_markets(
     """Get cached markets for a platform."""
     async with get_session() as session:
         query = select(MarketCache).where(MarketCache.platform == platform)
-        
+
         if active_only:
             query = query.where(MarketCache.is_active == True)
-        
+
         query = query.order_by(MarketCache.updated_at.desc()).limit(limit)
-        
+
         result = await session.execute(query)
         return list(result.scalars().all())
+
+
+# ===================
+# Referral Operations
+# ===================
+
+def generate_referral_code(username: Optional[str] = None) -> str:
+    """Generate a unique referral code."""
+    import random
+    import string
+    if username:
+        # Use username as base, add random suffix
+        base = username[:12].lower().replace(" ", "")
+        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+        return f"{base}{suffix}"
+    else:
+        # Generate random code
+        return ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
+
+
+async def get_or_create_referral_code(user_id: str) -> str:
+    """Get user's referral code or create one if not exists."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(User).where(User.id == user_id)
+        )
+        user = result.scalar_one_or_none()
+
+        if not user:
+            raise ValueError(f"User {user_id} not found")
+
+        if user.referral_code:
+            return user.referral_code
+
+        # Generate new referral code
+        code = generate_referral_code(user.username)
+
+        # Ensure uniqueness
+        while True:
+            existing = await session.execute(
+                select(User).where(User.referral_code == code)
+            )
+            if existing.scalar_one_or_none() is None:
+                break
+            code = generate_referral_code()
+
+        user.referral_code = code
+        await session.flush()
+
+        logger.info("Generated referral code", user_id=user_id, code=code)
+        return code
+
+
+async def get_user_by_referral_code(referral_code: str) -> Optional[User]:
+    """Get user by their referral code."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(User).where(User.referral_code == referral_code)
+        )
+        return result.scalar_one_or_none()
+
+
+async def set_user_referrer(user_id: str, referrer_id: str) -> bool:
+    """Set a user's referrer (only if not already set)."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(User).where(User.id == user_id)
+        )
+        user = result.scalar_one_or_none()
+
+        if not user:
+            return False
+
+        # Don't overwrite existing referrer
+        if user.referred_by_id:
+            return False
+
+        # Don't allow self-referral
+        if user_id == referrer_id:
+            return False
+
+        user.referred_by_id = referrer_id
+        await session.flush()
+
+        logger.info("Set user referrer", user_id=user_id, referrer_id=referrer_id)
+        return True
+
+
+async def get_referral_chain(user_id: str) -> list[User]:
+    """
+    Get the referral chain for a user (up to 3 tiers).
+    Returns [tier1_referrer, tier2_referrer, tier3_referrer] or fewer if chain is shorter.
+    """
+    chain = []
+    current_id = user_id
+
+    async with get_session() as session:
+        for _ in range(3):
+            result = await session.execute(
+                select(User).where(User.id == current_id)
+            )
+            user = result.scalar_one_or_none()
+
+            if not user or not user.referred_by_id:
+                break
+
+            # Get the referrer
+            referrer_result = await session.execute(
+                select(User).where(User.id == user.referred_by_id)
+            )
+            referrer = referrer_result.scalar_one_or_none()
+
+            if referrer:
+                chain.append(referrer)
+                current_id = referrer.id
+            else:
+                break
+
+    return chain
+
+
+async def get_referral_stats(user_id: str) -> dict:
+    """Get referral statistics for a user."""
+    async with get_session() as session:
+        # Count tier 1 (direct referrals)
+        tier1_result = await session.execute(
+            select(User).where(User.referred_by_id == user_id)
+        )
+        tier1_users = list(tier1_result.scalars().all())
+        tier1_count = len(tier1_users)
+
+        # Count tier 2
+        tier2_count = 0
+        tier2_user_ids = []
+        for t1_user in tier1_users:
+            t2_result = await session.execute(
+                select(User).where(User.referred_by_id == t1_user.id)
+            )
+            t2_users = list(t2_result.scalars().all())
+            tier2_count += len(t2_users)
+            tier2_user_ids.extend([u.id for u in t2_users])
+
+        # Count tier 3
+        tier3_count = 0
+        for t2_id in tier2_user_ids:
+            t3_result = await session.execute(
+                select(User).where(User.referred_by_id == t2_id)
+            )
+            tier3_count += len(list(t3_result.scalars().all()))
+
+        return {
+            "tier1_count": tier1_count,
+            "tier2_count": tier2_count,
+            "tier3_count": tier3_count,
+            "total_count": tier1_count + tier2_count + tier3_count,
+        }
+
+
+# ===================
+# Fee Balance Operations
+# ===================
+
+async def get_or_create_fee_balance(user_id: str) -> FeeBalance:
+    """Get or create fee balance for a user."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(FeeBalance).where(FeeBalance.user_id == user_id)
+        )
+        balance = result.scalar_one_or_none()
+
+        if balance:
+            return balance
+
+        balance = FeeBalance(
+            id=generate_id(),
+            user_id=user_id,
+            claimable_usdc="0",
+            total_earned_usdc="0",
+            total_withdrawn_usdc="0",
+        )
+        session.add(balance)
+        await session.flush()
+
+        return balance
+
+
+async def add_referral_earnings(
+    user_id: str,
+    amount_usdc: str,
+    source_user_id: str,
+    order_id: str,
+    tier: int,
+) -> None:
+    """Add referral earnings to a user's balance."""
+    async with get_session() as session:
+        # Get or create fee balance
+        result = await session.execute(
+            select(FeeBalance).where(FeeBalance.user_id == user_id)
+        )
+        balance = result.scalar_one_or_none()
+
+        if not balance:
+            balance = FeeBalance(
+                id=generate_id(),
+                user_id=user_id,
+                claimable_usdc="0",
+                total_earned_usdc="0",
+                total_withdrawn_usdc="0",
+            )
+            session.add(balance)
+
+        # Update balances
+        current_claimable = Decimal(balance.claimable_usdc)
+        current_total = Decimal(balance.total_earned_usdc)
+        add_amount = Decimal(amount_usdc)
+
+        balance.claimable_usdc = str(current_claimable + add_amount)
+        balance.total_earned_usdc = str(current_total + add_amount)
+
+        # Create transaction record
+        tx_type = f"referral_tier{tier}"
+        tx = FeeTransaction(
+            id=generate_id(),
+            user_id=user_id,
+            order_id=order_id,
+            tx_type=tx_type,
+            amount_usdc=amount_usdc,
+            source_user_id=source_user_id,
+            tier=tier,
+        )
+        session.add(tx)
+
+        await session.flush()
+
+        logger.info(
+            "Added referral earnings",
+            user_id=user_id,
+            amount=amount_usdc,
+            tier=tier,
+            source_user_id=source_user_id,
+        )
+
+
+async def process_withdrawal(
+    user_id: str,
+    amount_usdc: str,
+    tx_hash: str,
+    withdrawal_address: str,
+) -> bool:
+    """Process a withdrawal from user's fee balance."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(FeeBalance).where(FeeBalance.user_id == user_id)
+        )
+        balance = result.scalar_one_or_none()
+
+        if not balance:
+            return False
+
+        current_claimable = Decimal(balance.claimable_usdc)
+        withdraw_amount = Decimal(amount_usdc)
+
+        if withdraw_amount > current_claimable:
+            return False
+
+        # Update balance
+        balance.claimable_usdc = str(current_claimable - withdraw_amount)
+        balance.total_withdrawn_usdc = str(
+            Decimal(balance.total_withdrawn_usdc) + withdraw_amount
+        )
+
+        # Create transaction record
+        tx = FeeTransaction(
+            id=generate_id(),
+            user_id=user_id,
+            tx_type="withdrawal",
+            amount_usdc=amount_usdc,
+            withdrawal_tx_hash=tx_hash,
+            withdrawal_address=withdrawal_address,
+        )
+        session.add(tx)
+
+        await session.flush()
+
+        logger.info(
+            "Processed withdrawal",
+            user_id=user_id,
+            amount=amount_usdc,
+            tx_hash=tx_hash,
+        )
+        return True
+
+
+async def get_fee_balance(user_id: str) -> Optional[FeeBalance]:
+    """Get fee balance for a user."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(FeeBalance).where(FeeBalance.user_id == user_id)
+        )
+        return result.scalar_one_or_none()
