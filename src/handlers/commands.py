@@ -22,6 +22,7 @@ from src.db.database import (
     set_user_referrer,
     get_referral_stats,
     get_fee_balance,
+    get_all_fee_balances,
     process_withdrawal,
 )
 from src.db.models import Platform, ChainFamily, PositionStatus
@@ -593,12 +594,29 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Get referral stats
     stats = await get_referral_stats(user.id)
 
-    # Get fee balance
-    fee_balance = await get_fee_balance(user.id)
+    # Get fee balances for all chains
+    fee_balances = await get_all_fee_balances(user.id)
+
+    # Organize by chain
+    solana_balance = None
+    evm_balance = None
+    for balance in fee_balances:
+        if balance.chain_family == ChainFamily.SOLANA:
+            solana_balance = balance
+        elif balance.chain_family == ChainFamily.EVM:
+            evm_balance = balance
 
     # Format amounts
-    claimable = format_usdc(fee_balance.claimable_usdc) if fee_balance else "$0.00"
-    total_earned = format_usdc(fee_balance.total_earned_usdc) if fee_balance else "$0.00"
+    solana_claimable = format_usdc(solana_balance.claimable_usdc) if solana_balance else "$0.00"
+    solana_earned = format_usdc(solana_balance.total_earned_usdc) if solana_balance else "$0.00"
+    evm_claimable = format_usdc(evm_balance.claimable_usdc) if evm_balance else "$0.00"
+    evm_earned = format_usdc(evm_balance.total_earned_usdc) if evm_balance else "$0.00"
+
+    # Calculate totals
+    total_claimable = Decimal(solana_balance.claimable_usdc if solana_balance else "0") + \
+                      Decimal(evm_balance.claimable_usdc if evm_balance else "0")
+    total_earned = Decimal(solana_balance.total_earned_usdc if solana_balance else "0") + \
+                   Decimal(evm_balance.total_earned_usdc if evm_balance else "0")
 
     # Build invite link
     bot_username = (await context.bot.get_me()).username
@@ -624,10 +642,18 @@ Earn commissions when your referrals trade!
 
 ━━━━━━━━━━━━━━━━
 💰 <b>Earnings Dashboard</b>
-├ Claimable: <b>{claimable}</b> USDC
-└ Total Earned: <b>{total_earned}</b> USDC
 
-⚠️ <i>Minimum withdrawal: ${MIN_WITHDRAWAL_USDC} USDC</i>
+<b>🟣 Solana (Kalshi)</b>
+├ Claimable: <b>{solana_claimable}</b> USDC
+└ Total Earned: <b>{solana_earned}</b> USDC
+
+<b>🔷 EVM (Polymarket/Opinion)</b>
+├ Claimable: <b>{evm_claimable}</b> USDC
+└ Total Earned: <b>{evm_earned}</b> USDC
+
+📊 <b>Combined:</b> {format_usdc(str(total_claimable))} claimable / {format_usdc(str(total_earned))} earned
+
+⚠️ <i>Minimum withdrawal: ${MIN_WITHDRAWAL_USDC} USDC per chain</i>
 """
 
     # Build keyboard
@@ -635,9 +661,18 @@ Earn commissions when your referrals trade!
         [InlineKeyboardButton("📋 Copy Invite Link", callback_data="referral:copy")],
     ]
 
-    # Add withdraw button if balance meets minimum
-    if fee_balance and can_withdraw(fee_balance.claimable_usdc):
-        buttons.append([InlineKeyboardButton("💸 Withdraw Earnings", callback_data="referral:withdraw")])
+    # Add withdraw buttons for each chain that meets minimum
+    withdraw_buttons = []
+    if solana_balance and can_withdraw(solana_balance.claimable_usdc):
+        withdraw_buttons.append(
+            InlineKeyboardButton("💸 Withdraw Solana", callback_data="referral:withdraw:solana")
+        )
+    if evm_balance and can_withdraw(evm_balance.claimable_usdc):
+        withdraw_buttons.append(
+            InlineKeyboardButton("💸 Withdraw EVM", callback_data="referral:withdraw:evm")
+        )
+    if withdraw_buttons:
+        buttons.append(withdraw_buttons)
 
     buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="referral:refresh")])
     buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
@@ -707,7 +742,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await handle_faq_topic(query, parts[1])
 
         elif action == "referral":
-            await handle_referral_action(query, parts[1], update.effective_user.id, context)
+            # parts[1] is the action, parts[2] might be chain_family for withdraw
+            chain_param = parts[2] if len(parts) > 2 else None
+            await handle_referral_action(query, parts[1], update.effective_user.id, context, chain_param)
 
     except Exception as e:
         logger.error("Callback handler error", error=str(e), data=data)
@@ -1418,7 +1455,7 @@ Official support: @spreddterminal""",
     )
 
 
-async def handle_referral_action(query, action: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_referral_action(query, action: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE, chain_param: str = None) -> None:
     """Handle referral-related callback actions."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
@@ -1459,7 +1496,9 @@ You earn:
         )
 
     elif action == "withdraw":
-        await handle_referral_withdraw(query, telegram_id, context)
+        # chain_param will be "solana" or "evm"
+        chain_family = ChainFamily.SOLANA if chain_param == "solana" else ChainFamily.EVM
+        await handle_referral_withdraw(query, telegram_id, context, chain_family)
 
 
 async def handle_referral_hub(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1475,12 +1514,29 @@ async def handle_referral_hub(query, telegram_id: int, context: ContextTypes.DEF
     # Get referral stats
     stats = await get_referral_stats(user.id)
 
-    # Get fee balance
-    fee_balance = await get_fee_balance(user.id)
+    # Get fee balances for all chains
+    fee_balances = await get_all_fee_balances(user.id)
+
+    # Organize by chain
+    solana_balance = None
+    evm_balance = None
+    for balance in fee_balances:
+        if balance.chain_family == ChainFamily.SOLANA:
+            solana_balance = balance
+        elif balance.chain_family == ChainFamily.EVM:
+            evm_balance = balance
 
     # Format amounts
-    claimable = format_usdc(fee_balance.claimable_usdc) if fee_balance else "$0.00"
-    total_earned = format_usdc(fee_balance.total_earned_usdc) if fee_balance else "$0.00"
+    solana_claimable = format_usdc(solana_balance.claimable_usdc) if solana_balance else "$0.00"
+    solana_earned = format_usdc(solana_balance.total_earned_usdc) if solana_balance else "$0.00"
+    evm_claimable = format_usdc(evm_balance.claimable_usdc) if evm_balance else "$0.00"
+    evm_earned = format_usdc(evm_balance.total_earned_usdc) if evm_balance else "$0.00"
+
+    # Calculate totals
+    total_claimable = Decimal(solana_balance.claimable_usdc if solana_balance else "0") + \
+                      Decimal(evm_balance.claimable_usdc if evm_balance else "0")
+    total_earned = Decimal(solana_balance.total_earned_usdc if solana_balance else "0") + \
+                   Decimal(evm_balance.total_earned_usdc if evm_balance else "0")
 
     # Build invite link
     bot_username = (await context.bot.get_me()).username
@@ -1506,10 +1562,18 @@ Earn commissions when your referrals trade!
 
 ━━━━━━━━━━━━━━━━
 💰 <b>Earnings Dashboard</b>
-├ Claimable: <b>{claimable}</b> USDC
-└ Total Earned: <b>{total_earned}</b> USDC
 
-⚠️ <i>Minimum withdrawal: ${MIN_WITHDRAWAL_USDC} USDC</i>
+<b>🟣 Solana (Kalshi)</b>
+├ Claimable: <b>{solana_claimable}</b> USDC
+└ Total Earned: <b>{solana_earned}</b> USDC
+
+<b>🔷 EVM (Polymarket/Opinion)</b>
+├ Claimable: <b>{evm_claimable}</b> USDC
+└ Total Earned: <b>{evm_earned}</b> USDC
+
+📊 <b>Combined:</b> {format_usdc(str(total_claimable))} claimable / {format_usdc(str(total_earned))} earned
+
+⚠️ <i>Minimum withdrawal: ${MIN_WITHDRAWAL_USDC} USDC per chain</i>
 """
 
     # Build keyboard
@@ -1517,9 +1581,18 @@ Earn commissions when your referrals trade!
         [InlineKeyboardButton("📋 Copy Invite Link", callback_data="referral:copy")],
     ]
 
-    # Add withdraw button if balance meets minimum
-    if fee_balance and can_withdraw(fee_balance.claimable_usdc):
-        buttons.append([InlineKeyboardButton("💸 Withdraw Earnings", callback_data="referral:withdraw")])
+    # Add withdraw buttons for each chain that meets minimum
+    withdraw_buttons = []
+    if solana_balance and can_withdraw(solana_balance.claimable_usdc):
+        withdraw_buttons.append(
+            InlineKeyboardButton("💸 Withdraw Solana", callback_data="referral:withdraw:solana")
+        )
+    if evm_balance and can_withdraw(evm_balance.claimable_usdc):
+        withdraw_buttons.append(
+            InlineKeyboardButton("💸 Withdraw EVM", callback_data="referral:withdraw:evm")
+        )
+    if withdraw_buttons:
+        buttons.append(withdraw_buttons)
 
     buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="referral:refresh")])
     buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
@@ -1531,20 +1604,20 @@ Earn commissions when your referrals trade!
     )
 
 
-async def handle_referral_withdraw(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle withdrawal of referral earnings."""
+async def handle_referral_withdraw(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE, chain_family: ChainFamily) -> None:
+    """Handle withdrawal of referral earnings for a specific chain."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
         return
 
-    # Get fee balance
-    fee_balance = await get_fee_balance(user.id)
+    # Get fee balance for the specific chain
+    fee_balance = await get_fee_balance(user.id, chain_family)
     if not fee_balance or not can_withdraw(fee_balance.claimable_usdc):
         await query.edit_message_text(
             f"❌ <b>Cannot Withdraw</b>\n\n"
             f"Minimum withdrawal is ${MIN_WITHDRAWAL_USDC} USDC.\n"
-            f"Your balance: {format_usdc(fee_balance.claimable_usdc) if fee_balance else '$0.00'}",
+            f"Your {chain_family.value.upper()} balance: {format_usdc(fee_balance.claimable_usdc) if fee_balance else '$0.00'}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("« Back to Referrals", callback_data="referral:refresh")],
@@ -1555,17 +1628,26 @@ async def handle_referral_withdraw(query, telegram_id: int, context: ContextType
     # Show withdrawal confirmation
     claimable = format_usdc(fee_balance.claimable_usdc)
 
+    # Determine chain-specific info
+    if chain_family == ChainFamily.SOLANA:
+        chain_display = "🟣 Solana"
+        wallet_info = "your Solana wallet"
+    else:
+        chain_display = "🔷 EVM (Polygon)"
+        wallet_info = "your EVM wallet (Polygon USDC)"
+
     # Store pending withdrawal state
     context.user_data["pending_withdrawal"] = {
         "amount": fee_balance.claimable_usdc,
+        "chain_family": chain_family.value,
     }
 
     text = f"""
-💸 <b>Withdraw Referral Earnings</b>
+💸 <b>Withdraw {chain_display} Referral Earnings</b>
 
 Amount: <b>{claimable}</b> USDC
 
-Withdrawals are sent to your EVM wallet (Polygon USDC).
+Withdrawals are sent to {wallet_info}.
 
 <b>Enter your PIN to confirm withdrawal:</b>
 <i>(Your PIN is never stored)</i>
@@ -1653,6 +1735,7 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
                 trader_telegram_id=telegram_id,
                 order_id=order_id,
                 trade_amount_usdc=str(amount),
+                platform=platform_enum,
             )
 
             fee_amount = fee_result.get("fee", "0")
@@ -1926,6 +2009,7 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
                 trader_telegram_id=update.effective_user.id,
                 order_id=order_id,
                 trade_amount_usdc=str(amount),
+                platform=platform_enum,
             )
 
             fee_amount = fee_result.get("fee", "0")
@@ -2211,6 +2295,8 @@ async def handle_withdrawal_with_pin(update: Update, context: ContextTypes.DEFAU
         return
 
     amount = pending["amount"]
+    chain_family_str = pending.get("chain_family", "evm")
+    chain_family = ChainFamily.SOLANA if chain_family_str == "solana" else ChainFamily.EVM
 
     # Clear pending state
     del context.user_data["pending_withdrawal"]
@@ -2221,15 +2307,24 @@ async def handle_withdrawal_with_pin(update: Update, context: ContextTypes.DEFAU
     except:
         pass
 
+    # Chain-specific display info
+    if chain_family == ChainFamily.SOLANA:
+        chain_display = "🟣 Solana"
+        explorer_name = "Solscan"
+        explorer_base = "https://solscan.io/tx/"
+    else:
+        chain_display = "🔷 EVM"
+        explorer_name = "PolygonScan"
+        explorer_base = "https://polygonscan.com/tx/"
+
     # Send processing message
     status_msg = await update.effective_chat.send_message(
-        "⏳ Processing withdrawal...",
+        f"⏳ Processing {chain_display} withdrawal...",
         parse_mode=ParseMode.HTML,
     )
 
     try:
-        # Verify PIN by trying to get private key
-        chain_family = ChainFamily.EVM
+        # Verify PIN by trying to get private key for the respective chain
         try:
             private_key = await wallet_service.get_private_key(user.id, update.effective_user.id, chain_family, pin)
         except Exception as decrypt_error:
@@ -2241,35 +2336,36 @@ async def handle_withdrawal_with_pin(update: Update, context: ContextTypes.DEFAU
                 return
             raise
 
-        # Get user's EVM wallet address
+        # Get user's wallet address for the correct chain
         from src.db.database import get_wallet
-        evm_wallet = await get_wallet(user.id, ChainFamily.EVM)
-        if not evm_wallet:
+        user_wallet = await get_wallet(user.id, chain_family)
+        if not user_wallet:
             await status_msg.edit_text(
-                "❌ <b>No Wallet Found</b>\n\nYou need an EVM wallet to receive withdrawals.",
+                f"❌ <b>No Wallet Found</b>\n\nYou need a {chain_family.value.upper()} wallet to receive withdrawals.",
                 parse_mode=ParseMode.HTML,
             )
             return
 
-        user_address = evm_wallet.public_key
+        user_address = user_wallet.public_key
 
-        # Check if withdrawal service is available
-        from src.services.withdrawal import withdrawal_service
-        if not withdrawal_service.is_available:
+        # Check if withdrawal service is available for this chain
+        from src.services.withdrawal import withdrawal_manager
+        if not withdrawal_manager.is_available(chain_family.value):
             await status_msg.edit_text(
-                "❌ <b>Withdrawals Unavailable</b>\n\nWithdrawal service is not configured. Please contact support.",
+                f"❌ <b>Withdrawals Unavailable</b>\n\n{chain_family.value.upper()} withdrawal service is not configured. Please contact support.",
                 parse_mode=ParseMode.HTML,
             )
             return
 
         # Update status
         await status_msg.edit_text(
-            "⏳ Sending USDC to your wallet...",
+            f"⏳ Sending USDC to your {chain_family.value.upper()} wallet...",
             parse_mode=ParseMode.HTML,
         )
 
         # Send USDC to user's wallet
-        success, tx_hash, error = await withdrawal_service.send_usdc(
+        success, tx_hash, error = await withdrawal_manager.send_usdc(
+            chain_family=chain_family.value,
             to_address=user_address,
             amount_usdc=amount,
         )
@@ -2281,17 +2377,19 @@ async def handle_withdrawal_with_pin(update: Update, context: ContextTypes.DEFAU
                 amount_usdc=amount,
                 withdrawal_address=user_address,
                 tx_hash=tx_hash,
+                chain_family=chain_family,
             )
 
             claimable_formatted = format_usdc(amount)
+            explorer_url = withdrawal_manager.get_explorer_url(chain_family.value, tx_hash)
             text = f"""
-✅ <b>Withdrawal Complete!</b>
+✅ <b>{chain_display} Withdrawal Complete!</b>
 
 Amount: <b>{claimable_formatted}</b> USDC
 To: <code>{user_address}</code>
 
 <b>Transaction:</b>
-<a href="https://polygonscan.com/tx/{tx_hash}">View on PolygonScan</a>
+<a href="{explorer_url}">View on {explorer_name}</a>
 
 <i>USDC has been sent to your wallet!</i>
 """
@@ -2310,7 +2408,7 @@ To: <code>{user_address}</code>
         )
 
     except Exception as e:
-        logger.error("Withdrawal failed", error=str(e))
+        logger.error("Withdrawal failed", error=str(e), chain=chain_family.value)
         await status_msg.edit_text(
             f"❌ Withdrawal failed: {escape_html(str(e))}",
             parse_mode=ParseMode.HTML,

@@ -84,18 +84,44 @@ class Settings(BaseSettings):
     # ===================
     # Treasury Configuration (for referral withdrawals)
     # ===================
-    treasury_private_key: Optional[str] = Field(
+    # EVM Treasury (Polygon USDC)
+    treasury_evm_private_key: Optional[str] = Field(
         default=None,
-        description="Private key for treasury wallet (hex format, for referral payouts)"
+        description="Private key for EVM treasury wallet (hex format, for referral payouts on Polygon)"
     )
-    treasury_rpc_url: str = Field(
+    treasury_evm_rpc_url: str = Field(
         default="https://polygon-rpc.com",
-        description="RPC URL for treasury transactions (Polygon)"
+        description="RPC URL for EVM treasury transactions (Polygon)"
     )
     usdc_contract_polygon: str = Field(
         default="0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
         description="USDC contract address on Polygon"
     )
+
+    # Solana Treasury (Solana USDC)
+    treasury_solana_private_key: Optional[str] = Field(
+        default=None,
+        description="Private key for Solana treasury wallet (base58 format, for referral payouts on Solana)"
+    )
+    treasury_solana_rpc_url: str = Field(
+        default="https://api.mainnet-beta.solana.com",
+        description="RPC URL for Solana treasury transactions"
+    )
+    usdc_mint_solana: str = Field(
+        default="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        description="USDC mint address on Solana"
+    )
+
+    # Legacy alias for backwards compatibility
+    @property
+    def treasury_private_key(self) -> Optional[str]:
+        """Legacy alias for EVM treasury key."""
+        return self.treasury_evm_private_key
+
+    @property
+    def treasury_rpc_url(self) -> str:
+        """Legacy alias for EVM treasury RPC."""
+        return self.treasury_evm_rpc_url
 
     # ===================
     # Polymarket Configuration

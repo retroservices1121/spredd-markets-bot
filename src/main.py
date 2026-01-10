@@ -134,11 +134,35 @@ def create_application() -> Application:
     return application
 
 
+async def run_migrations() -> None:
+    """Run database migrations on startup."""
+    import subprocess
+    import sys
+
+    logger.info("Running database migrations...")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            cwd=".",
+        )
+        if result.returncode == 0:
+            logger.info("Migrations completed successfully")
+        else:
+            logger.warning("Migration output", stdout=result.stdout, stderr=result.stderr)
+    except Exception as e:
+        logger.error("Migration failed", error=str(e))
+
+
 async def run_bot() -> None:
     """Run the bot with graceful shutdown support."""
     global app
 
     logger.info("Starting Spredd Markets Bot...")
+
+    # Run migrations first
+    await run_migrations()
 
     # Initialize services before starting the bot
     logger.info("Initializing database...")
@@ -149,9 +173,10 @@ async def run_bot() -> None:
     logger.info("Initializing wallet service...")
     await wallet_service.initialize()
 
-    logger.info("Initializing withdrawal service...")
-    from src.services.withdrawal import withdrawal_service
-    withdrawal_service.initialize()
+    logger.info("Initializing withdrawal services...")
+    from src.services.withdrawal import withdrawal_manager
+    withdrawal_manager.initialize()
+    await withdrawal_manager.initialize_async()
 
     logger.info("Initializing platforms...")
     await platform_registry.initialize()

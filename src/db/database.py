@@ -590,11 +590,13 @@ async def get_referral_stats(user_id: str) -> dict:
 # Fee Balance Operations
 # ===================
 
-async def get_or_create_fee_balance(user_id: str) -> FeeBalance:
-    """Get or create fee balance for a user."""
+async def get_or_create_fee_balance(user_id: str, chain_family: ChainFamily) -> FeeBalance:
+    """Get or create fee balance for a user on a specific chain."""
     async with get_session() as session:
         result = await session.execute(
-            select(FeeBalance).where(FeeBalance.user_id == user_id)
+            select(FeeBalance)
+            .where(FeeBalance.user_id == user_id)
+            .where(FeeBalance.chain_family == chain_family)
         )
         balance = result.scalar_one_or_none()
 
@@ -604,6 +606,7 @@ async def get_or_create_fee_balance(user_id: str) -> FeeBalance:
         balance = FeeBalance(
             id=generate_id(),
             user_id=user_id,
+            chain_family=chain_family,
             claimable_usdc="0",
             total_earned_usdc="0",
             total_withdrawn_usdc="0",
@@ -620,12 +623,15 @@ async def add_referral_earnings(
     source_user_id: str,
     order_id: str,
     tier: int,
+    chain_family: ChainFamily,
 ) -> None:
-    """Add referral earnings to a user's balance."""
+    """Add referral earnings to a user's balance for a specific chain."""
     async with get_session() as session:
-        # Get or create fee balance
+        # Get or create fee balance for this chain
         result = await session.execute(
-            select(FeeBalance).where(FeeBalance.user_id == user_id)
+            select(FeeBalance)
+            .where(FeeBalance.user_id == user_id)
+            .where(FeeBalance.chain_family == chain_family)
         )
         balance = result.scalar_one_or_none()
 
@@ -633,6 +639,7 @@ async def add_referral_earnings(
             balance = FeeBalance(
                 id=generate_id(),
                 user_id=user_id,
+                chain_family=chain_family,
                 claimable_usdc="0",
                 total_earned_usdc="0",
                 total_withdrawn_usdc="0",
@@ -653,6 +660,7 @@ async def add_referral_earnings(
             id=generate_id(),
             user_id=user_id,
             order_id=order_id,
+            chain_family=chain_family,
             tx_type=tx_type,
             amount_usdc=amount_usdc,
             source_user_id=source_user_id,
@@ -667,6 +675,7 @@ async def add_referral_earnings(
             user_id=user_id,
             amount=amount_usdc,
             tier=tier,
+            chain=chain_family.value,
             source_user_id=source_user_id,
         )
 
@@ -676,11 +685,14 @@ async def process_withdrawal(
     amount_usdc: str,
     tx_hash: str,
     withdrawal_address: str,
+    chain_family: ChainFamily,
 ) -> bool:
-    """Process a withdrawal from user's fee balance."""
+    """Process a withdrawal from user's fee balance for a specific chain."""
     async with get_session() as session:
         result = await session.execute(
-            select(FeeBalance).where(FeeBalance.user_id == user_id)
+            select(FeeBalance)
+            .where(FeeBalance.user_id == user_id)
+            .where(FeeBalance.chain_family == chain_family)
         )
         balance = result.scalar_one_or_none()
 
@@ -703,6 +715,7 @@ async def process_withdrawal(
         tx = FeeTransaction(
             id=generate_id(),
             user_id=user_id,
+            chain_family=chain_family,
             tx_type="withdrawal",
             amount_usdc=amount_usdc,
             withdrawal_tx_hash=tx_hash,
@@ -716,15 +729,27 @@ async def process_withdrawal(
             "Processed withdrawal",
             user_id=user_id,
             amount=amount_usdc,
+            chain=chain_family.value,
             tx_hash=tx_hash,
         )
         return True
 
 
-async def get_fee_balance(user_id: str) -> Optional[FeeBalance]:
-    """Get fee balance for a user."""
+async def get_fee_balance(user_id: str, chain_family: ChainFamily) -> Optional[FeeBalance]:
+    """Get fee balance for a user on a specific chain."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(FeeBalance)
+            .where(FeeBalance.user_id == user_id)
+            .where(FeeBalance.chain_family == chain_family)
+        )
+        return result.scalar_one_or_none()
+
+
+async def get_all_fee_balances(user_id: str) -> list[FeeBalance]:
+    """Get all fee balances for a user across all chains."""
     async with get_session() as session:
         result = await session.execute(
             select(FeeBalance).where(FeeBalance.user_id == user_id)
         )
-        return result.scalar_one_or_none()
+        return list(result.scalars().all())

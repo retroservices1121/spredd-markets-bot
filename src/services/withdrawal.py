@@ -1,7 +1,9 @@
 """
 Withdrawal service for processing referral earnings payouts.
 
-Sends USDC from treasury wallet to user's wallet on Polygon.
+Supports:
+- EVM (Polygon): Sends USDC from treasury wallet to user's EVM wallet
+- Solana: Sends USDC from treasury wallet to user's Solana wallet
 """
 
 from decimal import Decimal
@@ -14,7 +16,7 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# USDC has 6 decimals
+# USDC has 6 decimals on both chains
 USDC_DECIMALS = 6
 
 # Minimal ERC20 ABI for transfer
@@ -39,8 +41,8 @@ ERC20_ABI = [
 ]
 
 
-class WithdrawalService:
-    """Service for processing USDC withdrawals on Polygon."""
+class EVMWithdrawalService:
+    """Service for processing USDC withdrawals on Polygon (EVM)."""
 
     def __init__(self):
         self._web3: Optional[Web3] = None
@@ -49,20 +51,20 @@ class WithdrawalService:
         self._initialized = False
 
     def initialize(self) -> bool:
-        """Initialize the withdrawal service."""
-        if not settings.treasury_private_key:
-            logger.warning("Treasury private key not configured - withdrawals disabled")
+        """Initialize the EVM withdrawal service."""
+        if not settings.treasury_evm_private_key:
+            logger.warning("EVM treasury private key not configured - EVM withdrawals disabled")
             return False
 
         try:
-            self._web3 = Web3(Web3.HTTPProvider(settings.treasury_rpc_url))
+            self._web3 = Web3(Web3.HTTPProvider(settings.treasury_evm_rpc_url))
 
             if not self._web3.is_connected():
                 logger.error("Failed to connect to Polygon RPC")
                 return False
 
             # Load treasury account
-            private_key = settings.treasury_private_key
+            private_key = settings.treasury_evm_private_key
             if not private_key.startswith("0x"):
                 private_key = "0x" + private_key
 
@@ -76,14 +78,14 @@ class WithdrawalService:
 
             self._initialized = True
             logger.info(
-                "Withdrawal service initialized",
+                "EVM withdrawal service initialized",
                 treasury_address=self._account.address,
                 chain="polygon",
             )
             return True
 
         except Exception as e:
-            logger.error("Failed to initialize withdrawal service", error=str(e))
+            logger.error("Failed to initialize EVM withdrawal service", error=str(e))
             return False
 
     @property
@@ -168,30 +170,307 @@ class WithdrawalService:
             tx_hash_hex = tx_hash.hex()
 
             logger.info(
-                "USDC withdrawal sent",
+                "EVM USDC withdrawal sent",
                 to=to_address,
                 amount=amount_usdc,
                 tx_hash=tx_hash_hex,
+                chain="polygon",
             )
 
             # Wait for confirmation (optional, can timeout)
             try:
                 receipt = self._web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
                 if receipt.status == 1:
-                    logger.info("Withdrawal confirmed", tx_hash=tx_hash_hex)
+                    logger.info("EVM withdrawal confirmed", tx_hash=tx_hash_hex)
                     return True, tx_hash_hex, None
                 else:
-                    logger.error("Withdrawal failed on-chain", tx_hash=tx_hash_hex)
+                    logger.error("EVM withdrawal failed on-chain", tx_hash=tx_hash_hex)
                     return False, tx_hash_hex, "Transaction failed on-chain"
             except Exception as wait_error:
                 # Transaction sent but confirmation timed out
-                logger.warning("Withdrawal sent but confirmation timed out", tx_hash=tx_hash_hex)
+                logger.warning("EVM withdrawal sent but confirmation timed out", tx_hash=tx_hash_hex)
                 return True, tx_hash_hex, None
 
         except Exception as e:
-            logger.error("Withdrawal failed", error=str(e))
+            logger.error("EVM withdrawal failed", error=str(e))
             return False, None, str(e)
 
+    def get_explorer_url(self, tx_hash: str) -> str:
+        """Get PolygonScan URL for transaction."""
+        return f"https://polygonscan.com/tx/{tx_hash}"
 
-# Global instance
-withdrawal_service = WithdrawalService()
+
+class SolanaWithdrawalService:
+    """Service for processing USDC withdrawals on Solana."""
+
+    def __init__(self):
+        self._client = None
+        self._keypair = None
+        self._initialized = False
+
+    async def initialize(self) -> bool:
+        """Initialize the Solana withdrawal service."""
+        if not settings.treasury_solana_private_key:
+            logger.warning("Solana treasury private key not configured - Solana withdrawals disabled")
+            return False
+
+        try:
+            from solana.rpc.async_api import AsyncClient as SolanaClient
+            from solders.keypair import Keypair
+            import base58
+
+            self._client = SolanaClient(settings.treasury_solana_rpc_url)
+
+            # Load treasury keypair (base58 encoded private key)
+            try:
+                # Try base58 decode first (standard Solana format)
+                secret_key = base58.b58decode(settings.treasury_solana_private_key)
+                self._keypair = Keypair.from_bytes(secret_key)
+            except Exception:
+                # Try as raw bytes array
+                try:
+                    import json
+                    key_bytes = bytes(json.loads(settings.treasury_solana_private_key))
+                    self._keypair = Keypair.from_bytes(key_bytes)
+                except Exception as e:
+                    logger.error("Failed to parse Solana treasury key", error=str(e))
+                    return False
+
+            self._initialized = True
+            logger.info(
+                "Solana withdrawal service initialized",
+                treasury_address=str(self._keypair.pubkey()),
+                chain="solana",
+            )
+            return True
+
+        except Exception as e:
+            logger.error("Failed to initialize Solana withdrawal service", error=str(e))
+            return False
+
+    @property
+    def is_available(self) -> bool:
+        """Check if Solana withdrawal service is available."""
+        return self._initialized and self._keypair is not None
+
+    @property
+    def treasury_address(self) -> Optional[str]:
+        """Get treasury wallet address."""
+        return str(self._keypair.pubkey()) if self._keypair else None
+
+    async def get_treasury_balance(self) -> Decimal:
+        """Get USDC balance of Solana treasury wallet."""
+        if not self.is_available:
+            return Decimal("0")
+
+        try:
+            from solders.pubkey import Pubkey
+            from spl.token.constants import TOKEN_PROGRAM_ID
+
+            usdc_mint = Pubkey.from_string(settings.usdc_mint_solana)
+            owner = self._keypair.pubkey()
+
+            # Get associated token account
+            from spl.token.async_client import AsyncToken
+
+            token = AsyncToken(
+                self._client,
+                usdc_mint,
+                TOKEN_PROGRAM_ID,
+                self._keypair,
+            )
+
+            # Get token account balance
+            try:
+                ata = await token.get_accounts_by_owner(owner)
+                if ata.value:
+                    balance_raw = ata.value[0].account.data.parsed['info']['tokenAmount']['amount']
+                    return Decimal(balance_raw) / Decimal(10 ** USDC_DECIMALS)
+            except Exception:
+                pass
+
+            return Decimal("0")
+
+        except Exception as e:
+            logger.error("Failed to get Solana treasury balance", error=str(e))
+            return Decimal("0")
+
+    async def send_usdc(
+        self,
+        to_address: str,
+        amount_usdc: str,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Send USDC from treasury to user's Solana wallet.
+
+        Args:
+            to_address: Recipient's Solana wallet address
+            amount_usdc: Amount to send in USDC (as string)
+
+        Returns:
+            Tuple of (success, tx_hash, error_message)
+        """
+        if not self.is_available:
+            return False, None, "Solana withdrawal service not available"
+
+        try:
+            from solders.pubkey import Pubkey
+            from solders.transaction import Transaction
+            from solders.system_program import TransferParams, transfer
+            from spl.token.constants import TOKEN_PROGRAM_ID
+            from spl.token.instructions import transfer_checked, TransferCheckedParams
+            from spl.token.async_client import AsyncToken
+            from solana.rpc.commitment import Confirmed
+
+            # Validate address
+            try:
+                recipient = Pubkey.from_string(to_address)
+            except Exception:
+                return False, None, "Invalid Solana wallet address"
+
+            amount = Decimal(amount_usdc)
+            amount_raw = int(amount * Decimal(10 ** USDC_DECIMALS))
+
+            usdc_mint = Pubkey.from_string(settings.usdc_mint_solana)
+
+            # Get or create associated token accounts
+            token = AsyncToken(
+                self._client,
+                usdc_mint,
+                TOKEN_PROGRAM_ID,
+                self._keypair,
+            )
+
+            # Get sender's token account
+            sender_ata = await token.get_accounts_by_owner(self._keypair.pubkey())
+            if not sender_ata.value:
+                return False, None, "Treasury has no USDC token account"
+
+            sender_token_account = sender_ata.value[0].pubkey
+
+            # Get or create recipient's token account
+            from spl.token.instructions import get_associated_token_address
+            recipient_ata = get_associated_token_address(recipient, usdc_mint)
+
+            # Check if recipient ATA exists, if not create it
+            recipient_account = await self._client.get_account_info(recipient_ata)
+
+            instructions = []
+
+            if not recipient_account.value:
+                # Create ATA for recipient
+                from spl.token.instructions import create_associated_token_account
+                create_ata_ix = create_associated_token_account(
+                    payer=self._keypair.pubkey(),
+                    owner=recipient,
+                    mint=usdc_mint,
+                )
+                instructions.append(create_ata_ix)
+
+            # Create transfer instruction
+            transfer_ix = transfer_checked(
+                TransferCheckedParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    source=sender_token_account,
+                    mint=usdc_mint,
+                    dest=recipient_ata,
+                    owner=self._keypair.pubkey(),
+                    amount=amount_raw,
+                    decimals=USDC_DECIMALS,
+                )
+            )
+            instructions.append(transfer_ix)
+
+            # Build and send transaction
+            recent_blockhash = await self._client.get_latest_blockhash()
+
+            from solders.message import Message
+            from solders.transaction import Transaction as SoldersTransaction
+
+            message = Message.new_with_blockhash(
+                instructions,
+                self._keypair.pubkey(),
+                recent_blockhash.value.blockhash,
+            )
+            tx = SoldersTransaction.new_unsigned(message)
+            tx.sign([self._keypair], recent_blockhash.value.blockhash)
+
+            result = await self._client.send_transaction(
+                tx,
+                opts={"skip_preflight": False, "preflight_commitment": Confirmed},
+            )
+
+            tx_hash = str(result.value)
+
+            logger.info(
+                "Solana USDC withdrawal sent",
+                to=to_address,
+                amount=amount_usdc,
+                tx_hash=tx_hash,
+                chain="solana",
+            )
+
+            return True, tx_hash, None
+
+        except Exception as e:
+            logger.error("Solana withdrawal failed", error=str(e))
+            return False, None, str(e)
+
+    def get_explorer_url(self, tx_hash: str) -> str:
+        """Get Solscan URL for transaction."""
+        return f"https://solscan.io/tx/{tx_hash}"
+
+
+class WithdrawalManager:
+    """Unified manager for withdrawals across all chains."""
+
+    def __init__(self):
+        self.evm = EVMWithdrawalService()
+        self.solana = SolanaWithdrawalService()
+
+    def initialize(self) -> None:
+        """Initialize all withdrawal services."""
+        self.evm.initialize()
+        # Note: Solana service is async, will be initialized on first use
+
+    async def initialize_async(self) -> None:
+        """Initialize async services."""
+        await self.solana.initialize()
+
+    def is_available(self, chain_family: str) -> bool:
+        """Check if withdrawal is available for a chain family."""
+        if chain_family.lower() == "evm":
+            return self.evm.is_available
+        elif chain_family.lower() == "solana":
+            return self.solana.is_available
+        return False
+
+    async def send_usdc(
+        self,
+        chain_family: str,
+        to_address: str,
+        amount_usdc: str,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Send USDC on the specified chain."""
+        if chain_family.lower() == "evm":
+            return await self.evm.send_usdc(to_address, amount_usdc)
+        elif chain_family.lower() == "solana":
+            return await self.solana.send_usdc(to_address, amount_usdc)
+        return False, None, f"Unknown chain family: {chain_family}"
+
+    def get_explorer_url(self, chain_family: str, tx_hash: str) -> str:
+        """Get explorer URL for a transaction."""
+        if chain_family.lower() == "evm":
+            return self.evm.get_explorer_url(tx_hash)
+        elif chain_family.lower() == "solana":
+            return self.solana.get_explorer_url(tx_hash)
+        return ""
+
+
+# Global instances
+evm_withdrawal_service = EVMWithdrawalService()
+solana_withdrawal_service = SolanaWithdrawalService()
+withdrawal_manager = WithdrawalManager()
+
+# Legacy alias for backwards compatibility
+withdrawal_service = evm_withdrawal_service

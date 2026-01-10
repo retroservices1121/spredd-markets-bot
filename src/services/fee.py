@@ -7,6 +7,10 @@ Fee Structure:
   - Tier 1 (direct referrer): 25% of fee
   - Tier 2: 5% of fee
   - Tier 3: 3% of fee
+
+Chain-Specific Tracking:
+- Kalshi (Solana): Fees tracked as Solana USDC
+- Polymarket/Opinion (EVM): Fees tracked as EVM USDC
 """
 
 from decimal import Decimal, ROUND_DOWN
@@ -17,6 +21,7 @@ from src.db.database import (
     add_referral_earnings,
     get_user_by_telegram_id,
 )
+from src.db.models import ChainFamily, Platform
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -29,6 +34,15 @@ TIER_COMMISSIONS = {
     3: Decimal("0.03"),  # 3% of fee
 }
 MIN_WITHDRAWAL_USDC = Decimal("5.00")
+
+
+def get_chain_family_for_platform(platform: Platform) -> ChainFamily:
+    """Get the chain family for a platform."""
+    if platform == Platform.KALSHI:
+        return ChainFamily.SOLANA
+    else:
+        # Polymarket and Opinion are on EVM chains
+        return ChainFamily.EVM
 
 
 def calculate_fee(amount_usdc: str) -> str:
@@ -67,6 +81,7 @@ async def distribute_referral_fees(
     trader_user_id: str,
     order_id: str,
     fee_usdc: str,
+    chain_family: ChainFamily,
 ) -> dict:
     """
     Distribute referral commissions from a trade fee.
@@ -75,6 +90,7 @@ async def distribute_referral_fees(
         trader_user_id: The user ID who made the trade
         order_id: The order ID for tracking
         fee_usdc: The total fee collected in USDC
+        chain_family: The chain family where the fee was earned (Solana or EVM)
 
     Returns:
         Dictionary with distribution results
@@ -85,6 +101,7 @@ async def distribute_referral_fees(
         "tier2": None,
         "tier3": None,
         "total_distributed": "0",
+        "chain_family": chain_family.value,
     }
 
     if fee_amount <= 0:
@@ -111,6 +128,7 @@ async def distribute_referral_fees(
                 source_user_id=trader_user_id,
                 order_id=order_id,
                 tier=tier,
+                chain_family=chain_family,
             )
 
             distributions[f"tier{tier}"] = {
@@ -125,6 +143,7 @@ async def distribute_referral_fees(
                 tier=tier,
                 referrer_id=referrer.id,
                 amount=str(commission),
+                chain=chain_family.value,
                 trader_id=trader_user_id,
             )
 
@@ -136,6 +155,7 @@ async def process_trade_fee(
     trader_telegram_id: int,
     order_id: str,
     trade_amount_usdc: str,
+    platform: Platform,
 ) -> dict:
     """
     Process the complete fee for a trade including referral distributions.
@@ -144,6 +164,7 @@ async def process_trade_fee(
         trader_telegram_id: Telegram ID of the trader
         order_id: The order ID
         trade_amount_usdc: The trade amount in USDC
+        platform: The trading platform (determines chain for fee tracking)
 
     Returns:
         Dictionary with fee details and distributions
@@ -162,11 +183,15 @@ async def process_trade_fee(
     fee = calculate_fee(trade_amount_usdc)
     net_amount = calculate_net_amount(trade_amount_usdc)
 
+    # Determine chain family from platform
+    chain_family = get_chain_family_for_platform(platform)
+
     # Distribute to referrers
     distributions = await distribute_referral_fees(
         trader_user_id=user.id,
         order_id=order_id,
         fee_usdc=fee,
+        chain_family=chain_family,
     )
 
     logger.info(
@@ -175,6 +200,8 @@ async def process_trade_fee(
         trade_amount=trade_amount_usdc,
         fee=fee,
         net_amount=net_amount,
+        platform=platform.value,
+        chain=chain_family.value,
         referral_distributed=distributions["total_distributed"],
     )
 

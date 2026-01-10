@@ -128,7 +128,7 @@ class User(Base):
     positions: Mapped[list["Position"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     orders: Mapped[list["Order"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     referred_by: Mapped[Optional["User"]] = relationship("User", remote_side=[id], foreign_keys=[referred_by_id])
-    fee_balance: Mapped[Optional["FeeBalance"]] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan")
+    fee_balances: Mapped[list["FeeBalance"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Wallet(Base):
@@ -345,14 +345,21 @@ class MarketCache(Base):
 
 class FeeBalance(Base):
     """
-    Tracks referral fee earnings for users.
+    Tracks referral fee earnings for users by chain family.
+    Each user has separate balances for Solana and EVM chains.
     Earnings come from referral commissions on trading fees.
     """
 
     __tablename__ = "fee_balances"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"))
+
+    # Chain family - separate balances for Solana vs EVM
+    chain_family: Mapped[ChainFamily] = mapped_column(
+        SQLEnum(ChainFamily),
+        default=ChainFamily.EVM
+    )
 
     # Claimable balance (in USDC, stored as string for precision)
     claimable_usdc: Mapped[str] = mapped_column(String(78), default="0")
@@ -375,7 +382,12 @@ class FeeBalance(Base):
     )
 
     # Relationships
-    user: Mapped["User"] = relationship(back_populates="fee_balance")
+    user: Mapped["User"] = relationship(back_populates="fee_balances")
+
+    # One balance per chain family per user
+    __table_args__ = (
+        Index("ix_fee_balances_user_chain", "user_id", "chain_family", unique=True),
+    )
 
 
 class FeeTransaction(Base):
@@ -393,6 +405,12 @@ class FeeTransaction(Base):
 
     # Related order (if applicable)
     order_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("orders.id"), nullable=True)
+
+    # Chain family - which chain the fee was earned on
+    chain_family: Mapped[ChainFamily] = mapped_column(
+        SQLEnum(ChainFamily),
+        default=ChainFamily.EVM
+    )
 
     # Transaction type
     tx_type: Mapped[str] = mapped_column(String(32))  # "fee_collected", "referral_tier1", "referral_tier2", "referral_tier3", "withdrawal"
@@ -420,4 +438,5 @@ class FeeTransaction(Base):
         Index("ix_fee_tx_user", "user_id"),
         Index("ix_fee_tx_type", "tx_type"),
         Index("ix_fee_tx_order", "order_id"),
+        Index("ix_fee_tx_chain", "chain_family"),
     )
