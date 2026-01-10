@@ -511,6 +511,15 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
         entry = format_price(pos.entry_price)
 
+        # Calculate amount spent (token_amount * entry_price)
+        # token_amount is stored with 6 decimals (like USDC)
+        try:
+            token_amount = Decimal(pos.token_amount) / Decimal(10**6)
+            amount_spent = token_amount * pos.entry_price if pos.entry_price else Decimal(0)
+            spent_str = f"${amount_spent:.2f}"
+        except Exception:
+            spent_str = "N/A"
+
         # Fetch current price from platform
         current_price = None
         try:
@@ -536,7 +545,7 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             pnl_emoji = "⚪"
 
         text += f"<b>{title}</b>\n"
-        text += f"  {outcome_str} • Entry: {entry} • Now: {current}\n"
+        text += f"  {outcome_str} ({spent_str}) • Entry: {entry} • Now: {current}\n"
         text += f"  {pnl_emoji} P&L: {pnl_str}\n\n"
 
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)

@@ -390,15 +390,20 @@ class KalshiPlatform(BasePlatform):
         )
 
         # Parse quote response
-        expected_output = Decimal(str(data.get("outAmount", 0)))
-        if side == "buy":
-            expected_output = expected_output / Decimal(10**self.collateral_decimals)
+        # inAmount = actual USDC to spend, outAmount = tokens to receive
+        in_amount_raw = Decimal(str(data.get("inAmount", 0)))
+        out_amount_raw = Decimal(str(data.get("outAmount", 0)))
 
-        price_per_token = amount / expected_output if expected_output > 0 else Decimal(0)
+        # Convert from smallest units (6 decimals)
+        actual_input = in_amount_raw / Decimal(10**self.collateral_decimals)
+        expected_output = out_amount_raw / Decimal(10**self.collateral_decimals)
+
+        # Price per token = what you pay / what you get
+        price_per_token = actual_input / expected_output if expected_output > 0 else Decimal(0)
 
         logger.debug(
             "Calculated quote price",
-            input_amount=str(amount),
+            actual_input=str(actual_input),
             expected_output=str(expected_output),
             price_per_token=str(price_per_token),
         )
@@ -417,7 +422,7 @@ class KalshiPlatform(BasePlatform):
             outcome=outcome,
             side=side,
             input_token=input_token if side == "buy" else output_token,
-            input_amount=amount,
+            input_amount=actual_input,
             output_token=output_token if side == "buy" else input_token,
             expected_output=expected_output,
             price_per_token=price_per_token,
