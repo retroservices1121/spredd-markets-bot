@@ -1018,9 +1018,6 @@ class PolymarketPlatform(BasePlatform):
             raise PlatformError("Quote data missing", Platform.POLYMARKET)
 
         try:
-            # Ensure USDC.e is approved for Polymarket exchange
-            await self._ensure_exchange_approval(private_key)
-
             # Import the official Polymarket client for order execution
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
@@ -1037,14 +1034,26 @@ class PolymarketPlatform(BasePlatform):
             # Set API credentials
             creds = client.create_or_derive_api_creds()
             client.set_api_creds(creds)
+            logger.info("CLOB API credentials set")
 
-            # Enable trading by updating balance allowance with CLOB
-            # This is required for the CLOB to recognize wallet's token approvals
+            # Use SDK's built-in method to set all required on-chain allowances
+            # This approves USDC.e and CTF to the correct exchange contracts
+            try:
+                logger.info("Setting on-chain allowances via SDK...")
+                client.set_allowances()
+                logger.info("SDK allowances set successfully")
+            except Exception as e:
+                logger.warning("SDK set_allowances failed, trying manual approval", error=str(e))
+                # Fallback to manual approval
+                await self._ensure_exchange_approval(private_key)
+
+            # Sync balance with CLOB server
             try:
                 client.update_balance_allowance()
-                logger.debug("Balance allowance updated with CLOB")
+                logger.info("Balance synced with CLOB")
             except Exception as e:
-                logger.warning("Failed to update balance allowance, continuing", error=str(e))
+                logger.error("Failed to sync balance with CLOB", error=str(e))
+                raise PlatformError(f"Failed to sync balance: {e}", Platform.POLYMARKET)
 
             token_id = quote.quote_data["token_id"]
 
