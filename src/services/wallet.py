@@ -36,9 +36,13 @@ USDC_DECIMALS = 6
 # Token addresses
 USDC_ADDRESSES = {
     Chain.SOLANA: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC on Solana
-    Chain.POLYGON: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # USDC.e on Polygon
+    Chain.POLYGON: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # Native USDC on Polygon
     Chain.BSC: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",      # USDC on BSC
+    Chain.BASE: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",     # Native USDC on Base
 }
+
+# USDC.e (bridged) address on Polygon - different from native USDC
+USDC_E_POLYGON = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 USDT_ADDRESSES = {
     Chain.BSC: "0x55d398326f99059fF775485246999027B3197955",  # USDT on BSC
@@ -76,27 +80,33 @@ class Balance:
 
 class WalletService(LoggerMixin):
     """Service for managing user wallets across chains."""
-    
+
     def __init__(self):
         self._solana_client: Optional[SolanaClient] = None
         self._polygon_web3: Optional[AsyncWeb3] = None
         self._bsc_web3: Optional[AsyncWeb3] = None
-    
+        self._base_web3: Optional[AsyncWeb3] = None
+
     async def initialize(self) -> None:
         """Initialize blockchain connections."""
         # Solana
         self._solana_client = SolanaClient(settings.solana_rpc_url)
-        
+
         # Polygon
         self._polygon_web3 = AsyncWeb3(
             AsyncWeb3.AsyncHTTPProvider(settings.polygon_rpc_url)
         )
-        
+
         # BSC (needs POA middleware)
         self._bsc_web3 = AsyncWeb3(
             AsyncWeb3.AsyncHTTPProvider(settings.bsc_rpc_url)
         )
         self._bsc_web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+
+        # Base
+        self._base_web3 = AsyncWeb3(
+            AsyncWeb3.AsyncHTTPProvider(settings.base_rpc_url)
+        )
         
         self.log.info("Wallet service initialized")
     
@@ -475,9 +485,9 @@ class WalletService(LoggerMixin):
         """Get balances on Polygon."""
         if not self._polygon_web3:
             raise RuntimeError("Polygon client not initialized")
-        
+
         balances = []
-        
+
         # MATIC
         matic = await self._get_evm_native_balance(
             self._polygon_web3,
@@ -486,8 +496,22 @@ class WalletService(LoggerMixin):
             "MATIC",
         )
         balances.append(matic)
-        
-        # USDC.e
+
+        # USDC.e (bridged - used by Polymarket)
+        try:
+            usdc_e = await self._get_erc20_balance(
+                self._polygon_web3,
+                address,
+                USDC_E_POLYGON,
+                "USDC.e",
+                USDC_DECIMALS,
+                Chain.POLYGON,
+            )
+            balances.append(usdc_e)
+        except Exception as e:
+            self.log.warning("Failed to get Polygon USDC.e balance", error=str(e))
+
+        # Native USDC (Circle)
         try:
             usdc = await self._get_erc20_balance(
                 self._polygon_web3,
@@ -499,8 +523,8 @@ class WalletService(LoggerMixin):
             )
             balances.append(usdc)
         except Exception as e:
-            self.log.warning("Failed to get Polygon USDC balance", error=str(e))
-        
+            self.log.warning("Failed to get Polygon native USDC balance", error=str(e))
+
         return balances
     
     async def get_bsc_balances(self, address: str) -> list[Balance]:
@@ -548,7 +572,39 @@ class WalletService(LoggerMixin):
             self.log.warning("Failed to get BSC USDC balance", error=str(e))
         
         return balances
-    
+
+    async def get_base_balances(self, address: str) -> list[Balance]:
+        """Get balances on Base."""
+        if not self._base_web3:
+            raise RuntimeError("Base client not initialized")
+
+        balances = []
+
+        # ETH (gas token on Base)
+        eth = await self._get_evm_native_balance(
+            self._base_web3,
+            address,
+            Chain.BASE,
+            "ETH",
+        )
+        balances.append(eth)
+
+        # USDC
+        try:
+            usdc = await self._get_erc20_balance(
+                self._base_web3,
+                address,
+                USDC_ADDRESSES[Chain.BASE],
+                "USDC",
+                USDC_DECIMALS,
+                Chain.BASE,
+            )
+            balances.append(usdc)
+        except Exception as e:
+            self.log.warning("Failed to get Base USDC balance", error=str(e))
+
+        return balances
+
     async def get_all_balances(
         self,
         user_id: str,
@@ -578,13 +634,19 @@ class WalletService(LoggerMixin):
                     result[ChainFamily.EVM].extend(polygon)
                 except Exception as e:
                     self.log.error("Failed to get Polygon balances", error=str(e))
-                
+
+                try:
+                    base = await self.get_base_balances(wallet.public_key)
+                    result[ChainFamily.EVM].extend(base)
+                except Exception as e:
+                    self.log.error("Failed to get Base balances", error=str(e))
+
                 try:
                     bsc = await self.get_bsc_balances(wallet.public_key)
                     result[ChainFamily.EVM].extend(bsc)
                 except Exception as e:
                     self.log.error("Failed to get BSC balances", error=str(e))
-        
+
         return result
 
 
