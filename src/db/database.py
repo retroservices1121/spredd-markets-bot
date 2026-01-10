@@ -181,7 +181,7 @@ async def create_wallet(
     chain_family: ChainFamily,
     public_key: str,
     encrypted_private_key: str,
-    pin_protected: bool = True,
+    pin_protected: bool = False,
 ) -> Wallet:
     """Create a new wallet for user."""
     async with get_session() as session:

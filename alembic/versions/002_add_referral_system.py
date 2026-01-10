@@ -38,7 +38,7 @@ def upgrade() -> None:
     )
 
     # Add pin_protected column to wallets table
-    op.add_column('wallets', sa.Column('pin_protected', sa.Boolean(), nullable=False, server_default='true'))
+    op.add_column('wallets', sa.Column('pin_protected', sa.Boolean(), nullable=False, server_default='false'))
 
     # Create fee_balances table
     op.create_table(

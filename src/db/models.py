@@ -154,7 +154,7 @@ class Wallet(Base):
 
     # PIN protection - if True, user PIN is required to decrypt
     # PIN is never stored, only used in key derivation
-    pin_protected: Mapped[bool] = mapped_column(Boolean, default=True)
+    pin_protected: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
