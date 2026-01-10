@@ -959,18 +959,8 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
         try:
             from src.platforms.polymarket import polymarket_platform, MIN_USDC_BALANCE
 
-            # Get wallet private key to check balance
-            wallet_data = await wallet_service.get_wallet(user.id, chain_family)
-            if not wallet_data:
-                await query.edit_message_text(
-                    "❌ No wallet found. Please /start to create one.",
-                    parse_mode=ParseMode.HTML,
-                )
-                return
-
-            # Decrypt private key (need PIN if protected)
+            # For PIN-protected wallets, ask for PIN first
             if is_pin_protected:
-                # Store context and ask for PIN
                 context.user_data["pending_balance_check"] = {
                     "platform": platform_value,
                     "market_id": market_id,
@@ -985,6 +975,12 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
 
             # No PIN - get private key directly
             private_key = await wallet_service.get_private_key(user.id, chain_family)
+            if not private_key:
+                await query.edit_message_text(
+                    "❌ No wallet found. Please /start to create one.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
 
             # Check and auto-swap USDC if needed
             ready, message, swap_tx = await polymarket_platform.ensure_usdc_balance(
