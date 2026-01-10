@@ -172,6 +172,18 @@ class KalshiPlatform(BasePlatform):
         yes_price = None
         no_price = None
 
+        # Log raw price data for debugging
+        logger.debug(
+            "Market price data",
+            ticker=data.get("ticker"),
+            yesAsk=data.get("yesAsk"),
+            noAsk=data.get("noAsk"),
+            yesBid=data.get("yesBid"),
+            noBid=data.get("noBid"),
+            lastYesPrice=data.get("lastYesPrice"),
+            lastNoPrice=data.get("lastNoPrice"),
+        )
+
         if "yesAsk" in data and data["yesAsk"]:
             yes_price = Decimal(str(data["yesAsk"]))
         if "noAsk" in data and data["noAsk"]:
@@ -367,13 +379,29 @@ class KalshiPlatform(BasePlatform):
 
         logger.debug("Quote request params", params=params)
         data = await self._trading_request("GET", "/order", params=params)
-        
+
+        # Log quote response for debugging
+        logger.debug(
+            "Quote response data",
+            inAmount=data.get("inAmount"),
+            outAmount=data.get("outAmount"),
+            price=data.get("price"),
+            priceImpactPct=data.get("priceImpactPct"),
+        )
+
         # Parse quote response
         expected_output = Decimal(str(data.get("outAmount", 0)))
         if side == "buy":
             expected_output = expected_output / Decimal(10**self.collateral_decimals)
-        
+
         price_per_token = amount / expected_output if expected_output > 0 else Decimal(0)
+
+        logger.debug(
+            "Calculated quote price",
+            input_amount=str(amount),
+            expected_output=str(expected_output),
+            price_per_token=str(price_per_token),
+        )
         
         # Handle nullable fields
         price_impact_raw = data.get("priceImpactPct")
