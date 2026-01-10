@@ -447,9 +447,32 @@ class KalshiPlatform(BasePlatform):
             tx = VersionedTransaction.from_bytes(tx_data)
 
             # Sign the message with user's keypair
-            # VersionedTransaction requires signing the message and populating
+            # Get the number of required signatures from the message header
+            num_signers = tx.message.header.num_required_signatures
+
+            # Get existing signatures (may be empty/default)
+            existing_sigs = list(tx.signatures)
+
+            # Find our public key's position in the account keys
+            account_keys = tx.message.account_keys
+            user_pubkey = private_key.pubkey()
+            signer_index = None
+            for i in range(num_signers):
+                if account_keys[i] == user_pubkey:
+                    signer_index = i
+                    break
+
+            if signer_index is None:
+                raise RuntimeError(f"User public key {user_pubkey} not found in transaction signers")
+
+            # Sign the message
             signature = private_key.sign_message(bytes(tx.message))
-            signed_tx = VersionedTransaction.populate(tx.message, [signature])
+
+            # Replace the signature at the correct index
+            existing_sigs[signer_index] = signature
+
+            # Create signed transaction
+            signed_tx = VersionedTransaction.populate(tx.message, existing_sigs)
             
             # Submit to Solana
             if not self._solana_client:
