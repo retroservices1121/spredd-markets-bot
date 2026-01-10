@@ -369,15 +369,19 @@ class PolymarketPlatform(BasePlatform):
         Supports partial matching for truncated condition IDs (Telegram callback limit).
         """
         try:
+            # Fetch events ordered by volume (same as get_markets) to maximize chance of finding
             data = await self._gamma_request("GET", "/events", params={
                 "active": "true",
-                "limit": 100,
+                "closed": "false",
+                "limit": 200,  # Fetch more to increase coverage
+                "order": "volume24hr",
+                "ascending": "false",
             })
 
             for event in data if isinstance(data, list) else []:
                 # Check event-level condition ID (exact or partial match)
                 event_cond = event.get("conditionId", "")
-                if event_cond == market_id or event_cond.startswith(market_id):
+                if event_cond and (event_cond == market_id or event_cond.startswith(market_id)):
                     return self._parse_market(event)
 
                 # Check event ID
@@ -388,10 +392,12 @@ class PolymarketPlatform(BasePlatform):
                 for m in event.get("markets", []):
                     m_cond = m.get("conditionId", "")
                     m_id = str(m.get("id", ""))
-                    if m_cond == market_id or m_cond.startswith(market_id) or m_id == market_id:
+                    if m_cond and (m_cond == market_id or m_cond.startswith(market_id)):
+                        return self._parse_market(event, m)
+                    if m_id == market_id:
                         return self._parse_market(event, m)
 
-            # Try by slug
+            # Fallback: try by slug (unlikely to work with truncated IDs)
             data = await self._gamma_request("GET", "/events", params={"slug": market_id})
             if data and len(data) > 0:
                 return self._parse_market(data[0])
