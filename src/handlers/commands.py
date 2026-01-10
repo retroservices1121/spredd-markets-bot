@@ -174,9 +174,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /faq - Frequently asked questions
 
 <b>Platform Info</b>
-• <b>Kalshi</b> - CFTC regulated, US legal (Solana)
-• <b>Polymarket</b> - Largest market (Polygon)
-• <b>Opinion</b> - AI oracles (BNB Chain)
+• <b>Kalshi</b> (Solana)
+• <b>Polymarket</b> (Polygon)
+• <b>Opinion</b> (BNB Chain)
 
 Need help? @spreddterminal
 """
@@ -578,7 +578,7 @@ async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /referral command - show referral hub."""
+    """Handle /referral command - show referral space."""
     if not update.effective_user or not update.message:
         return
 
@@ -608,7 +608,7 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     total_reach = stats["tier1"] + stats["tier2"] + stats["tier3"]
 
     text = f"""
-🫂 <b>Referral Hub</b>
+🫂 <b>Referral Space</b>
 Earn commissions when your referrals trade!
 
 🪪 <b>Your Code:</b> <code>{referral_code}</code>
