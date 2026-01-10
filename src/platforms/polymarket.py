@@ -877,6 +877,54 @@ class PolymarketPlatform(BasePlatform):
             logger.error("Fee collection failed", error=str(e))
             return False, None, str(e)
 
+    async def _ensure_exchange_approval(self, private_key: Any) -> None:
+        """Ensure USDC.e is approved for Polymarket exchange contract."""
+        from eth_account.signers.local import LocalAccount
+
+        if not isinstance(private_key, LocalAccount):
+            return
+
+        if not self._sync_web3:
+            return
+
+        wallet = Web3.to_checksum_address(private_key.address)
+        usdc_address = Web3.to_checksum_address(USDC_BRIDGED)
+        exchange_address = Web3.to_checksum_address(POLYMARKET_CONTRACTS["exchange"])
+
+        usdc_contract = self._sync_web3.eth.contract(
+            address=usdc_address,
+            abi=ERC20_APPROVE_ABI
+        )
+
+        # Check current allowance
+        allowance = usdc_contract.functions.allowance(wallet, exchange_address).call()
+
+        # If allowance is less than a large threshold, approve max
+        if allowance < 10 ** 12:  # Less than 1M USDC
+            logger.info("Approving Polymarket exchange for USDC.e")
+
+            nonce = self._sync_web3.eth.get_transaction_count(wallet)
+            base_gas_price = self._sync_web3.eth.gas_price
+            gas_price = int(base_gas_price * 1.5)
+
+            approve_tx = usdc_contract.functions.approve(
+                exchange_address,
+                2 ** 256 - 1  # Max approval
+            ).build_transaction({
+                "from": wallet,
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "gas": 100000,
+                "chainId": 137,
+            })
+
+            signed_tx = self._sync_web3.eth.account.sign_transaction(approve_tx, private_key.key)
+            tx_hash = self._sync_web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+            # Wait for confirmation
+            self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            logger.info("Polymarket exchange approval confirmed", tx_hash=tx_hash.hex())
+
     async def execute_trade(
         self,
         quote: Quote,
@@ -897,6 +945,9 @@ class PolymarketPlatform(BasePlatform):
             raise PlatformError("Quote data missing", Platform.POLYMARKET)
 
         try:
+            # Ensure USDC.e is approved for Polymarket exchange
+            await self._ensure_exchange_approval(private_key)
+
             # Import the official Polymarket client for order execution
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
