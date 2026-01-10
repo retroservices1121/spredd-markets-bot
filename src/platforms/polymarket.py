@@ -885,7 +885,7 @@ class PolymarketPlatform(BasePlatform):
         """
         Execute a trade on Polymarket.
 
-        Collects platform fee before executing the trade.
+        Collects platform fee AFTER successful trade execution.
         """
         if not isinstance(private_key, LocalAccount):
             raise PlatformError(
@@ -895,26 +895,6 @@ class PolymarketPlatform(BasePlatform):
 
         if not quote.quote_data:
             raise PlatformError("Quote data missing", Platform.POLYMARKET)
-
-        # Collect platform fee first (if configured)
-        if self._fee_account and self._fee_bps > 0:
-            fee_amount = (quote.input_amount * Decimal(self._fee_bps) / Decimal(10000)).quantize(
-                Decimal("0.000001"), rounding=ROUND_DOWN
-            )
-            if fee_amount > 0:
-                fee_success, fee_tx, fee_error = self._collect_platform_fee(
-                    private_key, fee_amount
-                )
-                if not fee_success:
-                    return TradeResult(
-                        success=False,
-                        tx_hash=None,
-                        input_amount=quote.input_amount,
-                        output_amount=None,
-                        error_message=f"Fee collection failed: {fee_error}",
-                        explorer_url=None,
-                    )
-                logger.debug("Fee collected", fee_amount=str(fee_amount), fee_tx=fee_tx)
 
         try:
             # Import the official Polymarket client for order execution
@@ -956,6 +936,20 @@ class PolymarketPlatform(BasePlatform):
                 market_id=quote.market_id,
                 order_id=tx_hash,
             )
+
+            # Collect platform fee AFTER successful trade
+            if self._fee_account and self._fee_bps > 0:
+                fee_amount = (quote.input_amount * Decimal(self._fee_bps) / Decimal(10000)).quantize(
+                    Decimal("0.000001"), rounding=ROUND_DOWN
+                )
+                if fee_amount > 0:
+                    fee_success, fee_tx, fee_error = self._collect_platform_fee(
+                        private_key, fee_amount
+                    )
+                    if fee_success:
+                        logger.debug("Fee collected", fee_amount=str(fee_amount), fee_tx=fee_tx)
+                    else:
+                        logger.warning("Fee collection failed after trade", error=fee_error)
 
             return TradeResult(
                 success=True,
