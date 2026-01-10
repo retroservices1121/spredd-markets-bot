@@ -943,10 +943,73 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
 
     # Check if wallet is PIN protected
     user = await get_user_by_telegram_id(telegram_id)
-    if user:
-        is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
-    else:
-        is_pin_protected = False
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
+
+    # For Polymarket, check USDC balance and auto-swap if needed
+    if platform_enum == Platform.POLYMARKET:
+        await query.edit_message_text(
+            "🔄 Checking USDC balance...",
+            parse_mode=ParseMode.HTML,
+        )
+
+        try:
+            from src.platforms.polymarket import polymarket_platform, MIN_USDC_BALANCE
+
+            # Get wallet private key to check balance
+            wallet_data = await wallet_service.get_wallet(user.id, chain_family)
+            if not wallet_data:
+                await query.edit_message_text(
+                    "❌ No wallet found. Please /start to create one.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            # Decrypt private key (need PIN if protected)
+            if is_pin_protected:
+                # Store context and ask for PIN
+                context.user_data["pending_balance_check"] = {
+                    "platform": platform_value,
+                    "market_id": market_id,
+                    "outcome": outcome,
+                }
+                await query.edit_message_text(
+                    "🔐 <b>Enter your PIN to continue</b>\n\n"
+                    "Your wallet is PIN-protected. Please enter your PIN:",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            # No PIN - get private key directly
+            private_key = await wallet_service.get_private_key(user.id, chain_family)
+
+            # Check and auto-swap USDC if needed
+            ready, message, swap_tx = await polymarket_platform.ensure_usdc_balance(
+                private_key, MIN_USDC_BALANCE
+            )
+
+            if not ready:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
+                ])
+                await query.edit_message_text(
+                    f"❌ <b>Cannot Trade</b>\n\n{escape_html(message)}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+                return
+
+            # If swap happened, show notification
+            swap_note = ""
+            if swap_tx:
+                swap_note = f"\n\n✅ <i>Auto-swapped USDC to USDC.e</i>"
+
+        except Exception as e:
+            logger.error("Balance check failed", error=str(e))
+            # Continue anyway - let the trade fail with a proper error if needed
 
     # Store buy context for message handler
     context.user_data["pending_buy"] = {
@@ -956,11 +1019,13 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
         "pin_protected": is_pin_protected,
     }
 
+    swap_note = locals().get("swap_note", "")
+
     text = f"""
 💰 <b>Buy {outcome.upper()} Position</b>
 
 Platform: {info['name']}
-Collateral: {info['collateral']}
+Collateral: {info['collateral']}{swap_note}
 
 Enter the amount in {info['collateral']} you want to spend:
 
@@ -2024,6 +2089,116 @@ Side: BUY {outcome.upper()}
         )
 
 
+async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
+    """Handle PIN entry for balance check before Polymarket trade."""
+    if not update.effective_user or not update.message:
+        return
+
+    pending = context.user_data.get("pending_balance_check")
+    if not pending:
+        await update.message.reply_text("No pending balance check.")
+        return
+
+    # Delete the PIN message for security
+    try:
+        await update.message.delete()
+    except:
+        pass
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        del context.user_data["pending_balance_check"]
+        await update.message.reply_text("Please /start first!")
+        return
+
+    platform_value = pending["platform"]
+    market_id = pending["market_id"]
+    outcome = pending["outcome"]
+    chain_family = ChainFamily.EVM
+
+    status_msg = await update.message.reply_text(
+        "🔄 Verifying PIN and checking USDC balance...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Get private key with PIN
+        private_key = await wallet_service.get_private_key(user.id, chain_family, pin)
+
+        from src.platforms.polymarket import polymarket_platform, MIN_USDC_BALANCE
+
+        # Check and auto-swap USDC if needed
+        ready, message, swap_tx = await polymarket_platform.ensure_usdc_balance(
+            private_key, MIN_USDC_BALANCE
+        )
+
+        del context.user_data["pending_balance_check"]
+
+        if not ready:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
+            ])
+            await status_msg.edit_text(
+                f"❌ <b>Cannot Trade</b>\n\n{escape_html(message)}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+            return
+
+        # Balance OK - proceed to buy flow
+        swap_note = ""
+        if swap_tx:
+            swap_note = "\n\n✅ <i>Auto-swapped USDC to USDC.e</i>"
+
+        context.user_data["pending_buy"] = {
+            "platform": platform_value,
+            "market_id": market_id,
+            "outcome": outcome,
+            "pin_protected": True,
+            "verified_pin": pin,  # Store PIN for trade execution
+        }
+
+        info = PLATFORM_INFO[Platform(platform_value)]
+
+        text = f"""
+💰 <b>Buy {outcome.upper()} Position</b>
+
+Platform: {info['name']}
+Collateral: {info['collateral']}{swap_note}
+
+Enter the amount in {info['collateral']} you want to spend:
+
+<i>Example: 10 (for 10 {info['collateral']})</i>
+
+Type /cancel to cancel.
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
+        ])
+
+        await status_msg.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        del context.user_data["pending_balance_check"]
+        error_msg = str(e)
+        if "Decryption failed" in error_msg or "Invalid" in error_msg:
+            await status_msg.edit_text(
+                "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect.",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            logger.error("Balance check with PIN failed", error=error_msg)
+            await status_msg.edit_text(
+                f"❌ Error: {escape_html(error_msg)}",
+                parse_mode=ParseMode.HTML,
+            )
+
+
 async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
     """Process buy order with user's PIN."""
     if not update.effective_user or not update.message:
@@ -2588,6 +2763,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if "pending_buy" in context.user_data:
             del context.user_data["pending_buy"]
             await update.message.reply_text("Order cancelled.")
+        elif "pending_balance_check" in context.user_data:
+            del context.user_data["pending_balance_check"]
+            await update.message.reply_text("Balance check cancelled.")
         elif "pending_wallet_pin" in context.user_data:
             del context.user_data["pending_wallet_pin"]
             await update.message.reply_text("Wallet creation cancelled.")
@@ -2614,6 +2792,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Check if user has a pending withdrawal
     if "pending_withdrawal" in context.user_data and not text.startswith("/"):
         await handle_withdrawal_with_pin(update, context, text)
+        return
+
+    # Check if user has a pending balance check (PIN entry for Polymarket)
+    if "pending_balance_check" in context.user_data and not text.startswith("/"):
+        await handle_balance_check_with_pin(update, context, text)
         return
 
     # Check if user has a pending buy order

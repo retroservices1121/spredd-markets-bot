@@ -53,9 +53,69 @@ ERC20_TRANSFER_ABI = [
 POLYMARKET_CONTRACTS = {
     "exchange": "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
     "neg_risk_exchange": "0xC5d563A36AE78145C45a50134d48A1215220f80a",
-    "collateral": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",  # USDC.e
+    "collateral": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",  # USDC.e (bridged)
     "ctf": "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",  # Conditional Tokens
 }
+
+# Token addresses on Polygon
+USDC_NATIVE = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"  # Native USDC
+USDC_BRIDGED = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e (bridged)
+
+# Uniswap V3 SwapRouter on Polygon
+UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
+
+# Minimum balance threshold for auto-swap (in USDC)
+MIN_USDC_BALANCE = Decimal("5")
+
+# Uniswap V3 SwapRouter ABI (exactInputSingle)
+UNISWAP_SWAP_ABI = [
+    {
+        "inputs": [
+            {
+                "components": [
+                    {"name": "tokenIn", "type": "address"},
+                    {"name": "tokenOut", "type": "address"},
+                    {"name": "fee", "type": "uint24"},
+                    {"name": "recipient", "type": "address"},
+                    {"name": "deadline", "type": "uint256"},
+                    {"name": "amountIn", "type": "uint256"},
+                    {"name": "amountOutMinimum", "type": "uint256"},
+                    {"name": "sqrtPriceLimitX96", "type": "uint160"},
+                ],
+                "name": "params",
+                "type": "tuple",
+            }
+        ],
+        "name": "exactInputSingle",
+        "outputs": [{"name": "amountOut", "type": "uint256"}],
+        "stateMutability": "payable",
+        "type": "function",
+    }
+]
+
+# ERC20 Approve ABI
+ERC20_APPROVE_ABI = [
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "_spender", "type": "address"},
+            {"name": "_value", "type": "uint256"}
+        ],
+        "name": "approve",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "_owner", "type": "address"},
+            {"name": "_spender", "type": "address"}
+        ],
+        "name": "allowance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    }
+]
 
 
 class PolymarketPlatform(BasePlatform):
@@ -120,7 +180,221 @@ class PolymarketPlatform(BasePlatform):
             await self._http_client.aclose()
         if self._gamma_client:
             await self._gamma_client.aclose()
-    
+
+    # ===================
+    # USDC Balance & Auto-Swap
+    # ===================
+
+    def get_usdc_balances(self, wallet_address: str) -> Tuple[Decimal, Decimal]:
+        """
+        Get both native USDC and USDC.e balances for a wallet.
+
+        Returns:
+            Tuple of (native_usdc_balance, bridged_usdc_balance) in USDC units
+        """
+        if not self._sync_web3:
+            raise RuntimeError("Web3 not initialized")
+
+        wallet = Web3.to_checksum_address(wallet_address)
+
+        # Get native USDC balance
+        native_contract = self._sync_web3.eth.contract(
+            address=Web3.to_checksum_address(USDC_NATIVE),
+            abi=ERC20_TRANSFER_ABI
+        )
+        native_balance_raw = native_contract.functions.balanceOf(wallet).call()
+        native_balance = Decimal(native_balance_raw) / Decimal(10 ** 6)
+
+        # Get USDC.e balance
+        bridged_contract = self._sync_web3.eth.contract(
+            address=Web3.to_checksum_address(USDC_BRIDGED),
+            abi=ERC20_TRANSFER_ABI
+        )
+        bridged_balance_raw = bridged_contract.functions.balanceOf(wallet).call()
+        bridged_balance = Decimal(bridged_balance_raw) / Decimal(10 ** 6)
+
+        return native_balance, bridged_balance
+
+    def swap_native_to_bridged_usdc(
+        self,
+        private_key: Any,
+        amount: Decimal,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Swap native USDC to USDC.e using Uniswap V3.
+
+        Args:
+            private_key: User's EVM account for signing
+            amount: Amount of native USDC to swap
+
+        Returns:
+            Tuple of (success, tx_hash, error_message)
+        """
+        from eth_account.signers.local import LocalAccount
+        import time
+
+        if not isinstance(private_key, LocalAccount):
+            return False, None, "Invalid private key type"
+
+        if not self._sync_web3:
+            return False, None, "Web3 not initialized"
+
+        try:
+            wallet = private_key.address
+            amount_raw = int(amount * Decimal(10 ** 6))
+
+            # Check native USDC balance
+            native_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(USDC_NATIVE),
+                abi=ERC20_TRANSFER_ABI + ERC20_APPROVE_ABI
+            )
+            balance = native_contract.functions.balanceOf(wallet).call()
+            if balance < amount_raw:
+                return False, None, f"Insufficient native USDC (have {Decimal(balance)/Decimal(10**6)}, need {amount})"
+
+            # Check and set allowance for Uniswap router
+            router_address = Web3.to_checksum_address(UNISWAP_V3_ROUTER)
+            allowance = native_contract.functions.allowance(wallet, router_address).call()
+
+            if allowance < amount_raw:
+                logger.info("Approving Uniswap router for native USDC", amount=str(amount))
+                nonce = self._sync_web3.eth.get_transaction_count(wallet)
+                gas_price = self._sync_web3.eth.gas_price
+
+                approve_tx = native_contract.functions.approve(
+                    router_address,
+                    2 ** 256 - 1  # Max approval
+                ).build_transaction({
+                    "from": wallet,
+                    "nonce": nonce,
+                    "gasPrice": gas_price,
+                    "gas": 100000,
+                    "chainId": 137,
+                })
+
+                signed_approve = self._sync_web3.eth.account.sign_transaction(approve_tx, private_key.key)
+                approve_hash = self._sync_web3.eth.send_raw_transaction(signed_approve.raw_transaction)
+
+                # Wait for approval
+                self._sync_web3.eth.wait_for_transaction_receipt(approve_hash, timeout=60)
+                logger.info("Approval confirmed", tx_hash=approve_hash.hex())
+
+            # Execute swap via Uniswap V3
+            router_contract = self._sync_web3.eth.contract(
+                address=router_address,
+                abi=UNISWAP_SWAP_ABI
+            )
+
+            # Allow 1% slippage for stablecoin swap
+            min_amount_out = int(amount_raw * 99 // 100)
+            deadline = int(time.time()) + 300  # 5 minutes
+
+            swap_params = (
+                Web3.to_checksum_address(USDC_NATIVE),   # tokenIn
+                Web3.to_checksum_address(USDC_BRIDGED),  # tokenOut
+                500,                                      # fee tier (0.05% for stablecoins)
+                wallet,                                   # recipient
+                deadline,                                 # deadline
+                amount_raw,                               # amountIn
+                min_amount_out,                           # amountOutMinimum
+                0,                                        # sqrtPriceLimitX96 (0 = no limit)
+            )
+
+            nonce = self._sync_web3.eth.get_transaction_count(wallet)
+            gas_price = self._sync_web3.eth.gas_price
+
+            swap_tx = router_contract.functions.exactInputSingle(swap_params).build_transaction({
+                "from": wallet,
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "gas": 200000,
+                "chainId": 137,
+                "value": 0,
+            })
+
+            signed_swap = self._sync_web3.eth.account.sign_transaction(swap_tx, private_key.key)
+            swap_hash = self._sync_web3.eth.send_raw_transaction(signed_swap.raw_transaction)
+            swap_hash_hex = swap_hash.hex()
+
+            logger.info("Swap transaction sent", tx_hash=swap_hash_hex, amount=str(amount))
+
+            # Wait for confirmation
+            receipt = self._sync_web3.eth.wait_for_transaction_receipt(swap_hash, timeout=60)
+            if receipt.status != 1:
+                return False, swap_hash_hex, "Swap transaction failed on-chain"
+
+            logger.info("Swap confirmed", tx_hash=swap_hash_hex)
+            return True, swap_hash_hex, None
+
+        except Exception as e:
+            logger.error("Swap failed", error=str(e))
+            return False, None, str(e)
+
+    async def ensure_usdc_balance(
+        self,
+        private_key: Any,
+        required_amount: Decimal = MIN_USDC_BALANCE,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Ensure wallet has sufficient USDC.e for trading.
+
+        If USDC.e < required_amount and native USDC > required_amount,
+        automatically swaps native USDC to USDC.e.
+
+        Args:
+            private_key: User's EVM account
+            required_amount: Minimum USDC.e balance required
+
+        Returns:
+            Tuple of (ready_to_trade, message, tx_hash)
+            - ready_to_trade: True if wallet has sufficient USDC.e
+            - message: Human-readable status message
+            - tx_hash: Swap transaction hash if swap was performed
+        """
+        from eth_account.signers.local import LocalAccount
+
+        if not isinstance(private_key, LocalAccount):
+            return False, "Invalid wallet", None
+
+        try:
+            native_balance, bridged_balance = self.get_usdc_balances(private_key.address)
+
+            logger.info(
+                "USDC balance check",
+                wallet=private_key.address[:10] + "...",
+                native_usdc=str(native_balance),
+                bridged_usdc=str(bridged_balance),
+                required=str(required_amount),
+            )
+
+            # If already have enough USDC.e, good to go
+            if bridged_balance >= required_amount:
+                return True, f"USDC.e balance: {bridged_balance:.2f}", None
+
+            # If not enough USDC.e but have native USDC, swap it
+            if native_balance >= required_amount:
+                swap_amount = native_balance  # Swap all native USDC
+                message = f"Swapping {swap_amount:.2f} USDC → USDC.e..."
+
+                success, tx_hash, error = self.swap_native_to_bridged_usdc(
+                    private_key, swap_amount
+                )
+
+                if success:
+                    # Check new balance
+                    _, new_bridged = self.get_usdc_balances(private_key.address)
+                    return True, f"Swapped! New USDC.e balance: {new_bridged:.2f}", tx_hash
+                else:
+                    return False, f"Swap failed: {error}", tx_hash
+
+            # Neither has enough
+            total = native_balance + bridged_balance
+            return False, f"Insufficient USDC. You have {total:.2f} total (need {required_amount:.2f}). Please deposit more USDC to your wallet.", None
+
+        except Exception as e:
+            logger.error("Balance check failed", error=str(e))
+            return False, f"Error checking balance: {str(e)}", None
+
     async def _clob_request(
         self,
         method: str,
