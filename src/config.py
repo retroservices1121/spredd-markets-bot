@@ -72,7 +72,14 @@ class Settings(BaseSettings):
         default="https://c.prediction-markets-api.dflow.net",
         description="DFlow metadata API URL"
     )
-    kalshi_builder_code: Optional[str] = Field(default=None, description="Kalshi builder code for revenue")
+    kalshi_fee_account: Optional[str] = Field(
+        default=None,
+        description="Solana wallet address to receive platform fees (must be valid Solana address)"
+    )
+    kalshi_fee_bps: int = Field(
+        default=100,
+        description="Platform fee in basis points (100 = 1%)"
+    )
     
     # ===================
     # Polymarket Configuration

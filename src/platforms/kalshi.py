@@ -53,7 +53,8 @@ class KalshiPlatform(BasePlatform):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._solana_client: Optional[SolanaClient] = None
         self._api_key = settings.dflow_api_key
-        self._builder_code = settings.kalshi_builder_code
+        self._fee_account = settings.kalshi_fee_account
+        self._fee_bps = settings.kalshi_fee_bps
     
     async def initialize(self) -> None:
         """Initialize DFlow API client."""
@@ -70,7 +71,13 @@ class KalshiPlatform(BasePlatform):
 
         self._solana_client = SolanaClient(settings.solana_rpc_url)
 
-        logger.info("Kalshi platform initialized", api_key_set=bool(self._api_key))
+        fee_enabled = bool(self._fee_account and len(self._fee_account) >= 32)
+        logger.info(
+            "Kalshi platform initialized",
+            api_key_set=bool(self._api_key),
+            fee_collection=fee_enabled,
+            fee_bps=self._fee_bps if fee_enabled else 0,
+        )
     
     async def close(self) -> None:
         """Close connections."""
@@ -418,8 +425,15 @@ class KalshiPlatform(BasePlatform):
                 "userPublicKey": str(private_key.pubkey()),
             }
 
-            # Note: feeAccount requires a valid Solana address, not a UUID
-            # If you have a fee collection address, add: params["feeAccount"] = "your_solana_address"
+            # Add platform fee collection if configured with valid Solana address
+            if self._fee_account and len(self._fee_account) >= 32:
+                params["feeAccount"] = self._fee_account
+                params["platformFeeBps"] = self._fee_bps
+                logger.debug(
+                    "Fee collection enabled",
+                    fee_account=self._fee_account[:8] + "...",
+                    fee_bps=self._fee_bps,
+                )
 
             response = await self._trading_request(
                 "GET",
