@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     )
     
     # ===================
-    # EVM Configuration (shared for Polygon & BSC)
+    # EVM Configuration (shared for Polygon, BSC & L2s)
     # ===================
     polygon_rpc_url: str = Field(
         default="https://polygon-rpc.com",
@@ -59,6 +59,41 @@ class Settings(BaseSettings):
         default="https://bsc-dataseed.binance.org",
         description="BSC RPC endpoint"
     )
+    base_rpc_url: str = Field(
+        default="https://mainnet.base.org",
+        description="Base L2 RPC endpoint"
+    )
+    arbitrum_rpc_url: str = Field(
+        default="https://arb1.arbitrum.io/rpc",
+        description="Arbitrum One RPC endpoint"
+    )
+    optimism_rpc_url: str = Field(
+        default="https://mainnet.optimism.io",
+        description="Optimism RPC endpoint"
+    )
+    ethereum_rpc_url: str = Field(
+        default="https://eth.llamarpc.com",
+        description="Ethereum mainnet RPC endpoint"
+    )
+
+    # ===================
+    # Cross-Chain Bridge Configuration
+    # ===================
+    auto_bridge_enabled: bool = Field(
+        default=True,
+        description="Enable automatic cross-chain bridging via CCTP"
+    )
+    bridge_source_chains: str = Field(
+        default="base",
+        description="Comma-separated list of source chains for auto-bridging (base,arbitrum,optimism)"
+    )
+
+    @property
+    def enabled_bridge_chains(self) -> list[str]:
+        """Parse enabled bridge chains from config."""
+        if not self.bridge_source_chains:
+            return []
+        return [c.strip().lower() for c in self.bridge_source_chains.split(",") if c.strip()]
     
     # ===================
     # Kalshi / DFlow Configuration
@@ -187,6 +222,10 @@ class Settings(BaseSettings):
             "solana": self.solana_rpc_url,
             "polygon": self.polygon_rpc_url,
             "bsc": self.bsc_rpc_url,
+            "base": self.base_rpc_url,
+            "arbitrum": self.arbitrum_rpc_url,
+            "optimism": self.optimism_rpc_url,
+            "ethereum": self.ethereum_rpc_url,
         }
         return rpcs.get(chain.lower(), "")
     

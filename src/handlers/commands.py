@@ -998,10 +998,13 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
                 )
                 return
 
-            # If swap happened, show notification
+            # If swap/bridge happened, show notification
             swap_note = ""
             if swap_tx:
-                swap_note = f"\n\n✅ <i>Auto-swapped USDC to USDC.e</i>"
+                if "Bridged" in message:
+                    swap_note = f"\n\n✅ <i>{escape_html(message)}</i>"
+                else:
+                    swap_note = f"\n\n✅ <i>Auto-swapped USDC to USDC.e</i>"
 
         except Exception as e:
             logger.error("Balance check failed", error=str(e))
@@ -2177,7 +2180,10 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
         # Balance OK - proceed to buy flow
         swap_note = ""
         if swap_tx:
-            swap_note = "\n\n✅ <i>Auto-swapped USDC to USDC.e</i>"
+            if "Bridged" in message:
+                swap_note = f"\n\n✅ <i>{escape_html(message)}</i>"
+            else:
+                swap_note = "\n\n✅ <i>Auto-swapped USDC to USDC.e</i>"
 
         context.user_data["pending_buy"] = {
             "platform": platform_value,

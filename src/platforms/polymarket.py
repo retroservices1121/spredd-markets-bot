@@ -341,10 +341,12 @@ class PolymarketPlatform(BasePlatform):
         required_amount: Decimal = MIN_USDC_BALANCE,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
-        Ensure wallet has sufficient USDC.e for trading.
+        Ensure wallet has sufficient USDC.e for trading on Polygon.
 
-        If USDC.e < required_amount and native USDC > required_amount,
-        automatically swaps native USDC to USDC.e.
+        Checks balances in order:
+        1. Polygon USDC.e - if sufficient, ready to trade
+        2. Polygon native USDC - if sufficient, swap to USDC.e
+        3. Other chains (Base, etc.) - if sufficient, bridge to Polygon via CCTP
 
         Args:
             private_key: User's EVM account
@@ -354,7 +356,7 @@ class PolymarketPlatform(BasePlatform):
             Tuple of (ready_to_trade, message, tx_hash)
             - ready_to_trade: True if wallet has sufficient USDC.e
             - message: Human-readable status message
-            - tx_hash: Swap transaction hash if swap was performed
+            - tx_hash: Transaction hash if swap/bridge was performed
         """
         from eth_account.signers.local import LocalAccount
 
@@ -372,11 +374,11 @@ class PolymarketPlatform(BasePlatform):
                 required=str(required_amount),
             )
 
-            # If already have enough USDC.e, good to go
+            # Step 1: If already have enough USDC.e, good to go
             if bridged_balance >= required_amount:
                 return True, f"USDC.e balance: {bridged_balance:.2f}", None
 
-            # If not enough USDC.e but have native USDC, swap it
+            # Step 2: If not enough USDC.e but have native USDC on Polygon, swap it
             if native_balance >= required_amount:
                 swap_amount = native_balance  # Swap all native USDC
                 message = f"Swapping {swap_amount:.2f} USDC → USDC.e..."
@@ -392,13 +394,106 @@ class PolymarketPlatform(BasePlatform):
                 else:
                     return False, f"Swap failed: {error}", tx_hash
 
-            # Neither has enough
+            # Step 3: Check other chains for USDC and bridge if available
+            bridge_result = await self._try_bridge_from_other_chains(
+                private_key, required_amount
+            )
+            if bridge_result[0]:
+                # Bridge succeeded, now swap native USDC to USDC.e
+                native_balance, bridged_balance = self.get_usdc_balances(private_key.address)
+                if native_balance >= required_amount:
+                    success, tx_hash, error = self.swap_native_to_bridged_usdc(
+                        private_key, native_balance
+                    )
+                    if success:
+                        _, new_bridged = self.get_usdc_balances(private_key.address)
+                        return True, f"Bridged and swapped! USDC.e balance: {new_bridged:.2f}", tx_hash
+                return bridge_result
+
+            # Step 4: Neither Polygon nor other chains have enough
             total = native_balance + bridged_balance
-            return False, f"Insufficient USDC. You have {total:.2f} total (need {required_amount:.2f}). Please deposit more USDC to your wallet.", None
+            return False, f"Insufficient USDC. You have {total:.2f} on Polygon (need {required_amount:.2f}). Please deposit more USDC to your wallet.", None
 
         except Exception as e:
             logger.error("Balance check failed", error=str(e))
             return False, f"Error checking balance: {str(e)}", None
+
+    async def _try_bridge_from_other_chains(
+        self,
+        private_key: Any,
+        required_amount: Decimal,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Check other chains for USDC and bridge to Polygon if found.
+
+        Args:
+            private_key: User's EVM account
+            required_amount: Amount needed
+
+        Returns:
+            Tuple of (success, message, tx_hash)
+        """
+        from src.config import settings
+
+        if not settings.auto_bridge_enabled:
+            return False, "Auto-bridge disabled", None
+
+        try:
+            from src.services.bridge import bridge_service, BridgeChain
+
+            # Initialize bridge service if needed
+            if not bridge_service._initialized:
+                bridge_service.initialize()
+
+            # Check which chains have sufficient balance
+            source_chain_with_balance = bridge_service.find_chain_with_balance(
+                private_key.address,
+                required_amount,
+                exclude_chain=BridgeChain.POLYGON,
+            )
+
+            if not source_chain_with_balance:
+                return False, "No other chains have sufficient USDC", None
+
+            source_chain, balance = source_chain_with_balance
+
+            # Only bridge from enabled chains
+            enabled_chains = settings.enabled_bridge_chains
+            if source_chain.value not in enabled_chains:
+                logger.info(
+                    f"Found USDC on {source_chain.value} but bridging not enabled",
+                    balance=str(balance)
+                )
+                return False, f"Found {balance:.2f} USDC on {source_chain.value} but auto-bridge not enabled for this chain", None
+
+            logger.info(
+                "Bridging USDC via CCTP",
+                source=source_chain.value,
+                dest="polygon",
+                amount=str(required_amount),
+            )
+
+            # Bridge the required amount (plus a small buffer)
+            bridge_amount = min(balance, required_amount + Decimal("1"))
+
+            result = bridge_service.bridge_usdc(
+                private_key,
+                source_chain,
+                BridgeChain.POLYGON,
+                bridge_amount,
+            )
+
+            if result.success:
+                return True, f"Bridged {bridge_amount:.2f} USDC from {source_chain.value} to Polygon", result.burn_tx_hash
+            else:
+                return False, f"Bridge failed: {result.error_message}", None
+
+        except ImportError:
+            logger.warning("Bridge service not available")
+            return False, "Bridge service not configured", None
+        except Exception as e:
+            logger.error("Bridge attempt failed", error=str(e))
+            return False, f"Bridge error: {str(e)}", None
 
     async def _clob_request(
         self,
