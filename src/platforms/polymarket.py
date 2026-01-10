@@ -53,6 +53,7 @@ ERC20_TRANSFER_ABI = [
 POLYMARKET_CONTRACTS = {
     "exchange": "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
     "neg_risk_exchange": "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+    "neg_risk_adapter": "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
     "collateral": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",  # USDC.e (bridged)
     "ctf": "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",  # Conditional Tokens
 }
@@ -878,7 +879,7 @@ class PolymarketPlatform(BasePlatform):
             return False, None, str(e)
 
     async def _ensure_exchange_approval(self, private_key: Any) -> None:
-        """Ensure USDC.e is approved for both Polymarket exchange contracts."""
+        """Ensure USDC.e and CTF tokens are approved for Polymarket exchange contracts."""
         from eth_account.signers.local import LocalAccount
 
         if not isinstance(private_key, LocalAccount):
@@ -895,10 +896,11 @@ class PolymarketPlatform(BasePlatform):
             abi=ERC20_APPROVE_ABI
         )
 
-        # Approve both exchange contracts (regular and neg_risk)
+        # Approve all exchange contracts for USDC.e (regular, neg_risk, and adapter)
         contracts_to_approve = [
             ("exchange", POLYMARKET_CONTRACTS["exchange"]),
             ("neg_risk_exchange", POLYMARKET_CONTRACTS["neg_risk_exchange"]),
+            ("neg_risk_adapter", POLYMARKET_CONTRACTS["neg_risk_adapter"]),
         ]
 
         for contract_name, contract_addr in contracts_to_approve:
@@ -932,6 +934,64 @@ class PolymarketPlatform(BasePlatform):
                 # Wait for confirmation
                 self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
                 logger.info(f"Polymarket {contract_name} approval confirmed", tx_hash=tx_hash.hex())
+
+        # Also set approval for CTF (Conditional Tokens Framework) to the exchange contracts
+        # This is needed for selling outcome tokens
+        ctf_address = Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"])
+
+        # ERC1155 setApprovalForAll ABI
+        set_approval_abi = [{
+            "inputs": [
+                {"name": "operator", "type": "address"},
+                {"name": "approved", "type": "bool"}
+            ],
+            "name": "setApprovalForAll",
+            "outputs": [],
+            "type": "function"
+        }, {
+            "inputs": [
+                {"name": "account", "type": "address"},
+                {"name": "operator", "type": "address"}
+            ],
+            "name": "isApprovedForAll",
+            "outputs": [{"name": "", "type": "bool"}],
+            "type": "function"
+        }]
+
+        ctf_contract = self._sync_web3.eth.contract(
+            address=ctf_address,
+            abi=set_approval_abi
+        )
+
+        # Approve exchange contracts for CTF tokens
+        for contract_name, contract_addr in contracts_to_approve:
+            exchange_address = Web3.to_checksum_address(contract_addr)
+
+            is_approved = ctf_contract.functions.isApprovedForAll(wallet, exchange_address).call()
+
+            if not is_approved:
+                logger.info(f"Approving Polymarket {contract_name} for CTF tokens")
+
+                nonce = self._sync_web3.eth.get_transaction_count(wallet)
+                base_gas_price = self._sync_web3.eth.gas_price
+                gas_price = int(base_gas_price * 1.5)
+
+                approve_tx = ctf_contract.functions.setApprovalForAll(
+                    exchange_address,
+                    True
+                ).build_transaction({
+                    "from": wallet,
+                    "nonce": nonce,
+                    "gasPrice": gas_price,
+                    "gas": 100000,
+                    "chainId": 137,
+                })
+
+                signed_tx = self._sync_web3.eth.account.sign_transaction(approve_tx, private_key.key)
+                tx_hash = self._sync_web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+                self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+                logger.info(f"Polymarket {contract_name} CTF approval confirmed", tx_hash=tx_hash.hex())
 
     async def execute_trade(
         self,
@@ -972,6 +1032,14 @@ class PolymarketPlatform(BasePlatform):
             # Set API credentials
             creds = client.create_or_derive_api_creds()
             client.set_api_creds(creds)
+
+            # Enable trading by updating balance allowance with CLOB
+            # This is required for the CLOB to recognize wallet's token approvals
+            try:
+                client.update_balance_allowance()
+                logger.debug("Balance allowance updated with CLOB")
+            except Exception as e:
+                logger.warning("Failed to update balance allowance, continuing", error=str(e))
 
             token_id = quote.quote_data["token_id"]
 
