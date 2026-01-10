@@ -1531,13 +1531,13 @@ Polymarket requires <b>USDC.e</b> (bridged USDC), not native USDC. The bot autom
 <b>How it works:</b>
 When you start a trade on Polymarket, the bot checks your balances:
 
-✅ <b>If USDC.e >= $5:</b>
+✅ <b>If USDC.e is $5 or more:</b>
 Trade proceeds normally
 
-🔄 <b>If USDC.e < $5 but native USDC >= $5:</b>
+🔄 <b>If USDC.e is under $5 but native USDC is $5+:</b>
 Bot automatically swaps your native USDC to USDC.e via Uniswap, then proceeds with trade
 
-❌ <b>If both < $5:</b>
+❌ <b>If both are under $5:</b>
 You'll be asked to deposit more USDC
 
 <b>Why this matters:</b>
@@ -1548,7 +1548,7 @@ You'll be asked to deposit more USDC
 
 <b>Swap details:</b>
 • Uses Uniswap V3 (0.05% fee tier)
-• ~1% slippage tolerance
+• About 1% slippage tolerance
 • Nearly 1:1 exchange rate
 • Requires MATIC for gas
 
