@@ -225,6 +225,22 @@ async def get_user_wallets(user_id: str) -> list[Wallet]:
         return list(result.scalars().all())
 
 
+async def delete_user_wallets(user_id: str) -> bool:
+    """Delete all wallets for a user."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(Wallet).where(Wallet.user_id == user_id)
+        )
+        wallets = list(result.scalars().all())
+
+        for wallet in wallets:
+            await session.delete(wallet)
+
+        await session.commit()
+        logger.info("Deleted user wallets", user_id=user_id, count=len(wallets))
+        return True
+
+
 # ===================
 # Position Operations
 # ===================

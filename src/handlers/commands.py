@@ -309,12 +309,20 @@ To protect your funds, please set a 4-6 digit PIN.
 
     if is_pin_protected:
         text += "\n\n🔐 <i>PIN-protected: Only you can sign transactions</i>"
+    else:
+        text += "\n\n⚠️ <i>Wallet not PIN-protected. Create a new secure wallet to trade.</i>"
 
     # Buttons
-    keyboard = InlineKeyboardMarkup([
+    buttons = [
         [InlineKeyboardButton("🔄 Refresh Balances", callback_data="wallet:refresh")],
-        [InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")],
-    ])
+    ]
+
+    if not is_pin_protected:
+        buttons.append([InlineKeyboardButton("🔐 Create New Secure Wallet", callback_data="wallet:create_new")])
+
+    buttons.append([InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")])
+
+    keyboard = InlineKeyboardMarkup(buttons)
 
     await update.message.reply_text(
         text,
@@ -677,6 +685,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await handle_wallet_refresh(query, update.effective_user.id)
             elif parts[1] == "export":
                 await handle_wallet_export(query, update.effective_user.id)
+            elif parts[1] == "create_new":
+                await handle_wallet_create_new(query, update.effective_user.id, context)
+            elif parts[1] == "confirm_create":
+                await handle_wallet_confirm_create(query, update.effective_user.id, context)
 
         elif action == "export":
             await handle_export_key(query, parts[1], update.effective_user.id, context)
@@ -896,35 +908,55 @@ async def handle_wallet_refresh(query, telegram_id: int) -> None:
     if not user:
         await query.edit_message_text("Please /start first!")
         return
-    
+
     await query.edit_message_text("🔄 Refreshing balances...")
-    
+
+    # Get existing wallets from DB to check PIN status
+    from src.db.database import get_user_wallets
+    existing_wallets = await get_user_wallets(user.id)
+    is_pin_protected = any(w.pin_protected for w in existing_wallets) if existing_wallets else False
+
     wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
     balances = await wallet_service.get_all_balances(user.id)
-    
+
     solana_wallet = wallets.get(ChainFamily.SOLANA)
     evm_wallet = wallets.get(ChainFamily.EVM)
-    
-    text = "💰 <b>Your Wallets</b>\n\n"
-    
+
+    text = "💰 <b>Your Wallets</b>"
+    if is_pin_protected:
+        text += " 🔐"
+    text += "\n\n"
+
     if solana_wallet:
         text += f"<b>🟣 Solana</b> (Kalshi)\n"
         text += f"<code>{solana_wallet.public_key}</code>\n"
         for bal in balances.get(ChainFamily.SOLANA, []):
             text += f"  • {bal.formatted}\n"
         text += "\n"
-    
+
     if evm_wallet:
         text += f"<b>🔷 EVM</b> (Polymarket + Opinion)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
         for bal in balances.get(ChainFamily.EVM, []):
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
-    
-    keyboard = InlineKeyboardMarkup([
+
+    if is_pin_protected:
+        text += "\n🔐 <i>PIN-protected: Only you can sign transactions</i>"
+    else:
+        text += "\n⚠️ <i>Wallet not PIN-protected. Create a new secure wallet to trade.</i>"
+
+    # Build buttons
+    buttons = [
         [InlineKeyboardButton("🔄 Refresh", callback_data="wallet:refresh")],
-        [InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")],
-        [InlineKeyboardButton("« Back", callback_data="menu:main")],
-    ])
+    ]
+
+    if not is_pin_protected:
+        buttons.append([InlineKeyboardButton("🔐 Create New Secure Wallet", callback_data="wallet:create_new")])
+
+    buttons.append([InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")])
+    buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
+
+    keyboard = InlineKeyboardMarkup(buttons)
 
     await query.edit_message_text(
         text,
@@ -958,6 +990,99 @@ Keys will be auto-deleted after 60 seconds.
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
+    )
+
+
+async def handle_wallet_create_new(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle creating a new wallet with PIN protection."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Check if user has existing wallets with funds
+    from src.db.database import get_user_wallets
+    existing_wallets = await get_user_wallets(user.id)
+
+    if existing_wallets:
+        # Show warning about replacing wallets
+        text = """
+⚠️ <b>Create New Wallet</b>
+
+You already have wallets. Creating new ones will:
+
+• <b>Generate NEW wallet addresses</b>
+• <b>Replace your existing wallets</b>
+• Your old addresses will no longer work
+
+<b>IMPORTANT:</b>
+Before proceeding, make sure to:
+1. Export your current private keys (if needed)
+2. Transfer any funds to a safe location
+
+<b>Are you sure you want to continue?</b>
+"""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes, Create New Wallet", callback_data="wallet:confirm_create")],
+            [InlineKeyboardButton("📤 Export Keys First", callback_data="wallet:export")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="wallet:refresh")],
+        ])
+    else:
+        # No existing wallets, go straight to PIN setup
+        text = """
+🔐 <b>Create Secure Wallet</b>
+
+You'll create PIN-protected wallets for:
+• <b>Solana</b> (for Kalshi trading)
+• <b>EVM</b> (for Polymarket & Opinion)
+
+Your PIN ensures only YOU can sign transactions.
+
+<b>Ready to set up your secure wallets?</b>
+"""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Set Up PIN", callback_data="wallet:confirm_create")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="wallet:refresh")],
+        ])
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def handle_wallet_confirm_create(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Confirm wallet creation - delete old wallets and start PIN setup."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Delete existing wallets if any
+    from src.db.database import delete_user_wallets
+    await delete_user_wallets(user.id)
+
+    # Start PIN setup
+    context.user_data["pending_wallet_pin"] = {"confirm": False}
+
+    text = """
+🔐 <b>Set Your Wallet PIN</b>
+
+Choose a 4-6 digit PIN to protect your wallets.
+
+<b>Important:</b>
+• Your PIN is NEVER stored anywhere
+• It's used to encrypt your private keys
+• Only you can access your funds with this PIN
+• <b>If you forget it, your funds are LOST forever</b>
+
+<b>Enter your PIN (4-6 digits):</b>
+"""
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
     )
 
 
