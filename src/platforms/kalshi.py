@@ -444,16 +444,18 @@ class KalshiPlatform(BasePlatform):
             # Decode and sign transaction (returned directly from /order)
             tx_data = base64.b64decode(response["transaction"])
             tx = VersionedTransaction.from_bytes(tx_data)
-            
-            # Sign with user's keypair
-            tx.sign([private_key])
+
+            # Sign the message with user's keypair
+            # VersionedTransaction requires signing the message and populating
+            signature = private_key.sign_message(bytes(tx.message))
+            signed_tx = VersionedTransaction.populate(tx.message, [signature])
             
             # Submit to Solana
             if not self._solana_client:
                 raise RuntimeError("Solana client not initialized")
-            
+
             result = await self._solana_client.send_transaction(
-                tx,
+                signed_tx,
                 opts={"skip_preflight": False, "preflight_commitment": Confirmed},
             )
             
