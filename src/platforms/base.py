@@ -204,9 +204,10 @@ class BasePlatform(ABC):
     async def get_markets(
         self,
         limit: int = 20,
+        offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
-        """Get list of markets."""
+        """Get list of markets with pagination support."""
         pass
     
     @abstractmethod

@@ -226,12 +226,21 @@ class KalshiPlatform(BasePlatform):
     async def get_markets(
         self,
         limit: int = 20,
+        offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
-        """Get list of markets from DFlow."""
+        """Get list of markets from DFlow.
+
+        Args:
+            limit: Maximum number of markets to return
+            offset: Number of markets to skip (for pagination)
+            active_only: Only return active markets
+        """
         params = {
             "limit": limit,
         }
+        if offset > 0:
+            params["offset"] = offset
         if active_only:
             params["status"] = "active"
 

@@ -342,58 +342,69 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /markets command - show trending markets."""
+    """Handle /markets command - show trending markets with pagination."""
     if not update.effective_user or not update.message:
         return
-    
+
     user = await get_user_by_telegram_id(update.effective_user.id)
     if not user:
         await update.message.reply_text("Please /start first!")
         return
-    
+
     platform_info = PLATFORM_INFO[user.active_platform]
     platform = get_platform(user.active_platform)
-    
+
     await update.message.reply_text(
         f"🔍 Loading {platform_info['emoji']} {platform_info['name']} markets...",
         parse_mode=ParseMode.HTML,
     )
-    
+
+    per_page = 10
+
     try:
-        markets = await platform.get_trending_markets(limit=10)
-        
+        # Fetch one extra to check if there's a next page
+        markets = await platform.get_markets(limit=per_page + 1, offset=0, active_only=True)
+
+        has_next = len(markets) > per_page
+        markets = markets[:per_page]
+
         if not markets:
             await update.message.reply_text(
                 f"No markets found on {platform_info['name']}. Try /search [query]",
                 parse_mode=ParseMode.HTML,
             )
             return
-        
-        text = f"{platform_info['emoji']} <b>Trending on {platform_info['name']}</b>\n\n"
-        
+
+        text = f"{platform_info['emoji']} <b>Trending on {platform_info['name']}</b>\n"
+        text += f"<i>Page 1</i>\n\n"
+
         buttons = []
         for i, market in enumerate(markets, 1):
             title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
             yes_prob = format_probability(market.yes_price)
-            
+
             text += f"<b>{i}.</b> {title}\n"
             text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)}\n\n"
-            
+
             buttons.append([
                 InlineKeyboardButton(
                     f"{i}. {market.title[:30]}...",
                     callback_data=f"market:{user.active_platform.value}:{market.market_id[:20]}"
                 )
             ])
-        
+
+        # Pagination buttons (page 0, only show Next if available)
+        if has_next:
+            buttons.append([InlineKeyboardButton("Next »", callback_data="markets:page:1")])
+
         buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh")])
-        
+
         await update.message.reply_text(
             text,
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(buttons),
         )
-        
+
     except Exception as e:
         logger.error("Failed to get markets", error=str(e))
         await update.message.reply_text(
@@ -757,7 +768,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         elif action == "markets":
             if parts[1] == "refresh":
-                await handle_markets_refresh(query, update.effective_user.id)
+                await handle_markets_refresh(query, update.effective_user.id, page=0)
+            elif parts[1] == "page":
+                page = int(parts[2]) if len(parts) > 2 else 0
+                await handle_markets_refresh(query, update.effective_user.id, page=page)
         
         elif action == "menu":
             if parts[1] == "main":
@@ -1229,48 +1243,68 @@ Type /cancel to cancel.
             await query.edit_message_text(f"❌ Export failed: {escape_html(str(e))}")
 
 
-async def handle_markets_refresh(query, telegram_id: int) -> None:
-    """Refresh markets list."""
+async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None:
+    """Refresh markets list with pagination."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
         return
-    
+
     platform_info = PLATFORM_INFO[user.active_platform]
     platform = get_platform(user.active_platform)
-    
+
     await query.edit_message_text(
         f"🔄 Loading {platform_info['name']} markets...",
         parse_mode=ParseMode.HTML,
     )
-    
+
+    # Pagination settings
+    per_page = 10
+    offset = page * per_page
+
     try:
-        markets = await platform.get_trending_markets(limit=10)
-        
+        # Fetch one extra to check if there's a next page
+        markets = await platform.get_markets(limit=per_page + 1, offset=offset, active_only=True)
+
+        has_next = len(markets) > per_page
+        markets = markets[:per_page]  # Trim to actual page size
+
         if not markets:
             await query.edit_message_text(
                 f"No markets found on {platform_info['name']}.",
                 parse_mode=ParseMode.HTML,
             )
             return
-        
-        text = f"{platform_info['emoji']} <b>Trending on {platform_info['name']}</b>\n\n"
-        
+
+        page_display = page + 1
+        text = f"{platform_info['emoji']} <b>Trending on {platform_info['name']}</b>\n"
+        text += f"<i>Page {page_display}</i>\n\n"
+
         buttons = []
         for i, market in enumerate(markets, 1):
+            display_num = offset + i
             title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
             yes_prob = format_probability(market.yes_price)
-            
-            text += f"<b>{i}.</b> {title}\n"
+
+            text += f"<b>{display_num}.</b> {title}\n"
             text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)}\n\n"
-            
+
             buttons.append([
                 InlineKeyboardButton(
-                    f"{i}. {market.title[:30]}...",
+                    f"{display_num}. {market.title[:30]}...",
                     callback_data=f"market:{user.active_platform.value}:{market.market_id[:20]}"
                 )
             ])
-        
+
+        # Pagination buttons
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("« Previous", callback_data=f"markets:page:{page - 1}"))
+        if has_next:
+            nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"markets:page:{page + 1}"))
+        if nav_buttons:
+            buttons.append(nav_buttons)
+
         buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh")])
         buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
 

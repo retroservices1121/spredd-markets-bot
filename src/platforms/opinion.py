@@ -177,32 +177,42 @@ class OpinionPlatform(BasePlatform):
     async def get_markets(
         self,
         limit: int = 20,
+        offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
-        """Get list of markets from Opinion."""
+        """Get list of markets from Opinion.
+
+        Args:
+            limit: Maximum number of markets to return
+            offset: Number of markets to skip (for pagination)
+            active_only: Only return active markets
+        """
+        # Convert offset to page number (1-indexed)
+        page = (offset // limit) + 1 if limit > 0 else 1
+
         params = {
-            "page": 1,
+            "page": page,
             "limit": limit,
         }
         if active_only:
             params["status"] = "ACTIVATED"
-        
+
         try:
             data = await self._api_request("GET", "/api/v1/markets", params=params)
-            
+
             markets_data = data.get("result", {}).get("list", [])
             if not markets_data and isinstance(data, list):
                 markets_data = data
-            
+
             markets = []
             for item in markets_data:
                 try:
                     markets.append(self._parse_market(item))
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
-            
+
             return markets
-            
+
         except Exception as e:
             logger.error("Failed to get markets", error=str(e))
             return []

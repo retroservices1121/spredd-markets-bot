@@ -6,6 +6,7 @@ World's largest prediction market on Polygon.
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Optional, Tuple
 from datetime import datetime
+import json
 
 import httpx
 from eth_account.signers.local import LocalAccount
@@ -172,197 +173,232 @@ class PolymarketPlatform(BasePlatform):
                 str(e.response.status_code),
             )
     
-    def _parse_market(self, data: dict) -> Market:
-        """Parse Polymarket market data into Market object."""
-        # Polymarket uses different structures for events vs markets
-        # Events contain multiple markets (outcomes)
+    def _parse_market(self, data: dict, market_data: dict = None) -> Market:
+        """Parse Polymarket market data into Market object.
 
-        def get_price_from_market(m: dict) -> Optional[Decimal]:
-            """Extract price from market data, checking multiple fields."""
-            # Try different price fields in order of preference
-            for field in ["price", "lastTradePrice", "bestAsk"]:
-                val = m.get(field)
-                if val is not None and val != "" and val != "0":
-                    try:
-                        price = Decimal(str(val))
-                        if Decimal("0") < price <= Decimal("1"):
-                            return price
-                    except:
-                        pass
-            return None
-
-        # Handle both event-level and market-level data
-        is_event = "markets" in data
-
-        if is_event:
-            # This is an event with multiple markets
-            markets = data.get("markets", [])
-            yes_market = next((m for m in markets if m.get("outcome") == "Yes"), None)
-            no_market = next((m for m in markets if m.get("outcome") == "No"), None)
-
-            yes_price = get_price_from_market(yes_market) if yes_market else None
-            no_price = get_price_from_market(no_market) if no_market else None
-
-            # If we have one price but not the other, calculate it
-            if yes_price and not no_price:
-                no_price = Decimal("1") - yes_price
-            elif no_price and not yes_price:
-                yes_price = Decimal("1") - no_price
-
-            yes_token = yes_market.get("clobTokenId") if yes_market else None
-            no_token = no_market.get("clobTokenId") if no_market else None
-
-            market_id = data.get("conditionId") or data.get("id")
-
+        Args:
+            data: Event data from Gamma API
+            market_data: Optional specific market within an event (for multi-market events)
+        """
+        # If market_data is provided, use it (for multi-market events)
+        # Otherwise, try to get the first/only market from the event
+        if market_data:
+            m = market_data
+            title = m.get("question") or m.get("groupItemTitle") or data.get("title", "")
         else:
-            # Single market/outcome
-            outcome_prices = data.get("outcomePrices", [])
-            if outcome_prices and len(outcome_prices) >= 2:
+            markets = data.get("markets", [])
+            m = markets[0] if markets else data
+            title = data.get("title") or m.get("question", "")
+
+        # Extract prices from outcomePrices - may be JSON string or list
+        outcome_prices_raw = m.get("outcomePrices", [])
+        yes_price = None
+        no_price = None
+
+        # Parse JSON string if needed
+        outcome_prices = outcome_prices_raw
+        if isinstance(outcome_prices_raw, str):
+            try:
+                outcome_prices = json.loads(outcome_prices_raw)
+            except:
+                outcome_prices = []
+
+        if outcome_prices and len(outcome_prices) >= 2:
+            try:
+                yes_price = Decimal(str(outcome_prices[0]))
+                no_price = Decimal(str(outcome_prices[1]))
+            except:
+                pass
+
+        # Fallback to lastTradePrice if outcomePrices not available
+        if yes_price is None:
+            last_price = m.get("lastTradePrice")
+            if last_price is not None:
                 try:
-                    yes_price = Decimal(str(outcome_prices[0]))
-                    no_price = Decimal(str(outcome_prices[1]))
+                    yes_price = Decimal(str(last_price))
+                    no_price = Decimal("1") - yes_price
                 except:
-                    yes_price = None
-                    no_price = None
-            else:
-                yes_price = None
-                no_price = None
+                    pass
 
-            tokens = data.get("clobTokenIds", [])
-            yes_token = tokens[0] if len(tokens) > 0 else None
-            no_token = tokens[1] if len(tokens) > 1 else None
+        # Extract token IDs from clobTokenIds - may be JSON string or list
+        tokens_raw = m.get("clobTokenIds", [])
+        tokens = tokens_raw
+        if isinstance(tokens_raw, str):
+            try:
+                tokens = json.loads(tokens_raw)
+            except:
+                tokens = []
 
-            market_id = data.get("conditionId") or data.get("condition_id")
-        
-        # Volume
-        volume = data.get("volume") or data.get("volumeNum") or 0
-        liquidity = data.get("liquidity") or data.get("liquidityNum") or 0
-        
+        yes_token = tokens[0] if len(tokens) > 0 else None
+        no_token = tokens[1] if len(tokens) > 1 else None
+
+        # Get condition ID (market identifier)
+        market_id = m.get("conditionId") or data.get("conditionId") or str(m.get("id") or data.get("id"))
+
+        # Volume - try multiple fields
+        volume = m.get("volume") or m.get("volumeNum") or data.get("volume") or data.get("volume24hr") or 0
+        liquidity = m.get("liquidity") or data.get("liquidity") or data.get("liquidityClob") or 0
+
         return Market(
             platform=Platform.POLYMARKET,
             chain=Chain.POLYGON,
             market_id=market_id,
-            event_id=data.get("id") or data.get("slug"),
-            title=data.get("title") or data.get("question", ""),
-            description=data.get("description"),
-            category=data.get("category") or (data.get("tags", [{}])[0].get("label") if data.get("tags") else None),
+            event_id=str(data.get("id") or data.get("slug", "")),
+            title=title,
+            description=m.get("description") or data.get("description"),
+            category=(data.get("tags", [{}])[0].get("label") if data.get("tags") else None),
             yes_price=yes_price,
             no_price=no_price,
             volume_24h=Decimal(str(volume)),
             liquidity=Decimal(str(liquidity)),
-            is_active=data.get("active", True) and not data.get("closed", False),
-            close_time=data.get("endDate") or data.get("end_date_iso"),
+            is_active=m.get("active", True) and not m.get("closed", False),
+            close_time=m.get("endDate") or m.get("endDateIso") or data.get("endDate"),
             yes_token=yes_token,
             no_token=no_token,
-            raw_data=data,
+            raw_data={"event": data, "market": m},
         )
     
     # ===================
     # Market Discovery
     # ===================
-    
+
     async def get_markets(
         self,
-        limit: int = 20,
+        limit: int = 50,
+        offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
-        """Get list of markets from Gamma API."""
+        """Get list of markets from Gamma API.
+
+        Args:
+            limit: Maximum number of markets to return
+            offset: Number of events to skip (for pagination)
+            active_only: Only return active, non-closed markets
+        """
+        # Fetch more events than limit to account for multi-market events
+        fetch_limit = min(limit + 20, 100)
+
         params = {
-            "limit": limit,
+            "limit": fetch_limit,
+            "offset": offset,
             "order": "volume24hr",
             "ascending": "false",
         }
         if active_only:
             params["active"] = "true"
             params["closed"] = "false"
-        
+
         data = await self._gamma_request("GET", "/events", params=params)
-        
+
         markets = []
-        for item in data if isinstance(data, list) else []:
+        for event in data if isinstance(data, list) else []:
             try:
-                markets.append(self._parse_market(item))
+                event_markets = event.get("markets", [])
+
+                if len(event_markets) <= 1:
+                    # Single market event - parse as one market
+                    markets.append(self._parse_market(event))
+                else:
+                    # Multi-market event - expand each market as separate entry
+                    for market_data in event_markets:
+                        if market_data.get("active", True) and not market_data.get("closed", False):
+                            markets.append(self._parse_market(event, market_data))
+
+                # Stop if we have enough markets
+                if len(markets) >= limit:
+                    break
+
             except Exception as e:
-                logger.warning("Failed to parse market", error=str(e))
-        
-        return markets
+                logger.warning("Failed to parse market", error=str(e), event_id=event.get("id"))
+
+        return markets[:limit]
     
     async def search_markets(
         self,
         query: str,
-        limit: int = 10,
+        limit: int = 20,
     ) -> list[Market]:
         """Search markets by query."""
-        params = {
-            "q": query,
-            "limit": limit,
-        }
-        
-        # Try Strapi search endpoint
+        # Fetch events and filter by query
         try:
             data = await self._gamma_request("GET", "/events", params={
-                "_q": query,
                 "active": "true",
-                "_limit": limit,
+                "closed": "false",
+                "limit": 100,
             })
-        except:
-            # Fallback to getting all and filtering
-            data = await self._gamma_request("GET", "/events", params={
-                "active": "true",
-                "_limit": 100,
-            })
-            # Filter by query
-            query_lower = query.lower()
-            data = [m for m in data if query_lower in m.get("title", "").lower() 
-                    or query_lower in m.get("description", "").lower()][:limit]
-        
+        except Exception as e:
+            logger.error("Failed to fetch events for search", error=str(e))
+            return []
+
+        # Filter by query
+        query_lower = query.lower()
+        filtered_events = []
+        for event in data if isinstance(data, list) else []:
+            title = event.get("title", "").lower()
+            desc = event.get("description", "").lower()
+            if query_lower in title or query_lower in desc:
+                filtered_events.append(event)
+            else:
+                # Also check market questions within the event
+                for m in event.get("markets", []):
+                    if query_lower in m.get("question", "").lower():
+                        filtered_events.append(event)
+                        break
+
         markets = []
-        for item in data if isinstance(data, list) else []:
+        for event in filtered_events:
             try:
-                markets.append(self._parse_market(item))
+                event_markets = event.get("markets", [])
+                if len(event_markets) <= 1:
+                    markets.append(self._parse_market(event))
+                else:
+                    for market_data in event_markets:
+                        if market_data.get("active", True) and not market_data.get("closed", False):
+                            markets.append(self._parse_market(event, market_data))
+
+                if len(markets) >= limit:
+                    break
             except Exception as e:
-                logger.warning("Failed to parse market", error=str(e))
-        
-        return markets
+                logger.warning("Failed to parse market in search", error=str(e))
+
+        return markets[:limit]
     
     async def get_market(self, market_id: str) -> Optional[Market]:
-        """Get a specific market by condition ID or slug."""
+        """Get a specific market by condition ID, event ID, or slug."""
+        # Try to find by condition ID in all events
         try:
-            # Try by condition ID first
-            data = await self._gamma_request("GET", f"/events/{market_id}")
-            return self._parse_market(data)
-        except:
-            pass
-        
-        try:
+            data = await self._gamma_request("GET", "/events", params={
+                "active": "true",
+                "limit": 100,
+            })
+
+            for event in data if isinstance(data, list) else []:
+                # Check event-level condition ID
+                if event.get("conditionId") == market_id:
+                    return self._parse_market(event)
+
+                # Check event ID
+                if str(event.get("id")) == market_id:
+                    return self._parse_market(event)
+
+                # Check each market's condition ID
+                for m in event.get("markets", []):
+                    if m.get("conditionId") == market_id or str(m.get("id")) == market_id:
+                        return self._parse_market(event, m)
+
             # Try by slug
             data = await self._gamma_request("GET", "/events", params={"slug": market_id})
             if data and len(data) > 0:
                 return self._parse_market(data[0])
-        except:
-            pass
-        
+
+        except Exception as e:
+            logger.warning("Failed to get market", market_id=market_id, error=str(e))
+
         return None
-    
-    async def get_trending_markets(self, limit: int = 10) -> list[Market]:
+
+    async def get_trending_markets(self, limit: int = 20) -> list[Market]:
         """Get trending markets by volume."""
-        params = {
-            "limit": limit,
-            "order": "volume24hr",
-            "ascending": "false",
-            "active": "true",
-        }
-        
-        data = await self._gamma_request("GET", "/events", params=params)
-        
-        markets = []
-        for item in data if isinstance(data, list) else []:
-            try:
-                markets.append(self._parse_market(item))
-            except Exception as e:
-                logger.warning("Failed to parse market", error=str(e))
-        
-        return markets
+        return await self.get_markets(limit=limit, active_only=True)
     
     # ===================
     # Order Book
