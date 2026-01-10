@@ -475,7 +475,8 @@ class KalshiPlatform(BasePlatform):
             # instead of platformFeeBps. platformFeeMode is ignored for outcome tokens.
             # Fee formula: k * p * (1 - p) * amount, where k = scale/1000
             # feeAccount must be a USDC token account (ATA) for the settlement mint
-            if self._fee_account and len(self._fee_account) >= 32:
+            fee_enabled = bool(self._fee_account and len(self._fee_account) >= 32)
+            if fee_enabled:
                 params["feeAccount"] = self._fee_account
                 # Use platformFeeScale for prediction markets (not platformFeeBps)
                 # Scale of 50 = 0.050, gives ~1% fee at typical probabilities
@@ -486,11 +487,28 @@ class KalshiPlatform(BasePlatform):
                     fee_scale=params["platformFeeScale"],
                 )
 
-            response = await self._trading_request(
-                "GET",
-                "/order",
-                params=params,
-            )
+            try:
+                response = await self._trading_request(
+                    "GET",
+                    "/order",
+                    params=params,
+                )
+            except PlatformError as e:
+                # If route not found with fee params, retry without fees
+                if "route_not_found" in str(e).lower() and fee_enabled:
+                    logger.warning(
+                        "Route not found with fee params, retrying without fees",
+                        market_id=quote.market_id,
+                    )
+                    params.pop("feeAccount", None)
+                    params.pop("platformFeeScale", None)
+                    response = await self._trading_request(
+                        "GET",
+                        "/order",
+                        params=params,
+                    )
+                else:
+                    raise
 
             # Decode and sign transaction (returned directly from /order)
             tx_data = base64.b64decode(response["transaction"])

@@ -2152,7 +2152,7 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
 
     try:
         # Get private key with PIN
-        private_key = await wallet_service.get_private_key(user.id, chain_family, pin)
+        private_key = await wallet_service.get_private_key(user.id, update.effective_user.id, chain_family, pin)
 
         from src.platforms.polymarket import polymarket_platform, MIN_USDC_BALANCE
 
