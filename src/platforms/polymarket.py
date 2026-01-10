@@ -1018,42 +1018,27 @@ class PolymarketPlatform(BasePlatform):
             raise PlatformError("Quote data missing", Platform.POLYMARKET)
 
         try:
+            # Ensure USDC.e and CTF are approved for Polymarket exchange contracts
+            await self._ensure_exchange_approval(private_key)
+
             # Import the official Polymarket client for order execution
             from py_clob_client.client import ClobClient
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
             from py_clob_client.order_builder.constants import BUY, SELL
 
-            # Initialize CLOB client
+            # Initialize CLOB client with funder for proper allowance handling
             client = ClobClient(
                 settings.polymarket_api_url,
                 key=private_key.key.hex(),
                 chain_id=137,  # Polygon
                 signature_type=0,  # EOA
+                funder=private_key.address,  # Required for balance operations
             )
 
             # Set API credentials
             creds = client.create_or_derive_api_creds()
             client.set_api_creds(creds)
             logger.info("CLOB API credentials set")
-
-            # Use SDK's built-in method to set all required on-chain allowances
-            # This approves USDC.e and CTF to the correct exchange contracts
-            try:
-                logger.info("Setting on-chain allowances via SDK...")
-                client.set_allowances()
-                logger.info("SDK allowances set successfully")
-            except Exception as e:
-                logger.warning("SDK set_allowances failed, trying manual approval", error=str(e))
-                # Fallback to manual approval
-                await self._ensure_exchange_approval(private_key)
-
-            # Sync balance with CLOB server
-            try:
-                client.update_balance_allowance()
-                logger.info("Balance synced with CLOB")
-            except Exception as e:
-                logger.error("Failed to sync balance with CLOB", error=str(e))
-                raise PlatformError(f"Failed to sync balance: {e}", Platform.POLYMARKET)
 
             token_id = quote.quote_data["token_id"]
 
