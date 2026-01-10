@@ -460,15 +460,8 @@ class KalshiPlatform(BasePlatform):
                 num_existing_sigs=len(tx.signatures),
             )
 
-            # Find our public key's position in the account keys
-            signer_index = None
-            for i in range(num_signers):
-                if account_keys[i] == user_pubkey:
-                    signer_index = i
-                    break
-
-            if signer_index is None:
-                # Log all signers for debugging
+            # Verify our public key is in the expected signers
+            if user_pubkey not in account_keys[:num_signers]:
                 logger.error(
                     "User public key not found in signers",
                     user_pubkey=str(user_pubkey),
@@ -476,23 +469,14 @@ class KalshiPlatform(BasePlatform):
                 )
                 raise RuntimeError(f"User public key {user_pubkey} not found in transaction signers")
 
-            logger.debug("Found signer", signer_index=signer_index)
-
-            # Sign the message - need to serialize properly
-            message_bytes = bytes(tx.message)
-            signature = private_key.sign_message(message_bytes)
-
-            # Get existing signatures and replace ours
-            existing_sigs = list(tx.signatures)
-            existing_sigs[signer_index] = signature
-
-            # Create signed transaction
-            signed_tx = VersionedTransaction.populate(tx.message, existing_sigs)
+            # Create a new signed transaction using the keypair directly
+            # This is the proper way to sign a versioned transaction in solders
+            signed_tx = VersionedTransaction(tx.message, [private_key])
 
             logger.debug(
                 "Signed transaction",
                 sig_count=len(signed_tx.signatures),
-                our_sig=str(signature)[:20] + "...",
+                first_sig=str(signed_tx.signatures[0])[:20] + "..." if signed_tx.signatures else "none",
             )
             
             # Submit to Solana
