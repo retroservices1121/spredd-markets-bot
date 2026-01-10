@@ -427,13 +427,17 @@ class KalshiPlatform(BasePlatform):
             }
 
             # Add platform fee collection if configured with valid Solana address
+            # feeAccount must be a USDC token account (ATA), not a wallet address
+            # platformFeeMode=inputMint collects fees in USDC (the input token)
             if self._fee_account and len(self._fee_account) >= 32:
                 params["feeAccount"] = self._fee_account
                 params["platformFeeBps"] = self._fee_bps
+                params["platformFeeMode"] = "inputMint"  # Collect fees in USDC
                 logger.debug(
                     "Fee collection enabled",
                     fee_account=self._fee_account[:8] + "...",
                     fee_bps=self._fee_bps,
+                    fee_mode="inputMint",
                 )
 
             response = await self._trading_request(
