@@ -358,7 +358,7 @@ class KalshiPlatform(BasePlatform):
         }
 
         logger.debug("Quote request params", params=params)
-        data = await self._trading_request("GET", "/order", params=params)
+        data = await self._trading_request("GET", "/quote", params=params)
         
         # Parse quote response
         expected_output = Decimal(str(data.get("outAmount", 0)))
