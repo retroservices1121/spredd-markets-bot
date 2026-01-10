@@ -25,8 +25,10 @@ from src.db.database import (
     get_all_fee_balances,
     process_withdrawal,
     create_position,
+    create_order,
+    update_order,
 )
-from src.db.models import Platform, ChainFamily, PositionStatus
+from src.db.models import Platform, ChainFamily, PositionStatus, OrderStatus
 from src.platforms import (
     platform_registry,
     get_platform,
@@ -478,20 +480,21 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Handle /positions command - show user positions."""
     if not update.effective_user or not update.message:
         return
-    
+
     user = await get_user_by_telegram_id(update.effective_user.id)
     if not user:
         await update.message.reply_text("Please /start first!")
         return
-    
+
     positions = await get_user_positions(
         user_id=user.id,
         platform=user.active_platform,
         status=PositionStatus.OPEN,
     )
-    
+
     platform_info = PLATFORM_INFO[user.active_platform]
-    
+    platform = get_platform(user.active_platform)
+
     if not positions:
         await update.message.reply_text(
             f"📊 <b>No Open Positions</b>\n\n"
@@ -500,28 +503,42 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             parse_mode=ParseMode.HTML,
         )
         return
-    
+
     text = f"📊 <b>Your {platform_info['name']} Positions</b>\n\n"
-    
+
     for pos in positions:
         title = escape_html(pos.market_title[:40] + "..." if len(pos.market_title) > 40 else pos.market_title)
-        outcome = pos.outcome.value.upper()
+        outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
         entry = format_price(pos.entry_price)
-        current = format_price(pos.current_price) if pos.current_price else "N/A"
-        
+
+        # Fetch current price from platform
+        current_price = None
+        try:
+            market = await platform.get_market(pos.market_id)
+            if market:
+                # Get the price for the outcome the user holds
+                if outcome_str == "YES":
+                    current_price = market.yes_price
+                else:
+                    current_price = market.no_price
+        except Exception:
+            pass
+
+        current = format_price(current_price) if current_price else "N/A"
+
         # Calculate P&L
-        if pos.current_price and pos.entry_price:
-            pnl_pct = ((pos.current_price - pos.entry_price) / pos.entry_price) * 100
+        if current_price and pos.entry_price:
+            pnl_pct = ((current_price - pos.entry_price) / pos.entry_price) * 100
             pnl_str = f"+{pnl_pct:.1f}%" if pnl_pct >= 0 else f"{pnl_pct:.1f}%"
             pnl_emoji = "🟢" if pnl_pct >= 0 else "🔴"
         else:
             pnl_str = "N/A"
             pnl_emoji = "⚪"
-        
+
         text += f"<b>{title}</b>\n"
-        text += f"  {outcome} • Entry: {entry} • Now: {current}\n"
+        text += f"  {outcome_str} • Entry: {entry} • Now: {current}\n"
         text += f"  {pnl_emoji} P&L: {pnl_str}\n\n"
-    
+
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
@@ -1726,15 +1743,36 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
                 return
             raise
 
+        # Create order record before executing
+        order = await create_order(
+            user_id=user.id,
+            platform=platform_enum,
+            chain=quote.chain,
+            market_id=market_id,
+            outcome=outcome,
+            side="buy",
+            input_token=quote.input_token,
+            input_amount=str(int(amount * Decimal(10**6))),
+            output_token=quote.output_token,
+            expected_output=str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0",
+            price=float(quote.price_per_token) if quote.price_per_token else None,
+        )
+
         # Execute trade
         result = await platform.execute_trade(quote, private_key)
 
         if result.success:
+            # Update order as confirmed
+            await update_order(
+                order.id,
+                status=OrderStatus.CONFIRMED,
+                tx_hash=result.tx_hash,
+            )
+
             # Process trading fee and distribute to referrers
-            order_id = result.tx_hash or f"order_{telegram_id}_{market_id}"
             fee_result = await process_trade_fee(
                 trader_telegram_id=telegram_id,
-                order_id=order_id,
+                order_id=order.id,
                 trade_amount_usdc=str(amount),
                 platform=platform_enum,
             )
@@ -1773,6 +1811,13 @@ Received: ~{quote.expected_output:.2f} tokens
 <a href="{result.explorer_url}">View Transaction</a>
 """
         else:
+            # Update order as failed
+            await update_order(
+                order.id,
+                status=OrderStatus.FAILED,
+                error_message=result.error_message,
+            )
+
             text = f"""
 ❌ <b>Order Failed</b>
 
@@ -2020,15 +2065,36 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
             await executing_msg.edit_text("❌ Wallet not found.")
             return
 
+        # Create order record before executing
+        order = await create_order(
+            user_id=user.id,
+            platform=platform_enum,
+            chain=quote.chain,
+            market_id=market_id,
+            outcome=outcome,
+            side="buy",
+            input_token=quote.input_token,
+            input_amount=str(int(amount * Decimal(10**6))),
+            output_token=quote.output_token,
+            expected_output=str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0",
+            price=float(quote.price_per_token) if quote.price_per_token else None,
+        )
+
         # Execute trade
         result = await platform.execute_trade(quote, private_key)
 
         if result.success:
+            # Update order as confirmed
+            await update_order(
+                order.id,
+                status=OrderStatus.CONFIRMED,
+                tx_hash=result.tx_hash,
+            )
+
             # Process trading fee and distribute to referrers
-            order_id = result.tx_hash or f"order_{update.effective_user.id}_{market_id}"
             fee_result = await process_trade_fee(
                 trader_telegram_id=update.effective_user.id,
-                order_id=order_id,
+                order_id=order.id,
                 trade_amount_usdc=str(amount),
                 platform=platform_enum,
             )
@@ -2067,6 +2133,13 @@ Received: ~{quote.expected_output:.2f} tokens
 <a href="{result.explorer_url}">View Transaction</a>
 """
         else:
+            # Update order as failed
+            await update_order(
+                order.id,
+                status=OrderStatus.FAILED,
+                error_message=result.error_message,
+            )
+
             text = f"""
 ❌ <b>Order Failed</b>
 
