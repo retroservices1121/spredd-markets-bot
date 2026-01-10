@@ -1490,7 +1490,7 @@ async def handle_referral_hub(query, telegram_id: int, context: ContextTypes.DEF
     total_reach = stats["tier1"] + stats["tier2"] + stats["tier3"]
 
     text = f"""
-🫂 <b>Referral Hub</b>
+🫂 <b>Referral Space</b>
 Earn commissions when your referrals trade!
 
 🪪 <b>Your Code:</b> <code>{referral_code}</code>
