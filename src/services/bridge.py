@@ -156,6 +156,11 @@ class BridgeResult:
     error_message: Optional[str] = None
 
 
+# Type alias for progress callback
+# Callback receives (status_message: str, elapsed_seconds: int, estimated_total_seconds: int)
+ProgressCallback = Optional[callable]
+
+
 class BridgeService:
     """
     Service for bridging USDC between chains using Circle CCTP.
@@ -251,6 +256,7 @@ class BridgeService:
         source_chain: BridgeChain,
         dest_chain: BridgeChain,
         amount: Decimal,
+        progress_callback: ProgressCallback = None,
     ) -> BridgeResult:
         """
         Bridge USDC from source chain to destination chain using CCTP.
@@ -266,6 +272,8 @@ class BridgeService:
             source_chain: Chain to bridge FROM
             dest_chain: Chain to bridge TO
             amount: Amount of USDC to bridge
+            progress_callback: Optional callback for progress updates
+                              Called with (message, elapsed_sec, total_sec)
 
         Returns:
             BridgeResult with transaction details
@@ -311,6 +319,13 @@ class BridgeService:
                     dest_chain=dest_chain,
                     amount=amount,
                     error_message=f"Insufficient balance on {source_chain.value}"
+                )
+
+            # Notify: Starting bridge
+            if progress_callback:
+                progress_callback(
+                    f"🔄 Starting bridge: {source_chain.value} → {dest_chain.value}",
+                    0, 900  # 0 of ~15 min
                 )
 
             # Step 2: Approve TokenMessenger
@@ -398,6 +413,12 @@ class BridgeService:
 
             logger.info("CCTP burn confirmed", tx_hash=burn_hash_hex)
 
+            if progress_callback:
+                progress_callback(
+                    "🔥 USDC burned on source chain. Waiting for Circle attestation...",
+                    30, 900  # ~30 sec in
+                )
+
             # Step 4: Wait for attestation and mint
             # This uses Circle's attestation API
             attestation_result = self._wait_for_attestation_and_mint(
@@ -405,6 +426,7 @@ class BridgeService:
                 source_chain,
                 dest_chain,
                 private_key,
+                progress_callback=progress_callback,
             )
 
             if attestation_result:
@@ -450,6 +472,7 @@ class BridgeService:
         private_key: LocalAccount,
         max_wait_seconds: int = 900,  # 15 minutes
         poll_interval: int = 15,
+        progress_callback: ProgressCallback = None,
     ) -> Optional[str]:
         """
         Wait for Circle attestation and mint on destination chain.
@@ -494,7 +517,21 @@ class BridgeService:
 
         logger.info("Waiting for Circle attestation...", message_hash=message_hash)
 
+        poll_count = 0
         while time.time() - start_time < max_wait_seconds:
+            elapsed = int(time.time() - start_time)
+            remaining = max(0, max_wait_seconds - elapsed)
+            remaining_min = remaining // 60
+            remaining_sec = remaining % 60
+
+            # Update progress every poll
+            if progress_callback:
+                progress_callback(
+                    f"⏳ Waiting for Circle attestation... (~{remaining_min}m {remaining_sec}s remaining)",
+                    elapsed + 30,  # +30 for burn phase
+                    max_wait_seconds + 30
+                )
+
             try:
                 with httpx.Client(timeout=30) as client:
                     response = client.get(f"{attestation_url}/{message_hash}")
@@ -505,11 +542,18 @@ class BridgeService:
                             attestation = data.get("attestation")
                             message_bytes = data.get("message")
                             logger.info("Attestation received!")
+                            if progress_callback:
+                                progress_callback(
+                                    "✅ Attestation received! Minting on destination chain...",
+                                    max_wait_seconds,
+                                    max_wait_seconds + 30
+                                )
                             break
 
             except Exception as e:
                 logger.debug("Attestation poll error", error=str(e))
 
+            poll_count += 1
             time.sleep(poll_interval)
 
         if not attestation or not message_bytes:

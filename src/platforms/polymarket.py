@@ -339,6 +339,7 @@ class PolymarketPlatform(BasePlatform):
         self,
         private_key: Any,
         required_amount: Decimal = MIN_USDC_BALANCE,
+        progress_callback: Optional[callable] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Ensure wallet has sufficient USDC.e for trading on Polygon.
@@ -351,6 +352,8 @@ class PolymarketPlatform(BasePlatform):
         Args:
             private_key: User's EVM account
             required_amount: Minimum USDC.e balance required
+            progress_callback: Optional callback for progress updates during bridging
+                              Called with (message, elapsed_sec, total_sec)
 
         Returns:
             Tuple of (ready_to_trade, message, tx_hash)
@@ -396,7 +399,7 @@ class PolymarketPlatform(BasePlatform):
 
             # Step 3: Check other chains for USDC and bridge if available
             bridge_result = await self._try_bridge_from_other_chains(
-                private_key, required_amount
+                private_key, required_amount, progress_callback
             )
             if bridge_result[0]:
                 # Bridge succeeded, now swap native USDC to USDC.e
@@ -422,6 +425,7 @@ class PolymarketPlatform(BasePlatform):
         self,
         private_key: Any,
         required_amount: Decimal,
+        progress_callback: Optional[callable] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Check other chains for USDC and bridge to Polygon if found.
@@ -429,6 +433,7 @@ class PolymarketPlatform(BasePlatform):
         Args:
             private_key: User's EVM account
             required_amount: Amount needed
+            progress_callback: Optional callback for progress updates
 
         Returns:
             Tuple of (success, message, tx_hash)
@@ -481,6 +486,7 @@ class PolymarketPlatform(BasePlatform):
                 source_chain,
                 BridgeChain.POLYGON,
                 bridge_amount,
+                progress_callback=progress_callback,
             )
 
             if result.success:

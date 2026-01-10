@@ -204,6 +204,8 @@ Select a topic to learn more:
         [InlineKeyboardButton("🔑 Why do I need a PIN?", callback_data="faq:pin")],
         [InlineKeyboardButton("💰 What are the fees?", callback_data="faq:fees")],
         [InlineKeyboardButton("📥 How do I deposit?", callback_data="faq:deposit")],
+        [InlineKeyboardButton("🔄 USDC Auto-Swap", callback_data="faq:autoswap")],
+        [InlineKeyboardButton("🌉 Cross-Chain Bridging", callback_data="faq:bridge")],
         [InlineKeyboardButton("⚠️ Security warnings", callback_data="faq:security")],
         [InlineKeyboardButton("« Back", callback_data="menu:main")],
     ])
@@ -982,9 +984,48 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
                 )
                 return
 
-            # Check and auto-swap USDC if needed
+            # Show initial status
+            await query.edit_message_text(
+                "🔄 <b>Checking USDC balance...</b>",
+                parse_mode=ParseMode.HTML,
+            )
+
+            # Create progress callback for bridge updates
+            last_update_time = [0]  # Use list to allow modification in closure
+
+            async def update_progress(msg: str, elapsed: int, total: int):
+                import time
+                # Throttle updates to once per 5 seconds to avoid rate limits
+                now = time.time()
+                if now - last_update_time[0] < 5:
+                    return
+                last_update_time[0] = now
+
+                try:
+                    progress_pct = min(100, int((elapsed / max(1, total)) * 100))
+                    progress_bar = "█" * (progress_pct // 10) + "░" * (10 - progress_pct // 10)
+                    await query.edit_message_text(
+                        f"🌉 <b>Bridging USDC</b>\n\n"
+                        f"{escape_html(msg)}\n\n"
+                        f"[{progress_bar}] {progress_pct}%",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass  # Ignore update errors
+
+            # Wrap async callback for sync bridge service
+            def sync_progress_callback(msg: str, elapsed: int, total: int):
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(update_progress(msg, elapsed, total))
+                except Exception:
+                    pass
+
+            # Check and auto-swap/bridge USDC if needed
             ready, message, swap_tx = await polymarket_platform.ensure_usdc_balance(
-                private_key, MIN_USDC_BALANCE
+                private_key, MIN_USDC_BALANCE, progress_callback=sync_progress_callback
             )
 
             if not ready:
@@ -1431,6 +1472,7 @@ async def handle_faq_topic(query, topic: str) -> None:
                 ("💰 What are the fees?", "faq:fees"),
                 ("📥 How do I deposit?", "faq:deposit"),
                 ("🔄 USDC Auto-Swap", "faq:autoswap"),
+                ("🌉 Cross-Chain Bridging", "faq:bridge"),
                 ("⚠️ Security warnings", "faq:security"),
             ],
         },
@@ -1556,6 +1598,52 @@ You'll be asked to deposit more USDC
 • Requires MATIC for gas
 
 <b>The swap happens BEFORE you enter your trade amount, so prices won't change during the swap.</b>""",
+        },
+        "bridge": {
+            "title": "🌉 Cross-Chain Bridging (CCTP)",
+            "text": """<b>Trade on Polymarket with USDC from Other Chains</b>
+
+Have USDC on Base, Arbitrum, or other L2s? The bot can automatically bridge it to Polygon for you!
+
+<b>Supported Source Chains:</b>
+• Base (default enabled)
+• Arbitrum One
+• Optimism
+• Ethereum Mainnet
+
+<b>How it works:</b>
+When you start a trade on Polymarket, the bot checks your balances in order:
+
+1️⃣ <b>Polygon USDC.e</b> - Ready to trade
+2️⃣ <b>Polygon native USDC</b> - Auto-swaps to USDC.e
+3️⃣ <b>Other chains USDC</b> - Bridges via CCTP
+
+<b>What is CCTP?</b>
+Circle's Cross-Chain Transfer Protocol (CCTP) is the official way to move native USDC between chains. It's:
+• <b>Secure:</b> Backed by Circle (USDC issuer)
+• <b>Native:</b> Burns USDC on source, mints on destination
+• <b>No slippage:</b> Always 1:1 transfer
+• <b>Free:</b> No bridge fees (only gas costs)
+
+<b>Bridge Time:</b>
+• Typically <b>15-20 minutes</b>
+• A progress bar shows real-time status
+• You'll see: "Waiting for attestation..."
+
+<b>Why so long?</b>
+CCTP requires Circle to verify and sign the burn transaction. This security step takes about 15 minutes but ensures your USDC is legitimate.
+
+<b>Important Notes:</b>
+• You need gas tokens on BOTH chains
+• The bridge happens BEFORE your trade quote
+• Market prices won't change during bridging
+• If bridge fails, your funds stay on source chain
+
+<b>Gas Requirements:</b>
+• Source chain: Pay for burn transaction
+• Polygon: Pay for mint + swap + trade
+
+<b>This is the same technology used by major DeFi protocols for cross-chain USDC transfers.</b>""",
         },
         "security": {
             "title": "⚠️ Security Warnings",
@@ -2159,9 +2247,42 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
 
         from src.platforms.polymarket import polymarket_platform, MIN_USDC_BALANCE
 
-        # Check and auto-swap USDC if needed
+        # Create progress callback for bridge updates
+        last_update_time = [0]  # Use list to allow modification in closure
+
+        async def update_progress(msg: str, elapsed: int, total: int):
+            import time
+            # Throttle updates to once per 5 seconds to avoid rate limits
+            now = time.time()
+            if now - last_update_time[0] < 5:
+                return
+            last_update_time[0] = now
+
+            try:
+                progress_pct = min(100, int((elapsed / max(1, total)) * 100))
+                progress_bar = "█" * (progress_pct // 10) + "░" * (10 - progress_pct // 10)
+                await status_msg.edit_text(
+                    f"🌉 <b>Bridging USDC</b>\n\n"
+                    f"{escape_html(msg)}\n\n"
+                    f"[{progress_bar}] {progress_pct}%",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass  # Ignore update errors
+
+        # Wrap async callback for sync bridge service
+        def sync_progress_callback(msg: str, elapsed: int, total: int):
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(update_progress(msg, elapsed, total))
+            except Exception:
+                pass
+
+        # Check and auto-swap/bridge USDC if needed
         ready, message, swap_tx = await polymarket_platform.ensure_usdc_balance(
-            private_key, MIN_USDC_BALANCE
+            private_key, MIN_USDC_BALANCE, progress_callback=sync_progress_callback
         )
 
         del context.user_data["pending_balance_check"]
