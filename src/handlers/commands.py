@@ -24,6 +24,7 @@ from src.db.database import (
     get_fee_balance,
     get_all_fee_balances,
     process_withdrawal,
+    create_position,
 )
 from src.db.models import Platform, ChainFamily, PositionStatus
 from src.platforms import (
@@ -1738,6 +1739,26 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
                 platform=platform_enum,
             )
 
+            # Create position record
+            try:
+                market = await platform.get_market(market_id)
+                market_title = market.title if market else market_id
+                token_amount = str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0"
+
+                await create_position(
+                    user_id=user.id,
+                    platform=platform_enum,
+                    chain=quote.chain,
+                    market_id=market_id,
+                    market_title=market_title,
+                    outcome=outcome,
+                    token_id=quote.output_token,
+                    token_amount=token_amount,
+                    entry_price=float(quote.price_per_token) if quote.price_per_token else 0.0,
+                )
+            except Exception as pos_error:
+                logger.warning("Failed to create position record", error=str(pos_error))
+
             fee_amount = fee_result.get("fee", "0")
             fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
             fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
@@ -2011,6 +2032,26 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
                 trade_amount_usdc=str(amount),
                 platform=platform_enum,
             )
+
+            # Create position record
+            try:
+                market = await platform.get_market(market_id)
+                market_title = market.title if market else market_id
+                token_amount = str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0"
+
+                await create_position(
+                    user_id=user.id,
+                    platform=platform_enum,
+                    chain=quote.chain,
+                    market_id=market_id,
+                    market_title=market_title,
+                    outcome=outcome,
+                    token_id=quote.output_token,
+                    token_amount=token_amount,
+                    entry_price=float(quote.price_per_token) if quote.price_per_token else 0.0,
+                )
+            except Exception as pos_error:
+                logger.warning("Failed to create position record", error=str(pos_error))
 
             fee_amount = fee_result.get("fee", "0")
             fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
