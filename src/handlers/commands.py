@@ -1431,6 +1431,7 @@ async def handle_faq_topic(query, topic: str) -> None:
                 ("🔑 Why do I need a PIN?", "faq:pin"),
                 ("💰 What are the fees?", "faq:fees"),
                 ("📥 How do I deposit?", "faq:deposit"),
+                ("🔄 USDC Auto-Swap", "faq:autoswap"),
                 ("⚠️ Security warnings", "faq:security"),
             ],
         },
@@ -1524,6 +1525,38 @@ Without a PIN, the bot operator could theoretically access your funds. With a PI
 • Double-check the network before sending
 • Your EVM address works on both Polygon and BSC
 • Start with small amounts to test""",
+        },
+        "autoswap": {
+            "title": "🔄 USDC Auto-Swap (Polymarket)",
+            "text": """<b>Automatic USDC Conversion for Polymarket</b>
+
+Polymarket requires <b>USDC.e</b> (bridged USDC), not native USDC. The bot automatically handles this for you!
+
+<b>How it works:</b>
+When you start a trade on Polymarket, the bot checks your balances:
+
+✅ <b>If USDC.e >= $5:</b>
+Trade proceeds normally
+
+🔄 <b>If USDC.e < $5 but native USDC >= $5:</b>
+Bot automatically swaps your native USDC to USDC.e via Uniswap, then proceeds with trade
+
+❌ <b>If both < $5:</b>
+You'll be asked to deposit more USDC
+
+<b>Why this matters:</b>
+• On Polygon, there are TWO types of USDC
+• <b>Native USDC</b> (0x3c49...) - Circle's official USDC
+• <b>USDC.e</b> (0x2791...) - Bridged from Ethereum
+• Polymarket only accepts USDC.e
+
+<b>Swap details:</b>
+• Uses Uniswap V3 (0.05% fee tier)
+• ~1% slippage tolerance
+• Nearly 1:1 exchange rate
+• Requires MATIC for gas
+
+<b>The swap happens BEFORE you enter your trade amount, so prices won't change during the swap.</b>""",
         },
         "security": {
             "title": "⚠️ Security Warnings",
