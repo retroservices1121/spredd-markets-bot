@@ -358,7 +358,7 @@ class KalshiPlatform(BasePlatform):
         }
 
         logger.debug("Quote request params", params=params)
-        data = await self._trading_request("GET", "/quote", params=params)
+        data = await self._trading_request("GET", "/order", params=params)
         
         # Parse quote response
         expected_output = Decimal(str(data.get("outAmount", 0)))
@@ -397,34 +397,38 @@ class KalshiPlatform(BasePlatform):
         quote: Quote,
         private_key: Any,
     ) -> TradeResult:
-        """Execute a trade using the DFlow swap endpoint."""
+        """Execute a trade using the DFlow order endpoint."""
         if not isinstance(private_key, Keypair):
             raise PlatformError(
                 "Invalid private key type, expected Solana Keypair",
                 Platform.KALSHI,
             )
-        
+
         if not quote.quote_data:
             raise PlatformError("Quote data missing", Platform.KALSHI)
-        
+
         try:
-            # Get swap transaction from DFlow
-            swap_data = {
+            # Get transaction from DFlow /order endpoint with userPublicKey
+            # This returns the transaction directly, no need for /swap
+            params = {
+                "inputMint": quote.input_token,
+                "outputMint": quote.output_token,
+                "amount": str(int(quote.input_amount * Decimal(10**self.collateral_decimals))),
+                "slippageBps": 100,
                 "userPublicKey": str(private_key.pubkey()),
-                "quoteResponse": quote.quote_data,
             }
-            
+
             if self._builder_code:
-                swap_data["feeAccount"] = self._builder_code
-            
+                params["feeAccount"] = self._builder_code
+
             response = await self._trading_request(
-                "POST",
-                "/swap",
-                json=swap_data,
+                "GET",
+                "/order",
+                params=params,
             )
-            
-            # Decode and sign transaction
-            tx_data = base64.b64decode(response["swapTransaction"])
+
+            # Decode and sign transaction (returned directly from /order)
+            tx_data = base64.b64decode(response["transaction"])
             tx = VersionedTransaction.from_bytes(tx_data)
             
             # Sign with user's keypair
