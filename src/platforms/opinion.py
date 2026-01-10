@@ -326,13 +326,18 @@ class OpinionPlatform(BasePlatform):
                     Decimal(str(bid.get("price", 0))),
                     Decimal(str(bid.get("size") or bid.get("quantity", 0))),
                 ))
-            
+
             for ask in orderbook_data.get("asks", []):
                 asks.append((
                     Decimal(str(ask.get("price", 0))),
                     Decimal(str(ask.get("size") or ask.get("quantity", 0))),
                 ))
-            
+
+            # Sort bids descending (highest first) - best_bid = highest price buyers will pay
+            bids.sort(key=lambda x: x[0], reverse=True)
+            # Sort asks ascending (lowest first) - best_ask = lowest price sellers will accept
+            asks.sort(key=lambda x: x[0])
+
             return OrderBook(
                 market_id=market_id,
                 outcome=outcome,
