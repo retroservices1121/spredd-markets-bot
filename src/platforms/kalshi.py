@@ -446,16 +446,21 @@ class KalshiPlatform(BasePlatform):
             tx_data = base64.b64decode(response["transaction"])
             tx = VersionedTransaction.from_bytes(tx_data)
 
-            # Sign the message with user's keypair
-            # Get the number of required signatures from the message header
+            # Debug: Log transaction structure
             num_signers = tx.message.header.num_required_signatures
-
-            # Get existing signatures (may be empty/default)
-            existing_sigs = list(tx.signatures)
-
-            # Find our public key's position in the account keys
             account_keys = tx.message.account_keys
             user_pubkey = private_key.pubkey()
+
+            logger.debug(
+                "Transaction structure",
+                num_required_signatures=num_signers,
+                num_account_keys=len(account_keys),
+                user_pubkey=str(user_pubkey),
+                first_signers=[str(account_keys[i]) for i in range(min(num_signers, len(account_keys)))],
+                num_existing_sigs=len(tx.signatures),
+            )
+
+            # Find our public key's position in the account keys
             signer_index = None
             for i in range(num_signers):
                 if account_keys[i] == user_pubkey:
@@ -463,16 +468,32 @@ class KalshiPlatform(BasePlatform):
                     break
 
             if signer_index is None:
+                # Log all signers for debugging
+                logger.error(
+                    "User public key not found in signers",
+                    user_pubkey=str(user_pubkey),
+                    expected_signers=[str(account_keys[i]) for i in range(num_signers)],
+                )
                 raise RuntimeError(f"User public key {user_pubkey} not found in transaction signers")
 
-            # Sign the message
-            signature = private_key.sign_message(bytes(tx.message))
+            logger.debug("Found signer", signer_index=signer_index)
 
-            # Replace the signature at the correct index
+            # Sign the message - need to serialize properly
+            message_bytes = bytes(tx.message)
+            signature = private_key.sign_message(message_bytes)
+
+            # Get existing signatures and replace ours
+            existing_sigs = list(tx.signatures)
             existing_sigs[signer_index] = signature
 
             # Create signed transaction
             signed_tx = VersionedTransaction.populate(tx.message, existing_sigs)
+
+            logger.debug(
+                "Signed transaction",
+                sig_count=len(signed_tx.signatures),
+                our_sig=str(signature)[:20] + "...",
+            )
             
             # Submit to Solana
             if not self._solana_client:
