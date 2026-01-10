@@ -81,6 +81,16 @@ class Settings(BaseSettings):
         description="Platform fee in basis points (100 = 1%)"
     )
 
+    # EVM Fee Collection (Polymarket/Opinion)
+    evm_fee_account: Optional[str] = Field(
+        default=None,
+        description="EVM wallet address to receive platform fees (Polygon)"
+    )
+    evm_fee_bps: int = Field(
+        default=100,
+        description="Platform fee in basis points for EVM platforms (100 = 1%)"
+    )
+
     # ===================
     # Treasury Configuration (for referral withdrawals)
     # ===================

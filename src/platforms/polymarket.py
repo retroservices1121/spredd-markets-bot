@@ -3,13 +3,13 @@ Polymarket platform implementation using CLOB API.
 World's largest prediction market on Polygon.
 """
 
-from decimal import Decimal
-from typing import Any, Optional
+from decimal import Decimal, ROUND_DOWN
+from typing import Any, Optional, Tuple
 from datetime import datetime
 
 import httpx
 from eth_account.signers.local import LocalAccount
-from web3 import AsyncWeb3
+from web3 import AsyncWeb3, Web3
 
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
@@ -26,6 +26,27 @@ from src.platforms.base import (
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# ERC20 ABI for USDC transfers
+ERC20_TRANSFER_ABI = [
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "_to", "type": "address"},
+            {"name": "_value", "type": "uint256"}
+        ],
+        "name": "transfer",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
+        "type": "function"
+    }
+]
 
 # Polymarket contract addresses on Polygon
 POLYMARKET_CONTRACTS = {
@@ -56,8 +77,11 @@ class PolymarketPlatform(BasePlatform):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._gamma_client: Optional[httpx.AsyncClient] = None  # For market data
         self._web3: Optional[AsyncWeb3] = None
+        self._sync_web3: Optional[Web3] = None  # Sync Web3 for fee collection
         self._api_creds: Optional[dict] = None
-    
+        self._fee_account = settings.evm_fee_account
+        self._fee_bps = settings.evm_fee_bps
+
     async def initialize(self) -> None:
         """Initialize Polymarket API clients."""
         # CLOB API client
@@ -66,20 +90,28 @@ class PolymarketPlatform(BasePlatform):
             timeout=30.0,
             headers={"Content-Type": "application/json"},
         )
-        
+
         # Gamma API for market data
         self._gamma_client = httpx.AsyncClient(
             base_url="https://gamma-api.polymarket.com",
             timeout=30.0,
             headers={"Content-Type": "application/json"},
         )
-        
-        # Web3 for Polygon
+
+        # Async Web3 for Polygon
         self._web3 = AsyncWeb3(
             AsyncWeb3.AsyncHTTPProvider(settings.polygon_rpc_url)
         )
-        
-        logger.info("Polymarket platform initialized")
+
+        # Sync Web3 for fee collection (py-clob-client uses sync)
+        self._sync_web3 = Web3(Web3.HTTPProvider(settings.polygon_rpc_url))
+
+        fee_enabled = bool(self._fee_account and Web3.is_address(self._fee_account))
+        logger.info(
+            "Polymarket platform initialized",
+            fee_collection=fee_enabled,
+            fee_bps=self._fee_bps if fee_enabled else 0,
+        )
     
     async def close(self) -> None:
         """Close connections."""
@@ -423,7 +455,7 @@ class PolymarketPlatform(BasePlatform):
             expected_output=expected_output,
             price_per_token=price,
             price_impact=Decimal("0.01"),  # Estimate
-            platform_fee=amount * Decimal("0.02"),  # 2% fee
+            platform_fee=(amount * Decimal(self._fee_bps) / Decimal(10000)),
             network_fee_estimate=Decimal("0.01"),  # MATIC
             expires_at=None,
             quote_data={
@@ -433,7 +465,91 @@ class PolymarketPlatform(BasePlatform):
                 "market": market.raw_data,
             },
         )
-    
+
+    def _collect_platform_fee(
+        self,
+        private_key: LocalAccount,
+        amount_usdc: Decimal,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Collect platform fee by transferring USDC from user to fee account.
+
+        Args:
+            private_key: User's EVM account for signing
+            amount_usdc: Fee amount in USDC
+
+        Returns:
+            Tuple of (success, tx_hash, error_message)
+        """
+        if not self._fee_account or not self._sync_web3:
+            return True, None, None  # No fee collection configured
+
+        if not Web3.is_address(self._fee_account):
+            logger.warning("Invalid fee account address", fee_account=self._fee_account)
+            return True, None, None
+
+        try:
+            fee_account = Web3.to_checksum_address(self._fee_account)
+            amount_raw = int(amount_usdc * Decimal(10 ** self.collateral_decimals))
+
+            if amount_raw <= 0:
+                return True, None, None
+
+            # Get USDC contract
+            usdc_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(POLYMARKET_CONTRACTS["collateral"]),
+                abi=ERC20_TRANSFER_ABI
+            )
+
+            # Check user balance
+            user_balance = usdc_contract.functions.balanceOf(
+                private_key.address
+            ).call()
+
+            if user_balance < amount_raw:
+                return False, None, f"Insufficient USDC balance for fee (need {amount_usdc}, have {Decimal(user_balance) / Decimal(10**6)})"
+
+            # Build transaction
+            nonce = self._sync_web3.eth.get_transaction_count(private_key.address)
+            gas_price = self._sync_web3.eth.gas_price
+
+            tx = usdc_contract.functions.transfer(
+                fee_account,
+                amount_raw
+            ).build_transaction({
+                "from": private_key.address,
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "gas": 100000,
+                "chainId": 137,  # Polygon
+            })
+
+            # Sign and send
+            signed_tx = self._sync_web3.eth.account.sign_transaction(tx, private_key.key)
+            tx_hash = self._sync_web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            tx_hash_hex = tx_hash.hex()
+
+            logger.info(
+                "Platform fee collected",
+                amount=str(amount_usdc),
+                fee_account=fee_account[:10] + "...",
+                tx_hash=tx_hash_hex,
+            )
+
+            # Wait for confirmation
+            try:
+                receipt = self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+                if receipt.status != 1:
+                    return False, tx_hash_hex, "Fee transfer failed on-chain"
+            except Exception:
+                pass  # Continue even if confirmation times out
+
+            return True, tx_hash_hex, None
+
+        except Exception as e:
+            logger.error("Fee collection failed", error=str(e))
+            return False, None, str(e)
+
     async def execute_trade(
         self,
         quote: Quote,
@@ -441,26 +557,44 @@ class PolymarketPlatform(BasePlatform):
     ) -> TradeResult:
         """
         Execute a trade on Polymarket.
-        
-        Note: Full implementation requires py-clob-client SDK
-        with proper order signing. This is a simplified version.
+
+        Collects platform fee before executing the trade.
         """
         if not isinstance(private_key, LocalAccount):
             raise PlatformError(
                 "Invalid private key type, expected EVM LocalAccount",
                 Platform.POLYMARKET,
             )
-        
+
         if not quote.quote_data:
             raise PlatformError("Quote data missing", Platform.POLYMARKET)
-        
+
+        # Collect platform fee first (if configured)
+        if self._fee_account and self._fee_bps > 0:
+            fee_amount = (quote.input_amount * Decimal(self._fee_bps) / Decimal(10000)).quantize(
+                Decimal("0.000001"), rounding=ROUND_DOWN
+            )
+            if fee_amount > 0:
+                fee_success, fee_tx, fee_error = self._collect_platform_fee(
+                    private_key, fee_amount
+                )
+                if not fee_success:
+                    return TradeResult(
+                        success=False,
+                        tx_hash=None,
+                        input_amount=quote.input_amount,
+                        output_amount=None,
+                        error_message=f"Fee collection failed: {fee_error}",
+                        explorer_url=None,
+                    )
+                logger.debug("Fee collected", fee_amount=str(fee_amount), fee_tx=fee_tx)
+
         try:
             # Import the official Polymarket client for order execution
-            # This requires py-clob-client package
             from py_clob_client.client import ClobClient
-            from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType
+            from py_clob_client.clob_types import MarketOrderArgs, OrderType
             from py_clob_client.order_builder.constants import BUY, SELL
-            
+
             # Initialize CLOB client
             client = ClobClient(
                 settings.polymarket_api_url,
@@ -468,34 +602,34 @@ class PolymarketPlatform(BasePlatform):
                 chain_id=137,  # Polygon
                 signature_type=0,  # EOA
             )
-            
+
             # Set API credentials
             creds = client.create_or_derive_api_creds()
             client.set_api_creds(creds)
-            
+
             token_id = quote.quote_data["token_id"]
-            
+
             # Create market order
             side = BUY if quote.side == "buy" else SELL
-            
+
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 amount=float(quote.input_amount),
                 side=side,
             )
-            
+
             signed_order = client.create_market_order(order_args)
             result = client.post_order(signed_order, OrderType.FOK)
-            
+
             tx_hash = result.get("transactionHash") or result.get("orderID", "")
-            
+
             logger.info(
                 "Trade executed",
                 platform="polymarket",
                 market_id=quote.market_id,
                 order_id=tx_hash,
             )
-            
+
             return TradeResult(
                 success=True,
                 tx_hash=tx_hash,
