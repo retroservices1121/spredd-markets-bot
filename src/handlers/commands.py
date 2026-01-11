@@ -1428,14 +1428,22 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
         )
 
     except Exception as e:
-        logger.error("Failed to load bridge menu", error=str(e))
-        await query.edit_message_text(
-            f"❌ Failed to load bridge info: {escape_html(str(e))}",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")],
-            ]),
-        )
+        error_str = str(e)
+        # Ignore "Message is not modified" error - it's harmless
+        if "Message is not modified" in error_str:
+            logger.debug("Bridge menu unchanged, ignoring")
+            return
+        logger.error("Failed to load bridge menu", error=error_str)
+        try:
+            await query.edit_message_text(
+                f"❌ Failed to load bridge info: {escape_html(error_str)}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")],
+                ]),
+            )
+        except Exception:
+            pass  # Ignore edit errors
 
 
 async def handle_bridge_start(query, source_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1525,14 +1533,21 @@ Select amount to bridge or enter a custom amount:
         )
 
     except Exception as e:
-        logger.error("Bridge start failed", error=str(e))
-        await query.edit_message_text(
-            f"❌ Bridge error: {escape_html(str(e))}",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
-            ]),
-        )
+        error_str = str(e)
+        if "Message is not modified" in error_str:
+            logger.debug("Bridge start screen unchanged, ignoring")
+            return
+        logger.error("Bridge start failed", error=error_str)
+        try:
+            await query.edit_message_text(
+                f"❌ Bridge error: {escape_html(error_str)}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+        except Exception:
+            pass
 
 
 async def handle_bridge_amount(query, source_chain: str, percentage: int, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
