@@ -305,7 +305,21 @@ class BridgeService:
             wallet = Web3.to_checksum_address(private_key.address)
             amount_raw = int(amount * Decimal(10 ** 6))
 
-            # Step 1: Check balance
+            # Step 1: Check native balance for gas
+            native_balance = source_w3.eth.get_balance(wallet)
+            # Need at least ~0.001 ETH for gas (approval + burn)
+            min_gas_wei = 500000 * 50 * 10**9  # 500k gas * 50 gwei
+            if native_balance < min_gas_wei:
+                native_name = "ETH" if source_chain in [BridgeChain.BASE, BridgeChain.ARBITRUM, BridgeChain.OPTIMISM, BridgeChain.ETHEREUM] else "native token"
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=amount,
+                    error_message=f"Insufficient {native_name} for gas on {source_chain.value}. Need ~$0.10-0.50 in {native_name}."
+                )
+
+            # Step 2: Check USDC balance
             usdc_contract = source_w3.eth.contract(
                 address=Web3.to_checksum_address(source_config["usdc"]),
                 abi=ERC20_ABI
@@ -318,7 +332,7 @@ class BridgeService:
                     source_chain=source_chain,
                     dest_chain=dest_chain,
                     amount=amount,
-                    error_message=f"Insufficient balance on {source_chain.value}"
+                    error_message=f"Insufficient USDC balance on {source_chain.value}"
                 )
 
             # Notify: Starting bridge
@@ -328,7 +342,7 @@ class BridgeService:
                     0, 900  # 0 of ~15 min
                 )
 
-            # Step 2: Approve TokenMessenger
+            # Step 3: Approve TokenMessenger
             token_messenger = Web3.to_checksum_address(source_config["token_messenger"])
             allowance = usdc_contract.functions.allowance(wallet, token_messenger).call()
 
@@ -362,7 +376,7 @@ class BridgeService:
                 source_w3.eth.wait_for_transaction_receipt(approve_hash, timeout=120)
                 logger.info("TokenMessenger approval confirmed", tx_hash=approve_hash.hex())
 
-            # Step 3: Call depositForBurn
+            # Step 4: Call depositForBurn
             messenger_contract = source_w3.eth.contract(
                 address=token_messenger,
                 abi=TOKEN_MESSENGER_ABI
@@ -419,7 +433,7 @@ class BridgeService:
                     30, 900  # ~30 sec in
                 )
 
-            # Step 4: Wait for attestation and mint
+            # Step 5: Wait for attestation and mint
             # This uses Circle's attestation API
             attestation_result = self._wait_for_attestation_and_mint(
                 burn_hash_hex,
