@@ -379,6 +379,7 @@ To protect your funds, please set a 4-6 digit PIN.
         buttons.append([InlineKeyboardButton("🔐 Create New Secure Wallet", callback_data="wallet:create_new")])
 
     buttons.append([InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")])
+    buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
 
     keyboard = InlineKeyboardMarkup(buttons)
 
@@ -951,6 +952,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         elif action == "bridge":
             # Format: bridge:start:source_chain, bridge:amount:chain:percent, bridge:custom:chain
+            logger.info("Bridge callback received", callback_data=data, parts=parts)
             if parts[1] == "start":
                 # bridge:start:source_chain - user selected a chain to bridge from
                 await handle_bridge_start(query, parts[2], update.effective_user.id, context)
@@ -962,6 +964,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await handle_bridge_custom(query, parts[2], update.effective_user.id, context)
             else:
                 # bridge:source_chain - legacy format
+                logger.info("Using legacy bridge format", chain=parts[1])
                 await handle_bridge_start(query, parts[1], update.effective_user.id, context)
 
         elif action == "export":
@@ -1448,6 +1451,8 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
 
 async def handle_bridge_start(query, source_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start manual bridge - show amount selection."""
+    logger.info("Bridge start called", source_chain=source_chain, telegram_id=telegram_id)
+
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
