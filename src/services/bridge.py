@@ -450,18 +450,21 @@ class BridgeService:
                 )
 
         except Exception as e:
+            import traceback
+            error_msg = str(e) if str(e) else type(e).__name__
             logger.error(
                 "Bridge failed",
                 source=source_chain.value,
                 dest=dest_chain.value,
-                error=str(e)
+                error=error_msg,
+                traceback=traceback.format_exc()
             )
             return BridgeResult(
                 success=False,
                 source_chain=source_chain,
                 dest_chain=dest_chain,
                 amount=amount,
-                error_message=str(e)
+                error_message=error_msg
             )
 
     def _wait_for_attestation_and_mint(

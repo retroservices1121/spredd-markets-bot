@@ -143,6 +143,10 @@ class PolymarketPlatform(BasePlatform):
         self._api_creds: Optional[dict] = None
         self._fee_account = settings.evm_fee_account
         self._fee_bps = settings.evm_fee_bps
+        # Caches for performance optimization
+        self._approval_cache: dict[str, set[str]] = {}  # wallet_address -> set of approved contracts
+        self._ctf_approval_cache: dict[str, set[str]] = {}  # wallet_address -> set of approved CTF contracts
+        self._clob_client_cache: dict[str, Any] = {}  # wallet_address -> ClobClient
 
     async def initialize(self) -> None:
         """Initialize Polymarket API clients."""
@@ -438,6 +442,7 @@ class PolymarketPlatform(BasePlatform):
         Returns:
             Tuple of (success, message, tx_hash)
         """
+        import asyncio
         from src.config import settings
 
         if not settings.auto_bridge_enabled:
@@ -450,11 +455,12 @@ class PolymarketPlatform(BasePlatform):
             if not bridge_service._initialized:
                 bridge_service.initialize()
 
-            # Check which chains have sufficient balance
-            source_chain_with_balance = bridge_service.find_chain_with_balance(
+            # Check which chains have sufficient balance (run in thread to avoid blocking)
+            source_chain_with_balance = await asyncio.to_thread(
+                bridge_service.find_chain_with_balance,
                 private_key.address,
                 required_amount,
-                exclude_chain=BridgeChain.POLYGON,
+                BridgeChain.POLYGON,  # exclude_chain
             )
 
             if not source_chain_with_balance:
@@ -481,12 +487,14 @@ class PolymarketPlatform(BasePlatform):
             # Bridge the required amount (plus a small buffer)
             bridge_amount = min(balance, required_amount + Decimal("1"))
 
-            result = bridge_service.bridge_usdc(
+            # Run the blocking bridge operation in a thread pool to avoid blocking event loop
+            result = await asyncio.to_thread(
+                bridge_service.bridge_usdc,
                 private_key,
                 source_chain,
                 BridgeChain.POLYGON,
                 bridge_amount,
-                progress_callback=progress_callback,
+                progress_callback,
             )
 
             if result.success:
@@ -498,7 +506,7 @@ class PolymarketPlatform(BasePlatform):
             logger.warning("Bridge service not available")
             return False, "Bridge service not configured", None
         except Exception as e:
-            logger.error("Bridge attempt failed", error=str(e))
+            logger.error("Bridge attempt failed", error=str(e), exc_info=True)
             return False, f"Bridge error: {str(e)}", None
 
     async def _clob_request(
@@ -790,7 +798,72 @@ class PolymarketPlatform(BasePlatform):
     async def get_trending_markets(self, limit: int = 20) -> list[Market]:
         """Get trending markets by volume."""
         return await self.get_markets(limit=limit, active_only=True)
-    
+
+    async def get_markets_by_category(
+        self,
+        category: str,
+        limit: int = 20,
+    ) -> list[Market]:
+        """Get markets filtered by category/tag.
+
+        Args:
+            category: Category slug (e.g., 'sports', 'politics', 'crypto')
+            limit: Maximum number of markets to return
+        """
+        try:
+            # Gamma API supports tag filtering
+            params = {
+                "tag": category.lower(),
+                "limit": limit + 20,  # Fetch extra for multi-market events
+                "active": "true",
+                "closed": "false",
+                "order": "volume24hr",
+                "ascending": "false",
+            }
+
+            data = await self._gamma_request("GET", "/events", params=params)
+
+            markets = []
+            for event in data if isinstance(data, list) else []:
+                try:
+                    event_markets = event.get("markets", [])
+
+                    if len(event_markets) <= 1:
+                        markets.append(self._parse_market(event))
+                    else:
+                        for market_data in event_markets:
+                            if market_data.get("active", True) and not market_data.get("closed", False):
+                                markets.append(self._parse_market(event, market_data))
+
+                    if len(markets) >= limit:
+                        break
+                except Exception as e:
+                    logger.debug(f"Skipping event due to parse error: {e}")
+                    continue
+
+            return markets[:limit]
+        except Exception as e:
+            logger.error("Failed to get markets by category", category=category, error=str(e))
+            return []
+
+    def get_available_categories(self) -> list[dict]:
+        """Get list of available market categories.
+
+        Returns list of dicts with 'id', 'label', and 'emoji' keys.
+        """
+        return [
+            {"id": "sports", "label": "Sports", "emoji": "🏆"},
+            {"id": "politics", "label": "Politics", "emoji": "🏛️"},
+            {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
+            {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
+            {"id": "business", "label": "Business", "emoji": "💼"},
+            {"id": "science", "label": "Science", "emoji": "🔬"},
+            {"id": "pop-culture", "label": "Pop Culture", "emoji": "🌟"},
+            {"id": "football", "label": "Football", "emoji": "🏈"},
+            {"id": "basketball", "label": "Basketball", "emoji": "🏀"},
+            {"id": "soccer", "label": "Soccer", "emoji": "⚽"},
+        ]
+
     # ===================
     # Order Book
     # ===================
@@ -985,7 +1058,11 @@ class PolymarketPlatform(BasePlatform):
             return False, None, str(e)
 
     async def _ensure_exchange_approval(self, private_key: Any) -> None:
-        """Ensure USDC.e and CTF tokens are approved for Polymarket exchange contracts."""
+        """Ensure USDC.e and CTF tokens are approved for Polymarket exchange contracts.
+
+        Uses caching to avoid repeated blockchain calls for already-approved wallets.
+        """
+        import asyncio
         from eth_account.signers.local import LocalAccount
 
         if not isinstance(private_key, LocalAccount):
@@ -995,28 +1072,48 @@ class PolymarketPlatform(BasePlatform):
             return
 
         wallet = Web3.to_checksum_address(private_key.address)
-        usdc_address = Web3.to_checksum_address(USDC_BRIDGED)
 
-        usdc_contract = self._sync_web3.eth.contract(
-            address=usdc_address,
-            abi=ERC20_APPROVE_ABI
-        )
+        # Check cache - if wallet has all approvals cached, skip entirely
+        cached_usdc = self._approval_cache.get(wallet, set())
+        cached_ctf = self._ctf_approval_cache.get(wallet, set())
 
-        # Approve all exchange contracts for USDC.e (regular, neg_risk, and adapter)
         contracts_to_approve = [
             ("exchange", POLYMARKET_CONTRACTS["exchange"]),
             ("neg_risk_exchange", POLYMARKET_CONTRACTS["neg_risk_exchange"]),
             ("neg_risk_adapter", POLYMARKET_CONTRACTS["neg_risk_adapter"]),
         ]
 
-        for contract_name, contract_addr in contracts_to_approve:
-            exchange_address = Web3.to_checksum_address(contract_addr)
+        all_contracts = {name for name, _ in contracts_to_approve}
 
-            # Check current allowance
-            allowance = usdc_contract.functions.allowance(wallet, exchange_address).call()
+        # Fast path: if all approvals are cached, skip blockchain checks
+        if cached_usdc >= all_contracts and cached_ctf >= all_contracts:
+            logger.debug("All approvals cached, skipping checks", wallet=wallet[:10])
+            return
 
-            # If allowance is less than a large threshold, approve max
-            if allowance < 10 ** 12:  # Less than 1M USDC
+        # Run approval checks in thread to avoid blocking
+        def sync_check_and_approve():
+            usdc_address = Web3.to_checksum_address(USDC_BRIDGED)
+            usdc_contract = self._sync_web3.eth.contract(
+                address=usdc_address,
+                abi=ERC20_APPROVE_ABI
+            )
+
+            # Check and approve USDC.e for uncached contracts
+            for contract_name, contract_addr in contracts_to_approve:
+                if contract_name in cached_usdc:
+                    continue  # Skip if cached
+
+                exchange_address = Web3.to_checksum_address(contract_addr)
+
+                # Check current allowance
+                allowance = usdc_contract.functions.allowance(wallet, exchange_address).call()
+
+                # If allowance is sufficient, cache it
+                if allowance >= 10 ** 12:  # 1M+ USDC already approved
+                    self._approval_cache.setdefault(wallet, set()).add(contract_name)
+                    continue
+
+                # Need to approve
                 logger.info(f"Approving Polymarket {contract_name} for USDC.e")
 
                 nonce = self._sync_web3.eth.get_transaction_count(wallet)
@@ -1041,41 +1138,47 @@ class PolymarketPlatform(BasePlatform):
                 self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
                 logger.info(f"Polymarket {contract_name} approval confirmed", tx_hash=tx_hash.hex())
 
-        # Also set approval for CTF (Conditional Tokens Framework) to the exchange contracts
-        # This is needed for selling outcome tokens
-        ctf_address = Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"])
+                # Cache the approval
+                self._approval_cache.setdefault(wallet, set()).add(contract_name)
 
-        # ERC1155 setApprovalForAll ABI
-        set_approval_abi = [{
-            "inputs": [
-                {"name": "operator", "type": "address"},
-                {"name": "approved", "type": "bool"}
-            ],
-            "name": "setApprovalForAll",
-            "outputs": [],
-            "type": "function"
-        }, {
-            "inputs": [
-                {"name": "account", "type": "address"},
-                {"name": "operator", "type": "address"}
-            ],
-            "name": "isApprovedForAll",
-            "outputs": [{"name": "", "type": "bool"}],
-            "type": "function"
-        }]
+            # Check and approve CTF tokens for uncached contracts
+            ctf_address = Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"])
 
-        ctf_contract = self._sync_web3.eth.contract(
-            address=ctf_address,
-            abi=set_approval_abi
-        )
+            set_approval_abi = [{
+                "inputs": [
+                    {"name": "operator", "type": "address"},
+                    {"name": "approved", "type": "bool"}
+                ],
+                "name": "setApprovalForAll",
+                "outputs": [],
+                "type": "function"
+            }, {
+                "inputs": [
+                    {"name": "account", "type": "address"},
+                    {"name": "operator", "type": "address"}
+                ],
+                "name": "isApprovedForAll",
+                "outputs": [{"name": "", "type": "bool"}],
+                "type": "function"
+            }]
 
-        # Approve exchange contracts for CTF tokens
-        for contract_name, contract_addr in contracts_to_approve:
-            exchange_address = Web3.to_checksum_address(contract_addr)
+            ctf_contract = self._sync_web3.eth.contract(
+                address=ctf_address,
+                abi=set_approval_abi
+            )
 
-            is_approved = ctf_contract.functions.isApprovedForAll(wallet, exchange_address).call()
+            for contract_name, contract_addr in contracts_to_approve:
+                if contract_name in cached_ctf:
+                    continue  # Skip if cached
 
-            if not is_approved:
+                exchange_address = Web3.to_checksum_address(contract_addr)
+
+                is_approved = ctf_contract.functions.isApprovedForAll(wallet, exchange_address).call()
+
+                if is_approved:
+                    self._ctf_approval_cache.setdefault(wallet, set()).add(contract_name)
+                    continue
+
                 logger.info(f"Approving Polymarket {contract_name} for CTF tokens")
 
                 nonce = self._sync_web3.eth.get_transaction_count(wallet)
@@ -1099,6 +1202,45 @@ class PolymarketPlatform(BasePlatform):
                 self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
                 logger.info(f"Polymarket {contract_name} CTF approval confirmed", tx_hash=tx_hash.hex())
 
+                # Cache the approval
+                self._ctf_approval_cache.setdefault(wallet, set()).add(contract_name)
+
+        # Run blocking checks in thread pool
+        await asyncio.to_thread(sync_check_and_approve)
+
+    def _get_clob_client(self, private_key: Any) -> Any:
+        """Get or create a cached CLOB client for the given private key.
+
+        Caching the client avoids repeated credential derivation which can be slow.
+        """
+        from py_clob_client.client import ClobClient
+
+        wallet = private_key.address
+        cached = self._clob_client_cache.get(wallet)
+
+        if cached:
+            logger.debug("Using cached CLOB client", wallet=wallet[:10])
+            return cached
+
+        # Create new client
+        client = ClobClient(
+            settings.polymarket_api_url,
+            key=private_key.key.hex(),
+            chain_id=137,  # Polygon
+            signature_type=0,  # EOA
+            funder=private_key.address,  # Required for balance operations
+        )
+
+        # Derive and set API credentials
+        creds = client.create_or_derive_api_creds()
+        client.set_api_creds(creds)
+
+        # Cache the client
+        self._clob_client_cache[wallet] = client
+        logger.info("Created and cached CLOB client", wallet=wallet[:10])
+
+        return client
+
     async def execute_trade(
         self,
         quote: Quote,
@@ -1108,6 +1250,7 @@ class PolymarketPlatform(BasePlatform):
         Execute a trade on Polymarket.
 
         Collects platform fee AFTER successful trade execution.
+        Uses caching for approval checks and CLOB client to speed up execution.
         """
         if not isinstance(private_key, LocalAccount):
             raise PlatformError(
@@ -1120,26 +1263,15 @@ class PolymarketPlatform(BasePlatform):
 
         try:
             # Ensure USDC.e and CTF are approved for Polymarket exchange contracts
+            # This is now cached for repeat trades
             await self._ensure_exchange_approval(private_key)
 
-            # Import the official Polymarket client for order execution
-            from py_clob_client.client import ClobClient
+            # Import order types
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
             from py_clob_client.order_builder.constants import BUY, SELL
 
-            # Initialize CLOB client with funder for proper allowance handling
-            client = ClobClient(
-                settings.polymarket_api_url,
-                key=private_key.key.hex(),
-                chain_id=137,  # Polygon
-                signature_type=0,  # EOA
-                funder=private_key.address,  # Required for balance operations
-            )
-
-            # Set API credentials
-            creds = client.create_or_derive_api_creds()
-            client.set_api_creds(creds)
-            logger.info("CLOB API credentials set")
+            # Get cached CLOB client (creates if first time)
+            client = self._get_clob_client(private_key)
 
             token_id = quote.quote_data["token_id"]
 

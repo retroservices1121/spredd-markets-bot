@@ -74,6 +74,53 @@ def format_usd(amount: Optional[Decimal]) -> str:
     return f"${float(amount):,.2f}"
 
 
+def format_expiration(close_time: Optional[str]) -> str:
+    """Format expiration date/time in a user-friendly way."""
+    if not close_time:
+        return "N/A"
+
+    try:
+        from datetime import datetime, timezone
+
+        # Parse ISO format date string
+        if close_time.endswith("Z"):
+            dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+        elif "T" in close_time:
+            dt = datetime.fromisoformat(close_time)
+        else:
+            # Try parsing date-only format
+            dt = datetime.fromisoformat(close_time + "T23:59:59+00:00")
+
+        # Make timezone-aware if not already
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        now = datetime.now(timezone.utc)
+        diff = dt - now
+
+        # If already expired
+        if diff.total_seconds() < 0:
+            return "Expired"
+
+        # Format based on time remaining
+        days = diff.days
+        hours = diff.seconds // 3600
+
+        if days > 30:
+            return dt.strftime("%b %d, %Y")
+        elif days > 0:
+            return f"{days}d {hours}h"
+        elif hours > 0:
+            minutes = (diff.seconds % 3600) // 60
+            return f"{hours}h {minutes}m"
+        else:
+            minutes = diff.seconds // 60
+            return f"{minutes}m"
+    except Exception:
+        # Fallback: return the raw string truncated
+        return close_time[:20] if len(close_time) > 20 else close_time
+
+
 def platform_keyboard() -> InlineKeyboardMarkup:
     """Create platform selection keyboard."""
     buttons = []
@@ -321,6 +368,7 @@ To protect your funds, please set a 4-6 digit PIN.
     # Buttons
     buttons = [
         [InlineKeyboardButton("🔄 Refresh Balances", callback_data="wallet:refresh")],
+        [InlineKeyboardButton("🌉 Bridge USDC", callback_data="wallet:bridge")],
     ]
 
     if not is_pin_protected:
@@ -384,9 +432,10 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         for i, market in enumerate(markets, 1):
             title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
             yes_prob = format_probability(market.yes_price)
+            exp = format_expiration(market.close_time)
 
             text += f"<b>{i}.</b> {title}\n"
-            text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)}\n\n"
+            text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
 
             buttons.append([
                 InlineKeyboardButton(
@@ -399,7 +448,10 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if has_next:
             buttons.append([InlineKeyboardButton("Next »", callback_data="markets:page:1")])
 
-        buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh")])
+        buttons.append([
+            InlineKeyboardButton("📂 Categories", callback_data="categories"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh"),
+        ])
 
         await update.message.reply_text(
             text,
@@ -459,15 +511,16 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         
         text = f"🔍 <b>Results for \"{escape_html(query)}\"</b>\n\n"
-        
+
         buttons = []
         for i, market in enumerate(markets, 1):
             title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
             yes_prob = format_probability(market.yes_price)
-            
+            exp = format_expiration(market.close_time)
+
             text += f"<b>{i}.</b> {title}\n"
-            text += f"   YES: {yes_prob}\n\n"
-            
+            text += f"   YES: {yes_prob} • Exp: {exp}\n\n"
+
             buttons.append([
                 InlineKeyboardButton(
                     f"{i}. {market.title[:30]}...",
@@ -764,6 +817,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await handle_wallet_create_new(query, update.effective_user.id, context)
             elif parts[1] == "confirm_create":
                 await handle_wallet_confirm_create(query, update.effective_user.id, context)
+            elif parts[1] == "bridge":
+                await handle_bridge_menu(query, update.effective_user.id, context)
+
+        elif action == "bridge":
+            # Format: bridge:source_chain or bridge:start:source_chain
+            if parts[1] == "start":
+                # bridge:start:source_chain - user selected a chain to bridge from
+                await handle_bridge_start(query, parts[2], update.effective_user.id, context)
+            else:
+                # bridge:source_chain - legacy format
+                await handle_bridge_start(query, parts[1], update.effective_user.id, context)
 
         elif action == "export":
             await handle_export_key(query, parts[1], update.effective_user.id, context)
@@ -774,6 +838,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             elif parts[1] == "page":
                 page = int(parts[2]) if len(parts) > 2 else 0
                 await handle_markets_refresh(query, update.effective_user.id, page=page)
+
+        elif action == "categories":
+            await handle_categories_menu(query, update.effective_user.id)
+
+        elif action == "category":
+            # Format: category:category_id
+            await handle_category_view(query, parts[1], update.effective_user.id)
         
         elif action == "menu":
             if parts[1] == "main":
@@ -892,6 +963,7 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
     
     info = PLATFORM_INFO[platform_enum]
     
+    expiration_text = format_expiration(market.close_time)
     text = f"""
 {info['emoji']} <b>{escape_html(market.title)}</b>
 
@@ -903,6 +975,7 @@ NO: {format_probability(market.no_price)} ({format_price(market.no_price)})
 Volume (24h): {format_usd(market.volume_24h)}
 Liquidity: {format_usd(market.liquidity)}
 Status: {"🟢 Active" if market.is_active else "🔴 Closed"}
+Expires: {expiration_text}
 """
     
     if market.description:
@@ -992,6 +1065,7 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
 
             # Create progress callback for bridge updates
             last_update_time = [0]  # Use list to allow modification in closure
+            main_loop = asyncio.get_event_loop()  # Capture main event loop
 
             async def update_progress(msg: str, elapsed: int, total: int):
                 import time
@@ -1013,13 +1087,15 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
                 except Exception:
                     pass  # Ignore update errors
 
-            # Wrap async callback for sync bridge service
+            # Wrap async callback for sync bridge service (called from thread)
             def sync_progress_callback(msg: str, elapsed: int, total: int):
-                import asyncio
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(update_progress(msg, elapsed, total))
+                    # Schedule coroutine on main event loop from thread
+                    future = asyncio.run_coroutine_threadsafe(
+                        update_progress(msg, elapsed, total),
+                        main_loop
+                    )
+                    # Don't wait for result, just fire and forget
                 except Exception:
                     pass
 
@@ -1146,6 +1222,441 @@ async def handle_wallet_refresh(query, telegram_id: int) -> None:
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
     )
+
+
+async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show bridge menu with available source chains."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain
+        from src.db.database import get_user_wallets
+
+        # Initialize bridge service if needed
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        # Get user's EVM wallet
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text(
+                "❌ No EVM wallet found. Please /start to create one.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Get balances on all chains
+        balances = bridge_service.get_all_usdc_balances(evm_wallet.public_key)
+
+        text = "🌉 <b>Bridge USDC to Polygon</b>\n\n"
+        text += "Bridge USDC from other chains to Polygon for trading.\n\n"
+        text += "<b>Your USDC Balances:</b>\n"
+
+        buttons = []
+        for chain, balance in balances.items():
+            chain_emoji = {
+                BridgeChain.BASE: "🔵",
+                BridgeChain.ARBITRUM: "🔷",
+                BridgeChain.OPTIMISM: "🔴",
+                BridgeChain.ETHEREUM: "⚪",
+                BridgeChain.POLYGON: "🟣",
+            }.get(chain, "🔹")
+
+            text += f"{chain_emoji} {chain.value.title()}: ${float(balance):.2f}\n"
+
+            # Only show bridge button for chains with balance (excluding Polygon)
+            if chain != BridgeChain.POLYGON and balance > 0:
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{chain_emoji} Bridge from {chain.value.title()} (${float(balance):.2f})",
+                        callback_data=f"bridge:start:{chain.value}"
+                    )
+                ])
+
+        if not buttons:
+            text += "\n<i>No bridgeable balance found on other chains.</i>"
+
+        text += "\n\n<i>Bridging uses Circle CCTP (native USDC, ~10-15 min)</i>"
+
+        buttons.append([InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to load bridge menu", error=str(e))
+        await query.edit_message_text(
+            f"❌ Failed to load bridge info: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")],
+            ]),
+        )
+
+
+async def handle_bridge_start(query, source_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start manual bridge - prompt for PIN if needed."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain
+        from src.db.database import get_user_wallets
+
+        # Get chain enum
+        try:
+            chain = BridgeChain(source_chain.lower())
+        except ValueError:
+            await query.edit_message_text(f"Invalid chain: {source_chain}")
+            return
+
+        # Get user's wallet
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        # Get balance on source chain
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        balance = bridge_service.get_usdc_balance(chain, evm_wallet.public_key)
+
+        if balance <= 0:
+            await query.edit_message_text(
+                f"❌ No USDC balance on {chain.value.title()}.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        # Store pending bridge info
+        context.user_data["pending_bridge"] = {
+            "source_chain": source_chain,
+            "amount": str(balance),  # Bridge full balance
+            "awaiting_pin": evm_wallet.pin_protected,
+        }
+
+        if evm_wallet.pin_protected:
+            text = f"""
+🌉 <b>Bridge USDC</b>
+
+Source: {chain.value.title()}
+Amount: ${float(balance):.2f} USDC
+Destination: Polygon
+
+<b>🔐 Enter your PIN to start bridging:</b>
+<i>(Bridging takes ~10-15 minutes via Circle CCTP)</i>
+"""
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+        else:
+            # No PIN - proceed directly (will need to call execute)
+            await execute_bridge(query, user.id, telegram_id, source_chain, balance, "", context)
+
+    except Exception as e:
+        logger.error("Bridge start failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Bridge error: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+
+
+async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: str, amount: Decimal, pin: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute the bridge operation."""
+    try:
+        from src.services.bridge import bridge_service, BridgeChain
+        import asyncio
+
+        chain = BridgeChain(source_chain.lower())
+        chain_family = ChainFamily.EVM
+
+        # Get private key
+        private_key = await wallet_service.get_private_key(user_id, telegram_id, chain_family, pin)
+        if not private_key:
+            await query.edit_message_text(
+                "❌ Failed to get wallet key.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        # Show progress message
+        await query.edit_message_text(
+            f"🌉 <b>Bridging USDC</b>\n\n"
+            f"From: {chain.value.title()}\n"
+            f"To: Polygon\n"
+            f"Amount: ${float(amount):.2f}\n\n"
+            f"⏳ Initiating transfer...",
+            parse_mode=ParseMode.HTML,
+        )
+
+        # Create progress callback
+        main_loop = asyncio.get_event_loop()
+        last_update_time = [0]
+
+        async def update_progress(msg: str, elapsed: int, total: int):
+            import time
+            now = time.time()
+            if now - last_update_time[0] < 5:
+                return
+            last_update_time[0] = now
+
+            try:
+                progress_pct = min(100, int((elapsed / max(1, total)) * 100))
+                progress_bar = "█" * (progress_pct // 10) + "░" * (10 - progress_pct // 10)
+                await query.edit_message_text(
+                    f"🌉 <b>Bridging USDC</b>\n\n"
+                    f"{escape_html(msg)}\n\n"
+                    f"[{progress_bar}] {progress_pct}%",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+        def sync_progress_callback(msg: str, elapsed: int, total: int):
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    update_progress(msg, elapsed, total),
+                    main_loop
+                )
+            except Exception:
+                pass
+
+        # Execute bridge in thread
+        result = await asyncio.to_thread(
+            bridge_service.bridge_usdc,
+            private_key,
+            chain,
+            BridgeChain.POLYGON,
+            amount,
+            sync_progress_callback,
+        )
+
+        if result.success:
+            text = f"""
+✅ <b>Bridge Initiated!</b>
+
+From: {chain.value.title()}
+To: Polygon
+Amount: ${float(amount):.2f} USDC
+
+Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
+"""
+            if result.mint_tx_hash:
+                text += f"Mint TX: <code>{result.mint_tx_hash[:16]}...</code>\n"
+                text += "\n✅ Bridge complete! Funds are now on Polygon."
+            else:
+                text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
+
+        else:
+            text = f"❌ <b>Bridge Failed</b>\n\n{escape_html(result.error_message or 'Unknown error')}"
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Refresh Wallet", callback_data="wallet:refresh")],
+            ]),
+        )
+
+        # Clear pending bridge
+        if "pending_bridge" in context.user_data:
+            del context.user_data["pending_bridge"]
+
+    except Exception as e:
+        if "Decryption failed" in str(e):
+            await query.edit_message_text(
+                "❌ <b>Invalid PIN</b>\n\nPlease try again.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Try Again", callback_data="wallet:bridge")],
+                ]),
+            )
+        else:
+            logger.error("Bridge execution failed", error=str(e))
+            await query.edit_message_text(
+                f"❌ Bridge failed: {escape_html(str(e))}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+
+
+async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
+    """Handle PIN entry for bridge operation."""
+    pending = context.user_data.get("pending_bridge")
+    if not pending:
+        await update.message.reply_text("No pending bridge operation.")
+        return
+
+    # Validate PIN format
+    if not pin.isdigit() or len(pin) < 4 or len(pin) > 6:
+        await update.message.reply_text(
+            "❌ Invalid PIN. Please enter a 4-6 digit PIN.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Delete the PIN message for security
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("User not found.")
+        return
+
+    # Send initial status
+    status_msg = await update.message.reply_text(
+        "🌉 <b>Starting Bridge</b>\n\n⏳ Verifying PIN and initiating transfer...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    # Get bridge info from pending
+    source_chain = pending["source_chain"]
+    amount = Decimal(pending["amount"])
+
+    # Clear pending bridge before executing
+    del context.user_data["pending_bridge"]
+
+    # Execute the bridge using the status message as query
+    # We need to create a mock query object or modify execute_bridge
+    try:
+        from src.services.bridge import bridge_service, BridgeChain
+        import asyncio
+
+        chain = BridgeChain(source_chain.lower())
+        chain_family = ChainFamily.EVM
+
+        # Get private key
+        try:
+            private_key = await wallet_service.get_private_key(user.id, update.effective_user.id, chain_family, pin)
+        except Exception as e:
+            if "Decryption failed" in str(e):
+                await status_msg.edit_text(
+                    "❌ <b>Invalid PIN</b>\n\nPlease try again.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Try Again", callback_data="wallet:bridge")],
+                    ]),
+                )
+                return
+            raise
+
+        if not private_key:
+            await status_msg.edit_text("❌ Failed to get wallet key.")
+            return
+
+        # Show progress message
+        await status_msg.edit_text(
+            f"🌉 <b>Bridging USDC</b>\n\n"
+            f"From: {chain.value.title()}\n"
+            f"To: Polygon\n"
+            f"Amount: ${float(amount):.2f}\n\n"
+            f"⏳ Initiating transfer...",
+            parse_mode=ParseMode.HTML,
+        )
+
+        # Create progress callback
+        main_loop = asyncio.get_event_loop()
+        last_update_time = [0]
+
+        async def update_progress(msg: str, elapsed: int, total: int):
+            import time
+            now = time.time()
+            if now - last_update_time[0] < 5:
+                return
+            last_update_time[0] = now
+
+            try:
+                progress_pct = min(100, int((elapsed / max(1, total)) * 100))
+                progress_bar = "█" * (progress_pct // 10) + "░" * (10 - progress_pct // 10)
+                await status_msg.edit_text(
+                    f"🌉 <b>Bridging USDC</b>\n\n"
+                    f"{escape_html(msg)}\n\n"
+                    f"[{progress_bar}] {progress_pct}%",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+        def sync_progress_callback(msg: str, elapsed: int, total: int):
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    update_progress(msg, elapsed, total),
+                    main_loop
+                )
+            except Exception:
+                pass
+
+        # Execute bridge in thread
+        result = await asyncio.to_thread(
+            bridge_service.bridge_usdc,
+            private_key,
+            chain,
+            BridgeChain.POLYGON,
+            amount,
+            sync_progress_callback,
+        )
+
+        if result.success:
+            text = f"""
+✅ <b>Bridge Initiated!</b>
+
+From: {chain.value.title()}
+To: Polygon
+Amount: ${float(amount):.2f} USDC
+
+Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
+"""
+            if result.mint_tx_hash:
+                text += f"Mint TX: <code>{result.mint_tx_hash[:16]}...</code>\n"
+                text += "\n✅ Bridge complete! Funds are now on Polygon."
+            else:
+                text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
+
+        else:
+            text = f"❌ <b>Bridge Failed</b>\n\n{escape_html(result.error_message or 'Unknown error')}"
+
+        await status_msg.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Refresh Wallet", callback_data="wallet:refresh")],
+            ]),
+        )
+
+    except Exception as e:
+        logger.error("Bridge with PIN failed", error=str(e))
+        await status_msg.edit_text(
+            f"❌ Bridge failed: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
 
 
 async def handle_wallet_export(query, telegram_id: int) -> None:
@@ -1390,9 +1901,10 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
             display_num = offset + i
             title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
             yes_prob = format_probability(market.yes_price)
+            exp = format_expiration(market.close_time)
 
             text += f"<b>{display_num}.</b> {title}\n"
-            text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)}\n\n"
+            text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
 
             buttons.append([
                 InlineKeyboardButton(
@@ -1410,7 +1922,10 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
         if nav_buttons:
             buttons.append(nav_buttons)
 
-        buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh")])
+        buttons.append([
+            InlineKeyboardButton("📂 Categories", callback_data="categories"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh"),
+        ])
         buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
 
         await query.edit_message_text(
@@ -1424,6 +1939,120 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
         await query.edit_message_text(
             f"❌ Failed to load markets: {escape_html(str(e))}",
             parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_categories_menu(query, telegram_id: int) -> None:
+    """Show categories menu."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Only Polymarket supports categories currently
+    if user.active_platform != Platform.POLYMARKET:
+        await query.edit_message_text(
+            "📂 <b>Categories</b>\n\n"
+            "Categories are currently only available for Polymarket.\n\n"
+            "Switch to Polymarket to browse by category.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="markets:refresh")],
+            ]),
+        )
+        return
+
+    platform = get_platform(Platform.POLYMARKET)
+    categories = platform.get_available_categories()
+
+    text = "📂 <b>Browse by Category</b>\n\n"
+    text += "Select a category to see related markets:\n"
+
+    buttons = []
+    # Create 2-column layout for categories
+    for i in range(0, len(categories), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(categories):
+                cat = categories[i + j]
+                row.append(InlineKeyboardButton(
+                    f"{cat['emoji']} {cat['label']}",
+                    callback_data=f"category:{cat['id']}"
+                ))
+        buttons.append(row)
+
+    buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_category_view(query, category_id: str, telegram_id: int) -> None:
+    """Show markets in a category."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    platform = get_platform(Platform.POLYMARKET)
+    categories = platform.get_available_categories()
+
+    # Find category info
+    category_info = next((c for c in categories if c["id"] == category_id), None)
+    category_label = category_info["label"] if category_info else category_id.title()
+    category_emoji = category_info["emoji"] if category_info else "📂"
+
+    try:
+        markets = await platform.get_markets_by_category(category_id, limit=10)
+
+        if not markets:
+            await query.edit_message_text(
+                f"{category_emoji} <b>{category_label}</b>\n\n"
+                "No active markets found in this category.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back to Categories", callback_data="categories")],
+                ]),
+            )
+            return
+
+        text = f"{category_emoji} <b>{category_label} Markets</b>\n\n"
+
+        buttons = []
+        for i, market in enumerate(markets, 1):
+            title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
+            yes_prob = format_probability(market.yes_price)
+            exp = format_expiration(market.close_time)
+
+            text += f"<b>{i}.</b> {title}\n"
+            text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{i}. {market.title[:30]}...",
+                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:20]}"
+                )
+            ])
+
+        buttons.append([InlineKeyboardButton("« Back to Categories", callback_data="categories")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to load category markets", category=category_id, error=str(e))
+        await query.edit_message_text(
+            f"❌ Failed to load {category_label} markets: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back to Categories", callback_data="categories")],
+            ]),
         )
 
 
@@ -2249,6 +2878,7 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
 
         # Create progress callback for bridge updates
         last_update_time = [0]  # Use list to allow modification in closure
+        main_loop = asyncio.get_event_loop()  # Capture main event loop
 
         async def update_progress(msg: str, elapsed: int, total: int):
             import time
@@ -2270,13 +2900,15 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
             except Exception:
                 pass  # Ignore update errors
 
-        # Wrap async callback for sync bridge service
+        # Wrap async callback for sync bridge service (called from thread)
         def sync_progress_callback(msg: str, elapsed: int, total: int):
-            import asyncio
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(update_progress(msg, elapsed, total))
+                # Schedule coroutine on main event loop from thread
+                future = asyncio.run_coroutine_threadsafe(
+                    update_progress(msg, elapsed, total),
+                    main_loop
+                )
+                # Don't wait for result, just fire and forget
             except Exception:
                 pass
 
@@ -2931,6 +3563,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif "pending_export" in context.user_data:
             del context.user_data["pending_export"]
             await update.message.reply_text("Export cancelled.")
+        elif "pending_bridge" in context.user_data:
+            del context.user_data["pending_bridge"]
+            await update.message.reply_text("Bridge cancelled.")
         else:
             await update.message.reply_text("Nothing to cancel.")
         return
@@ -2953,6 +3588,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Check if user has a pending balance check (PIN entry for Polymarket)
     if "pending_balance_check" in context.user_data and not text.startswith("/"):
         await handle_balance_check_with_pin(update, context, text)
+        return
+
+    # Check if user has a pending bridge (PIN entry)
+    if "pending_bridge" in context.user_data and not text.startswith("/"):
+        await handle_bridge_with_pin(update, context, text)
         return
 
     # Check if user has a pending buy order
@@ -2995,14 +3635,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
             
             response = f"🔍 <b>Results for \"{escape_html(text)}\"</b>\n\n"
-            
+
             buttons = []
             for i, market in enumerate(markets, 1):
                 title = escape_html(market.title[:45] + "..." if len(market.title) > 45 else market.title)
                 yes_prob = format_probability(market.yes_price)
-                
-                response += f"<b>{i}.</b> {title}\n   YES: {yes_prob}\n\n"
-                
+                exp = format_expiration(market.close_time)
+
+                response += f"<b>{i}.</b> {title}\n   YES: {yes_prob} • Exp: {exp}\n\n"
+
                 buttons.append([
                     InlineKeyboardButton(
                         f"{i}. View Market",
