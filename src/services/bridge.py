@@ -307,16 +307,22 @@ class BridgeService:
 
             # Step 1: Check native balance for gas
             native_balance = source_w3.eth.get_balance(wallet)
-            # Need at least ~0.001 ETH for gas (approval + burn)
-            min_gas_wei = 500000 * 50 * 10**9  # 500k gas * 50 gwei
+            # Need at least ~0.0001 ETH for gas on L2s (very low fees)
+            # For Ethereum mainnet, need more
+            if source_chain == BridgeChain.ETHEREUM:
+                min_gas_wei = int(0.005 * 10**18)  # 0.005 ETH for mainnet
+            else:
+                min_gas_wei = int(0.00005 * 10**18)  # 0.00005 ETH for L2s (~$0.15)
+
             if native_balance < min_gas_wei:
-                native_name = "ETH" if source_chain in [BridgeChain.BASE, BridgeChain.ARBITRUM, BridgeChain.OPTIMISM, BridgeChain.ETHEREUM] else "native token"
+                native_name = "ETH"
+                min_eth = min_gas_wei / 10**18
                 return BridgeResult(
                     success=False,
                     source_chain=source_chain,
                     dest_chain=dest_chain,
                     amount=amount,
-                    error_message=f"Insufficient {native_name} for gas on {source_chain.value}. Need ~$0.10-0.50 in {native_name}."
+                    error_message=f"Insufficient {native_name} for gas on {source_chain.value}. Need at least {min_eth:.6f} ETH. Current balance: {native_balance / 10**18:.6f} ETH"
                 )
 
             # Step 2: Check USDC balance
