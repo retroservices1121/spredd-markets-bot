@@ -3,6 +3,7 @@ Telegram bot command handlers.
 Handles all user interactions with platform selection and trading.
 """
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
@@ -27,6 +28,8 @@ from src.db.database import (
     create_position,
     create_order,
     update_order,
+    get_orders_for_pnl,
+    get_positions_for_pnl,
 )
 from src.db.models import Platform, ChainFamily, PositionStatus, OrderStatus
 from src.platforms import (
@@ -214,6 +217,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /buy - Start a buy order
 /positions - View your open positions
 /orders - View order history
+/pnl - View profit & loss summary
 
 <b>Account</b>
 /balance - Check all balances
@@ -671,6 +675,131 @@ async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /pnl command - show profit and loss summary."""
+    if not update.effective_user or not update.message:
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        return
+
+    platform_info = PLATFORM_INFO[user.active_platform]
+    platform = get_platform(user.active_platform)
+
+    # Get time boundaries
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # Get all orders for PnL calculation
+    all_orders = await get_orders_for_pnl(user.id, platform=user.active_platform)
+    day_orders = await get_orders_for_pnl(user.id, platform=user.active_platform, since=day_start)
+    month_orders = await get_orders_for_pnl(user.id, platform=user.active_platform, since=month_start)
+
+    # Get positions for unrealized PnL
+    positions = await get_positions_for_pnl(user.id, platform=user.active_platform, include_open=True, include_closed=False)
+
+    # Calculate realized PnL from orders
+    # BUY orders = cost (negative), SELL orders = proceeds (positive)
+    def calculate_realized_pnl(orders):
+        total_cost = Decimal("0")
+        total_proceeds = Decimal("0")
+        for order in orders:
+            try:
+                amount = Decimal(order.input_amount) / Decimal(10**6)
+                if order.side.value == "buy":
+                    total_cost += amount
+                else:  # sell
+                    total_proceeds += amount
+            except Exception:
+                pass
+        return total_proceeds - total_cost
+
+    realized_day = calculate_realized_pnl(day_orders)
+    realized_month = calculate_realized_pnl(month_orders)
+    realized_all = calculate_realized_pnl(all_orders)
+
+    # Calculate unrealized PnL from open positions
+    unrealized_pnl = Decimal("0")
+    total_invested = Decimal("0")
+    positions_count = 0
+
+    for pos in positions:
+        try:
+            token_amount = Decimal(pos.token_amount) / Decimal(10**6)
+            entry_price = pos.entry_price if pos.entry_price else Decimal("0")
+            cost_basis = token_amount * entry_price
+            total_invested += cost_basis
+            positions_count += 1
+
+            # Fetch current price from platform
+            current_price = None
+            try:
+                market = await platform.get_market(pos.market_id)
+                if market:
+                    outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
+                    if outcome_str == "YES":
+                        current_price = market.yes_price
+                    else:
+                        current_price = market.no_price
+            except Exception:
+                pass
+
+            if current_price:
+                current_value = token_amount * current_price
+                unrealized_pnl += current_value - cost_basis
+        except Exception:
+            pass
+
+    # Format PnL values
+    def format_pnl(value: Decimal) -> str:
+        if value >= 0:
+            return f"🟢 +${float(value):,.2f}"
+        else:
+            return f"🔴 -${float(abs(value)):,.2f}"
+
+    def format_pnl_pct(value: Decimal, basis: Decimal) -> str:
+        if basis == 0:
+            return ""
+        pct = (value / basis) * 100
+        if pct >= 0:
+            return f" (+{float(pct):.1f}%)"
+        else:
+            return f" ({float(pct):.1f}%)"
+
+    text = f"📊 <b>P&L Summary - {platform_info['name']}</b>\n\n"
+
+    # Today's PnL
+    text += f"<b>📅 Today</b>\n"
+    text += f"  Realized: {format_pnl(realized_day)}\n"
+    text += f"  Trades: {len(day_orders)}\n\n"
+
+    # This Month's PnL
+    text += f"<b>📆 This Month</b>\n"
+    text += f"  Realized: {format_pnl(realized_month)}\n"
+    text += f"  Trades: {len(month_orders)}\n\n"
+
+    # All-Time PnL
+    text += f"<b>📈 All-Time</b>\n"
+    text += f"  Realized: {format_pnl(realized_all)}\n"
+    text += f"  Trades: {len(all_orders)}\n\n"
+
+    # Unrealized PnL
+    text += f"<b>💼 Open Positions</b>\n"
+    text += f"  Positions: {positions_count}\n"
+    text += f"  Invested: ${float(total_invested):,.2f}\n"
+    text += f"  Unrealized: {format_pnl(unrealized_pnl)}{format_pnl_pct(unrealized_pnl, total_invested)}\n\n"
+
+    # Total (Realized All-Time + Unrealized)
+    total_pnl = realized_all + unrealized_pnl
+    text += f"<b>💰 Total P&L</b>\n"
+    text += f"  {format_pnl(total_pnl)}\n"
+
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /referral command - show referral space."""
     if not update.effective_user or not update.message:
@@ -821,10 +950,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await handle_bridge_menu(query, update.effective_user.id, context)
 
         elif action == "bridge":
-            # Format: bridge:source_chain or bridge:start:source_chain
+            # Format: bridge:start:source_chain, bridge:amount:chain:percent, bridge:custom:chain
             if parts[1] == "start":
                 # bridge:start:source_chain - user selected a chain to bridge from
                 await handle_bridge_start(query, parts[2], update.effective_user.id, context)
+            elif parts[1] == "amount":
+                # bridge:amount:chain:percentage - user selected preset amount
+                await handle_bridge_amount(query, parts[2], int(parts[3]), update.effective_user.id, context)
+            elif parts[1] == "custom":
+                # bridge:custom:chain - user wants to enter custom amount
+                await handle_bridge_custom(query, parts[2], update.effective_user.id, context)
             else:
                 # bridge:source_chain - legacy format
                 await handle_bridge_start(query, parts[1], update.effective_user.id, context)
@@ -1207,6 +1342,7 @@ async def handle_wallet_refresh(query, telegram_id: int) -> None:
     # Build buttons
     buttons = [
         [InlineKeyboardButton("🔄 Refresh", callback_data="wallet:refresh")],
+        [InlineKeyboardButton("🌉 Bridge USDC", callback_data="wallet:bridge")],
     ]
 
     if not is_pin_protected:
@@ -1303,7 +1439,7 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
 
 
 async def handle_bridge_start(query, source_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Start manual bridge - prompt for PIN if needed."""
+    """Start manual bridge - show amount selection."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
@@ -1344,28 +1480,49 @@ async def handle_bridge_start(query, source_chain: str, telegram_id: int, contex
             )
             return
 
-        # Store pending bridge info
+        # Store pending bridge info for amount selection
         context.user_data["pending_bridge"] = {
             "source_chain": source_chain,
-            "amount": str(balance),  # Bridge full balance
-            "awaiting_pin": evm_wallet.pin_protected,
+            "max_balance": str(balance),
+            "pin_protected": evm_wallet.pin_protected,
+            "awaiting_amount": True,
         }
 
-        if evm_wallet.pin_protected:
-            text = f"""
-🌉 <b>Bridge USDC</b>
+        # Calculate preset amounts
+        amounts = {
+            "25%": balance * Decimal("0.25"),
+            "50%": balance * Decimal("0.50"),
+            "75%": balance * Decimal("0.75"),
+            "100%": balance,
+        }
+
+        text = f"""
+🌉 <b>Bridge USDC to Polygon</b>
 
 Source: {chain.value.title()}
-Amount: ${float(balance):.2f} USDC
-Destination: Polygon
+Available: <b>${float(balance):.2f} USDC</b>
 
-<b>🔐 Enter your PIN to start bridging:</b>
-<i>(Bridging takes ~10-15 minutes via Circle CCTP)</i>
+Select amount to bridge or enter a custom amount:
 """
-            await query.edit_message_text(text, parse_mode=ParseMode.HTML)
-        else:
-            # No PIN - proceed directly (will need to call execute)
-            await execute_bridge(query, user.id, telegram_id, source_chain, balance, "", context)
+
+        buttons = [
+            [
+                InlineKeyboardButton(f"25% (${float(amounts['25%']):.2f})", callback_data=f"bridge:amount:{source_chain}:25"),
+                InlineKeyboardButton(f"50% (${float(amounts['50%']):.2f})", callback_data=f"bridge:amount:{source_chain}:50"),
+            ],
+            [
+                InlineKeyboardButton(f"75% (${float(amounts['75%']):.2f})", callback_data=f"bridge:amount:{source_chain}:75"),
+                InlineKeyboardButton(f"100% (${float(amounts['100%']):.2f})", callback_data=f"bridge:amount:{source_chain}:100"),
+            ],
+            [InlineKeyboardButton("✏️ Custom Amount", callback_data=f"bridge:custom:{source_chain}")],
+            [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+        ]
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
 
     except Exception as e:
         logger.error("Bridge start failed", error=str(e))
@@ -1376,6 +1533,198 @@ Destination: Polygon
                 [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
             ]),
         )
+
+
+async def handle_bridge_amount(query, source_chain: str, percentage: int, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle bridge amount selection."""
+    pending = context.user_data.get("pending_bridge")
+    if not pending:
+        await query.edit_message_text("No pending bridge. Please start again.")
+        return
+
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    max_balance = Decimal(pending["max_balance"])
+    amount = max_balance * Decimal(percentage) / Decimal(100)
+
+    # Update pending bridge with amount
+    context.user_data["pending_bridge"]["amount"] = str(amount)
+    context.user_data["pending_bridge"]["awaiting_amount"] = False
+    context.user_data["pending_bridge"]["awaiting_pin"] = pending["pin_protected"]
+
+    from src.services.bridge import BridgeChain
+    chain = BridgeChain(source_chain.lower())
+
+    if pending["pin_protected"]:
+        text = f"""
+🌉 <b>Bridge USDC</b>
+
+Source: {chain.value.title()}
+Amount: <b>${float(amount):.2f} USDC</b>
+Destination: Polygon
+
+<b>🔐 Enter your PIN to confirm:</b>
+<i>(Bridging takes ~10-15 minutes via Circle CCTP)</i>
+"""
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+    else:
+        # No PIN - proceed directly
+        await execute_bridge(query, user.id, telegram_id, source_chain, amount, "", context)
+
+
+async def handle_bridge_custom(query, source_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Prompt user to enter custom bridge amount."""
+    pending = context.user_data.get("pending_bridge")
+    if not pending:
+        await query.edit_message_text("No pending bridge. Please start again.")
+        return
+
+    max_balance = Decimal(pending["max_balance"])
+
+    from src.services.bridge import BridgeChain
+    chain = BridgeChain(source_chain.lower())
+
+    context.user_data["pending_bridge"]["awaiting_custom_amount"] = True
+
+    text = f"""
+🌉 <b>Bridge USDC - Custom Amount</b>
+
+Source: {chain.value.title()}
+Available: <b>${float(max_balance):.2f} USDC</b>
+
+<b>Enter the amount in USDC to bridge:</b>
+<i>(e.g., 10, 25.50, 100)</i>
+"""
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+
+
+async def handle_bridge_custom_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, amount_str: str) -> None:
+    """Handle custom bridge amount input from user."""
+    pending = context.user_data.get("pending_bridge")
+    if not pending:
+        await update.message.reply_text("No pending bridge. Please start again.")
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        return
+
+    # Parse amount
+    try:
+        amount = Decimal(amount_str.replace(",", ".").replace("$", "").strip())
+        if amount <= 0:
+            await update.message.reply_text("❌ Amount must be greater than 0.")
+            return
+    except:
+        await update.message.reply_text("❌ Invalid amount. Please enter a number (e.g., 10, 25.50).")
+        return
+
+    max_balance = Decimal(pending["max_balance"])
+    if amount > max_balance:
+        await update.message.reply_text(
+            f"❌ Amount exceeds available balance (${float(max_balance):.2f}).\n"
+            f"Please enter a smaller amount.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    source_chain = pending["source_chain"]
+
+    # Update pending bridge with amount
+    context.user_data["pending_bridge"]["amount"] = str(amount)
+    context.user_data["pending_bridge"]["awaiting_custom_amount"] = False
+    context.user_data["pending_bridge"]["awaiting_pin"] = pending["pin_protected"]
+
+    from src.services.bridge import BridgeChain
+    chain = BridgeChain(source_chain.lower())
+
+    if pending["pin_protected"]:
+        text = f"""
+🌉 <b>Bridge USDC</b>
+
+Source: {chain.value.title()}
+Amount: <b>${float(amount):.2f} USDC</b>
+Destination: Polygon
+
+<b>🔐 Enter your PIN to confirm:</b>
+<i>(Bridging takes ~10-15 minutes via Circle CCTP)</i>
+"""
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    else:
+        # No PIN - proceed directly
+        status_msg = await update.message.reply_text(
+            "🌉 <b>Starting Bridge</b>\n\n⏳ Initiating transfer...",
+            parse_mode=ParseMode.HTML,
+        )
+        # Clear custom amount flag
+        del context.user_data["pending_bridge"]
+
+        # Execute bridge (need to create a simulated query object)
+        try:
+            from src.services.bridge import bridge_service, BridgeChain
+            import asyncio
+
+            chain_family = ChainFamily.EVM
+            private_key = await wallet_service.get_private_key(user.id, update.effective_user.id, chain_family, "")
+
+            if not private_key:
+                await status_msg.edit_text("❌ Failed to get wallet key.")
+                return
+
+            main_loop = asyncio.get_event_loop()
+            last_update_time = [0]
+
+            async def update_progress(msg: str, elapsed: int, total: int):
+                import time
+                now = time.time()
+                if now - last_update_time[0] < 5:
+                    return
+                last_update_time[0] = now
+                try:
+                    progress_pct = min(100, int((elapsed / max(1, total)) * 100))
+                    progress_bar = "█" * (progress_pct // 10) + "░" * (10 - progress_pct // 10)
+                    await status_msg.edit_text(
+                        f"🌉 <b>Bridging USDC</b>\n\n{escape_html(msg)}\n\n[{progress_bar}] {progress_pct}%",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except:
+                    pass
+
+            def sync_progress_callback(msg: str, elapsed: int, total: int):
+                try:
+                    asyncio.run_coroutine_threadsafe(update_progress(msg, elapsed, total), main_loop)
+                except:
+                    pass
+
+            result = await asyncio.to_thread(
+                bridge_service.bridge_usdc,
+                private_key,
+                chain,
+                BridgeChain.POLYGON,
+                amount,
+                sync_progress_callback,
+            )
+
+            if result.success:
+                text = f"✅ <b>Bridge Initiated!</b>\n\nFrom: {chain.value.title()}\nTo: Polygon\nAmount: ${float(amount):.2f} USDC\n\nBurn TX: <code>{result.burn_tx_hash[:16]}...</code>\n\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
+            else:
+                text = f"❌ <b>Bridge Failed</b>\n\n{escape_html(result.error_message or 'Unknown error')}"
+
+            await status_msg.edit_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Refresh Wallet", callback_data="wallet:refresh")],
+                    [InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")],
+                ]),
+            )
+        except Exception as e:
+            logger.error("Bridge custom amount failed", error=str(e))
+            await status_msg.edit_text(f"❌ Bridge failed: {escape_html(str(e))}")
 
 
 async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: str, amount: Decimal, pin: str, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1475,6 +1824,7 @@ Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Refresh Wallet", callback_data="wallet:refresh")],
+                [InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")],
             ]),
         )
 
@@ -1645,6 +1995,7 @@ Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Refresh Wallet", callback_data="wallet:refresh")],
+                [InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")],
             ]),
         )
 
@@ -3590,9 +3941,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await handle_balance_check_with_pin(update, context, text)
         return
 
-    # Check if user has a pending bridge (PIN entry)
+    # Check if user has a pending bridge (custom amount or PIN entry)
     if "pending_bridge" in context.user_data and not text.startswith("/"):
-        await handle_bridge_with_pin(update, context, text)
+        pending = context.user_data["pending_bridge"]
+        if pending.get("awaiting_custom_amount"):
+            await handle_bridge_custom_amount_input(update, context, text)
+        else:
+            await handle_bridge_with_pin(update, context, text)
         return
 
     # Check if user has a pending buy order

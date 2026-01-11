@@ -36,6 +36,7 @@ from src.handlers.commands import (
     search_command,
     positions_command,
     orders_command,
+    pnl_command,
     referral_command,
     callback_handler,
     message_handler,
@@ -101,6 +102,7 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("positions", positions_command))
     application.add_handler(CommandHandler("orders", orders_command))
+    application.add_handler(CommandHandler("pnl", pnl_command))
     application.add_handler(CommandHandler("referral", referral_command))
 
     # Callback query handler for inline buttons

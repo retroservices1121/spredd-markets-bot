@@ -753,3 +753,61 @@ async def get_all_fee_balances(user_id: str) -> list[FeeBalance]:
             select(FeeBalance).where(FeeBalance.user_id == user_id)
         )
         return list(result.scalars().all())
+
+
+# ===================
+# PnL Operations
+# ===================
+
+async def get_orders_for_pnl(
+    user_id: str,
+    platform: Optional[Platform] = None,
+    since: Optional["datetime"] = None,
+) -> list[Order]:
+    """Get confirmed orders for PnL calculation."""
+    from datetime import datetime
+
+    async with get_session() as session:
+        query = select(Order).where(
+            Order.user_id == user_id,
+            Order.status == OrderStatus.CONFIRMED,
+        )
+
+        if platform:
+            query = query.where(Order.platform == platform)
+        if since:
+            query = query.where(Order.executed_at >= since)
+
+        query = query.order_by(Order.executed_at.desc())
+
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+
+async def get_positions_for_pnl(
+    user_id: str,
+    platform: Optional[Platform] = None,
+    include_open: bool = True,
+    include_closed: bool = True,
+) -> list[Position]:
+    """Get positions for PnL calculation."""
+    async with get_session() as session:
+        query = select(Position).where(Position.user_id == user_id)
+
+        if platform:
+            query = query.where(Position.platform == platform)
+
+        # Filter by status
+        statuses = []
+        if include_open:
+            statuses.append(PositionStatus.OPEN)
+        if include_closed:
+            statuses.extend([PositionStatus.CLOSED, PositionStatus.REDEEMED])
+
+        if statuses:
+            query = query.where(Position.status.in_(statuses))
+
+        query = query.order_by(Position.created_at.desc())
+
+        result = await session.execute(query)
+        return list(result.scalars().all())

@@ -678,19 +678,49 @@ class PolymarketPlatform(BasePlatform):
 
         data = await self._gamma_request("GET", "/events", params=params)
 
+        from datetime import datetime, timezone
+
+        def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
+            """Check if a market has expired based on end date."""
+            end_date_str = None
+            if market_data:
+                end_date_str = market_data.get("endDate") or market_data.get("endDateIso")
+            if not end_date_str:
+                end_date_str = event_data.get("endDate") or event_data.get("endDateIso")
+
+            if not end_date_str:
+                return False  # No end date, assume active
+
+            try:
+                if end_date_str.endswith("Z"):
+                    end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                elif "T" in end_date_str:
+                    end_date = datetime.fromisoformat(end_date_str)
+                else:
+                    end_date = datetime.fromisoformat(end_date_str + "T23:59:59+00:00")
+
+                if end_date.tzinfo is None:
+                    end_date = end_date.replace(tzinfo=timezone.utc)
+
+                return datetime.now(timezone.utc) > end_date
+            except:
+                return False  # Parse error, assume not expired
+
         markets = []
         for event in data if isinstance(data, list) else []:
             try:
                 event_markets = event.get("markets", [])
 
                 if len(event_markets) <= 1:
-                    # Single market event - parse as one market
-                    markets.append(self._parse_market(event))
+                    # Single market event - check expiration
+                    if not is_market_expired(event):
+                        markets.append(self._parse_market(event))
                 else:
                     # Multi-market event - expand each market as separate entry
                     for market_data in event_markets:
                         if market_data.get("active", True) and not market_data.get("closed", False):
-                            markets.append(self._parse_market(event, market_data))
+                            if not is_market_expired(event, market_data):
+                                markets.append(self._parse_market(event, market_data))
 
                 # Stop if we have enough markets
                 if len(markets) >= limit:
@@ -733,16 +763,42 @@ class PolymarketPlatform(BasePlatform):
                         filtered_events.append(event)
                         break
 
+        from datetime import datetime, timezone
+
+        def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
+            """Check if a market has expired based on end date."""
+            end_date_str = None
+            if market_data:
+                end_date_str = market_data.get("endDate") or market_data.get("endDateIso")
+            if not end_date_str:
+                end_date_str = event_data.get("endDate") or event_data.get("endDateIso")
+            if not end_date_str:
+                return False
+            try:
+                if end_date_str.endswith("Z"):
+                    end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                elif "T" in end_date_str:
+                    end_date = datetime.fromisoformat(end_date_str)
+                else:
+                    end_date = datetime.fromisoformat(end_date_str + "T23:59:59+00:00")
+                if end_date.tzinfo is None:
+                    end_date = end_date.replace(tzinfo=timezone.utc)
+                return datetime.now(timezone.utc) > end_date
+            except:
+                return False
+
         markets = []
         for event in filtered_events:
             try:
                 event_markets = event.get("markets", [])
                 if len(event_markets) <= 1:
-                    markets.append(self._parse_market(event))
+                    if not is_market_expired(event):
+                        markets.append(self._parse_market(event))
                 else:
                     for market_data in event_markets:
                         if market_data.get("active", True) and not market_data.get("closed", False):
-                            markets.append(self._parse_market(event, market_data))
+                            if not is_market_expired(event, market_data):
+                                markets.append(self._parse_market(event, market_data))
 
                 if len(markets) >= limit:
                     break
@@ -811,10 +867,9 @@ class PolymarketPlatform(BasePlatform):
             limit: Maximum number of markets to return
         """
         try:
-            # Gamma API supports tag filtering
+            # Fetch more events to filter locally by tag
             params = {
-                "tag": category.lower(),
-                "limit": limit + 20,  # Fetch extra for multi-market events
+                "limit": 200,  # Fetch many to find matching tags
                 "active": "true",
                 "closed": "false",
                 "order": "volume24hr",
@@ -823,17 +878,60 @@ class PolymarketPlatform(BasePlatform):
 
             data = await self._gamma_request("GET", "/events", params=params)
 
+            from datetime import datetime, timezone
+
+            def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
+                """Check if a market has expired based on end date."""
+                end_date_str = None
+                if market_data:
+                    end_date_str = market_data.get("endDate") or market_data.get("endDateIso")
+                if not end_date_str:
+                    end_date_str = event_data.get("endDate") or event_data.get("endDateIso")
+                if not end_date_str:
+                    return False
+                try:
+                    if end_date_str.endswith("Z"):
+                        end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                    elif "T" in end_date_str:
+                        end_date = datetime.fromisoformat(end_date_str)
+                    else:
+                        end_date = datetime.fromisoformat(end_date_str + "T23:59:59+00:00")
+                    if end_date.tzinfo is None:
+                        end_date = end_date.replace(tzinfo=timezone.utc)
+                    return datetime.now(timezone.utc) > end_date
+                except:
+                    return False
+
+            category_lower = category.lower().replace("-", " ")
             markets = []
+
             for event in data if isinstance(data, list) else []:
                 try:
+                    # Check if event has matching tag
+                    event_tags = event.get("tags", [])
+                    tag_matches = False
+
+                    for tag in event_tags:
+                        tag_label = (tag.get("label") or tag.get("slug") or "").lower()
+                        tag_slug = (tag.get("slug") or "").lower()
+                        # Match by label or slug
+                        if category_lower in tag_label or category_lower in tag_slug or tag_slug == category.lower():
+                            tag_matches = True
+                            break
+
+                    if not tag_matches:
+                        continue
+
                     event_markets = event.get("markets", [])
 
                     if len(event_markets) <= 1:
-                        markets.append(self._parse_market(event))
+                        if not is_market_expired(event):
+                            markets.append(self._parse_market(event))
                     else:
                         for market_data in event_markets:
                             if market_data.get("active", True) and not market_data.get("closed", False):
-                                markets.append(self._parse_market(event, market_data))
+                                if not is_market_expired(event, market_data):
+                                    markets.append(self._parse_market(event, market_data))
 
                     if len(markets) >= limit:
                         break
