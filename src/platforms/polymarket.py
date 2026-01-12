@@ -1390,8 +1390,7 @@ class PolymarketPlatform(BasePlatform):
             settings.polymarket_builder_secret and
             settings.polymarket_builder_passphrase):
             try:
-                from py_builder_signing_sdk.config import BuilderConfig
-                from py_builder_signing_sdk.types import BuilderApiKeyCreds
+                from py_builder_signing_sdk.config import BuilderConfig, BuilderApiKeyCreds
 
                 builder_creds = BuilderApiKeyCreds(
                     key=settings.polymarket_builder_key,
