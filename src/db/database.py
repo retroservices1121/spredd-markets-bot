@@ -325,6 +325,15 @@ async def update_position(
         )
 
 
+async def delete_position_by_token_id(token_id: str) -> int:
+    """Delete a position by its token_id. Returns number of deleted rows."""
+    async with get_session() as session:
+        result = await session.execute(
+            delete(Position).where(Position.token_id == token_id)
+        )
+        return result.rowcount
+
+
 # ===================
 # Order Operations
 # ===================
