@@ -429,7 +429,46 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def resetwallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /resetwallet command - delete existing wallets and create new ones without PIN."""
+    """Handle /resetwallet command - delete existing wallets and create new PIN-protected ones."""
+    if not update.effective_user or not update.message:
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        return
+
+    # Show warning and confirmation
+    text = """
+⚠️ <b>Reset Wallets</b>
+
+This will:
+• <b>Delete your existing wallets</b>
+• <b>Generate new wallet addresses</b>
+• <b>Create PIN-protected wallets</b>
+
+<b>IMPORTANT:</b>
+• Transfer any funds out first
+• Your old addresses will no longer work
+• Export your keys if you need them
+
+<b>Are you sure you want to continue?</b>
+"""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes, Reset Wallets", callback_data="wallet:confirm_create")],
+        [InlineKeyboardButton("📤 Export Keys First", callback_data="wallet:export")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="wallet:refresh")],
+    ])
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def _legacy_resetwallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Legacy reset wallet without PIN - not used anymore."""
     if not update.effective_user or not update.message:
         return
 
@@ -2441,13 +2480,41 @@ async def handle_export_key(query, chain_type: str, telegram_id: int, context: C
     # Check if wallet exists and is PIN protected
     is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
 
-    if is_pin_protected:
-        # Store export request and ask for PIN
-        context.user_data["pending_export"] = {
-            "chain_family": chain_type,
-        }
-
+    if not is_pin_protected:
+        # Wallet not PIN protected - require PIN setup first for security
         text = f"""
+🔑 <b>Export {chain_name} Private Key</b>
+
+⚠️ <b>PIN Required for Security</b>
+
+Your wallet doesn't have PIN protection enabled. For security, you must set up a PIN before exporting private keys.
+
+<b>To add PIN protection:</b>
+Use /resetwallet to create a new wallet with PIN protection.
+
+<b>Important:</b>
+• Transfer any funds first before resetting
+• Your new wallet will have a different address
+• PIN protects your keys from unauthorized access
+"""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Reset Wallet", callback_data="wallet:create")],
+            [InlineKeyboardButton("« Back", callback_data="wallet:export")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+        return
+
+    # PIN protected - store export request and ask for PIN
+    context.user_data["pending_export"] = {
+        "chain_family": chain_type,
+    }
+
+    text = f"""
 🔑 <b>Export {chain_name} Private Key</b>
 
 ⚠️ <b>Warning:</b> Your private key gives full access to your funds!
@@ -2457,46 +2524,15 @@ async def handle_export_key(query, chain_type: str, telegram_id: int, context: C
 
 Type /cancel to cancel.
 """
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Cancel", callback_data="wallet:export")],
-        ])
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="wallet:export")],
+    ])
 
-        await query.edit_message_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-        )
-    else:
-        # No PIN protection - export directly (shouldn't normally happen)
-        try:
-            private_key = await wallet_service.export_private_key(user.id, telegram_id, chain_family, "")
-            if private_key:
-                text = f"""
-🔑 <b>{chain_name} Private Key</b>
-
-<code>{private_key}</code>
-
-⚠️ <b>WARNING:</b>
-• Anyone with this key can access your funds
-• Never share this with anyone
-• Store it securely offline
-
-<i>This message should be deleted after copying.</i>
-"""
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🗑 Delete", callback_data="wallet:refresh")],
-                ])
-
-                await query.edit_message_text(
-                    text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=keyboard,
-                )
-            else:
-                await query.edit_message_text("❌ Wallet not found.")
-        except Exception as e:
-            logger.error("Export key failed", error=str(e))
-            await query.edit_message_text(f"❌ Export failed: {escape_html(str(e))}")
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
 
 
 async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None:
