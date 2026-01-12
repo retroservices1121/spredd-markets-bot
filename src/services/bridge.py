@@ -836,6 +836,7 @@ class BridgeService:
                     )
 
                 quote_data = quote_resp.json()
+                logger.info("Relay quote received", steps_count=len(quote_data.get("steps", [])))
 
             if progress_callback:
                 progress_callback("📝 Preparing transaction...", 5, 30)
@@ -843,6 +844,7 @@ class BridgeService:
             # Step 2: Get the execution steps
             steps = quote_data.get("steps", [])
             if not steps:
+                logger.error("No bridge steps in quote", quote_keys=list(quote_data.keys()))
                 return BridgeResult(
                     success=False,
                     source_chain=source_chain,
@@ -855,19 +857,29 @@ class BridgeService:
 
             # Execute each step (usually approve + deposit)
             for i, step in enumerate(steps):
+                logger.info(f"Processing step {i}", step_id=step.get("id"), step_kind=step.get("kind"))
                 items = step.get("items", [])
                 for item in items:
                     tx_data = item.get("data", {})
 
                     if not tx_data:
+                        logger.warning("No tx_data in item", item_keys=list(item.keys()))
                         continue
 
                     to_address = tx_data.get("to")
                     data = tx_data.get("data")
-                    value = int(tx_data.get("value", "0"))
+                    # Handle value as string or int
+                    value_raw = tx_data.get("value", "0")
+                    try:
+                        value = int(value_raw) if isinstance(value_raw, str) else value_raw
+                    except (ValueError, TypeError):
+                        value = 0
 
                     if not to_address or not data:
+                        logger.warning("Missing to_address or data", to=to_address, has_data=bool(data))
                         continue
+
+                    logger.info("Building tx", to=to_address, value=value, data_len=len(data) if data else 0)
 
                     # Build transaction
                     nonce = source_w3.eth.get_transaction_count(wallet)
@@ -887,8 +899,9 @@ class BridgeService:
                     try:
                         gas_estimate = source_w3.eth.estimate_gas(tx)
                         tx["gas"] = int(gas_estimate * 1.3)
+                        logger.info("Gas estimated", gas=tx["gas"])
                     except Exception as e:
-                        logger.warning("Gas estimation failed, using default", error=str(e))
+                        logger.warning("Gas estimation failed, using default", error=str(e), tx_to=to_address)
                         tx["gas"] = 300000
 
                     if progress_callback:
@@ -922,8 +935,18 @@ class BridgeService:
                 progress_callback("✅ Bridge complete! Funds arriving shortly...", 30, 30)
 
             # Get output amount from quote
-            output_raw = int(quote_data.get("details", {}).get("currencyOut", {}).get("amount", str(amount_raw)))
-            output_amount = Decimal(output_raw) / Decimal(10**6)
+            try:
+                output_raw_str = quote_data.get("details", {}).get("currencyOut", {}).get("amount", "0")
+                output_raw = int(output_raw_str) if output_raw_str else int(amount * Decimal(10**6))
+                output_amount = Decimal(output_raw) / Decimal(10**6)
+            except (ValueError, TypeError) as e:
+                logger.warning("Failed to parse output amount", error=str(e))
+                output_amount = amount
+
+            # Get tx_hash as string
+            tx_hash_str = None
+            if tx_hash:
+                tx_hash_str = tx_hash.hex() if hasattr(tx_hash, 'hex') else str(tx_hash)
 
             logger.info(
                 "Fast bridge completed",
@@ -931,7 +954,7 @@ class BridgeService:
                 dest=dest_chain.value,
                 input=str(amount),
                 output=str(output_amount),
-                tx_hash=tx_hash.hex() if tx_hash else None
+                tx_hash=tx_hash_str
             )
 
             return BridgeResult(
@@ -939,7 +962,7 @@ class BridgeService:
                 source_chain=source_chain,
                 dest_chain=dest_chain,
                 amount=output_amount,  # Amount received after fees
-                burn_tx_hash=tx_hash.hex() if tx_hash else None,
+                burn_tx_hash=tx_hash_str,
                 mint_tx_hash=None,  # Relay handles the mint
             )
 
