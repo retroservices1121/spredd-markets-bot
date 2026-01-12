@@ -1393,8 +1393,23 @@ class PolymarketPlatform(BasePlatform):
             funder=private_key.address,  # Required for balance operations
         )
 
-        # Derive and set API credentials
-        creds = client.create_or_derive_api_creds()
+        # Use builder credentials if configured, otherwise derive from wallet
+        if (settings.polymarket_builder_key and
+            settings.polymarket_builder_secret and
+            settings.polymarket_builder_passphrase):
+            # Use builder credentials for order attribution
+            from py_clob_client.clob_types import ApiCreds
+            creds = ApiCreds(
+                api_key=settings.polymarket_builder_key,
+                api_secret=settings.polymarket_builder_secret,
+                api_passphrase=settings.polymarket_builder_passphrase,
+            )
+            logger.info("Using builder credentials for Polymarket", wallet=wallet[:10])
+        else:
+            # Derive credentials from wallet (no builder attribution)
+            creds = client.create_or_derive_api_creds()
+            logger.debug("Using derived credentials (no builder attribution)", wallet=wallet[:10])
+
         client.set_api_creds(creds)
 
         # Cache the client

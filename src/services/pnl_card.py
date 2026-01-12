@@ -49,7 +49,7 @@ class PnLCardGenerator:
     THEME = {
         "background": (8, 8, 12),          # Near black with slight blue
         "card_bg": (16, 16, 22),            # Slightly lighter for card
-        "accent": (249, 115, 22),           # #F97316 - Orange
+        "accent": (234, 110, 20),            # #EA6E14 - Orange
         "accent_glow": (249, 115, 22, 80),  # Orange with alpha for glow
         "text": (255, 255, 255),            # #FFFFFF - White
         "text_secondary": (180, 180, 190),  # Light gray
@@ -258,13 +258,13 @@ class PnLCardGenerator:
             anchor="mm",
         )
 
-        # Draw "PROFIT & LOSS" label
+        # Draw "PROFIT & LOSS" label in orange
         label_font = self._get_font(14, bold=False)
         draw.text(
             (self.CARD_WIDTH // 2, 170),
             "PROFIT & LOSS",
             font=label_font,
-            fill=theme["muted"],
+            fill=theme["accent"],
             anchor="mm",
         )
 
@@ -322,7 +322,7 @@ class PnLCardGenerator:
             (box1_x + box_width // 2, box_y + 25),
             "TRADES",
             font=stat_label_font,
-            fill=theme["muted"],
+            fill=theme["accent"],
             anchor="mm",
         )
         draw.text(
@@ -352,7 +352,7 @@ class PnLCardGenerator:
             (box2_x + box_width // 2, box_y + 25),
             "ROI",
             font=stat_label_font,
-            fill=theme["muted"],
+            fill=theme["accent"],
             anchor="mm",
         )
         draw.text(
