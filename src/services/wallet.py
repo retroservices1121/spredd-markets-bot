@@ -40,6 +40,7 @@ USDC_ADDRESSES = {
     Chain.POLYGON: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # Native USDC on Polygon
     Chain.BSC: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",      # USDC on BSC
     Chain.BASE: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",     # Native USDC on Base
+    Chain.MONAD: "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",    # Native USDC on Monad
 }
 
 # USDC.e (bridged) address on Polygon - different from native USDC
@@ -87,6 +88,7 @@ class WalletService(LoggerMixin):
         self._polygon_web3: Optional[AsyncWeb3] = None
         self._bsc_web3: Optional[AsyncWeb3] = None
         self._base_web3: Optional[AsyncWeb3] = None
+        self._monad_web3: Optional[AsyncWeb3] = None
 
     async def initialize(self) -> None:
         """Initialize blockchain connections."""
@@ -108,7 +110,12 @@ class WalletService(LoggerMixin):
         self._base_web3 = AsyncWeb3(
             AsyncWeb3.AsyncHTTPProvider(settings.base_rpc_url)
         )
-        
+
+        # Monad
+        self._monad_web3 = AsyncWeb3(
+            AsyncWeb3.AsyncHTTPProvider(settings.monad_rpc_url)
+        )
+
         self.log.info("Wallet service initialized")
     
     async def close(self) -> None:
@@ -652,6 +659,37 @@ class WalletService(LoggerMixin):
         results = await asyncio.gather(get_eth(), get_usdc())
         return [b for b in results if b is not None]
 
+    async def get_monad_balances(self, address: str) -> list[Balance]:
+        """Get balances on Monad (parallel fetching)."""
+        if not self._monad_web3:
+            raise RuntimeError("Monad client not initialized")
+
+        # Fetch all balances in parallel
+        async def get_mon():
+            return await self._get_evm_native_balance(
+                self._monad_web3,
+                address,
+                Chain.MONAD,
+                "MON",
+            )
+
+        async def get_usdc():
+            try:
+                return await self._get_erc20_balance(
+                    self._monad_web3,
+                    address,
+                    USDC_ADDRESSES[Chain.MONAD],
+                    "USDC",
+                    USDC_DECIMALS,
+                    Chain.MONAD,
+                )
+            except Exception as e:
+                self.log.warning("Failed to get Monad USDC balance", error=str(e))
+                return None
+
+        results = await asyncio.gather(get_mon(), get_usdc())
+        return [b for b in results if b is not None]
+
     async def get_all_balances(
         self,
         user_id: str,
@@ -690,6 +728,8 @@ class WalletService(LoggerMixin):
             task_labels.append(("evm", "base"))
             tasks.append(self.get_bsc_balances(evm_wallet.public_key))
             task_labels.append(("evm", "bsc"))
+            tasks.append(self.get_monad_balances(evm_wallet.public_key))
+            task_labels.append(("evm", "monad"))
 
         if not tasks:
             return result

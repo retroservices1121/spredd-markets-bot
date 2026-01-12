@@ -75,6 +75,10 @@ class Settings(BaseSettings):
         default="https://eth.llamarpc.com",
         description="Ethereum mainnet RPC endpoint"
     )
+    monad_rpc_url: str = Field(
+        default="https://rpc.monad.xyz",
+        description="Monad mainnet RPC endpoint"
+    )
 
     # ===================
     # Cross-Chain Bridge Configuration

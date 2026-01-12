@@ -54,6 +54,7 @@ class Chain(str, Enum):
     POLYGON = "polygon"
     BSC = "bsc"
     BASE = "base"
+    MONAD = "monad"
 
 
 class Outcome(str, Enum):
