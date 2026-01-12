@@ -313,24 +313,55 @@ async def wallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     existing_wallets = await get_user_wallets(user.id)
 
     if not existing_wallets:
-        # No wallets - prompt for PIN setup
-        context.user_data["pending_wallet_pin"] = {"confirm": False}
+        # No wallets - create them immediately without PIN
+        await update.message.reply_text(
+            "🔄 Creating your wallets...",
+            parse_mode=ParseMode.HTML,
+        )
 
-        text = """
-🔐 <b>Create Secure Wallet</b>
+        try:
+            wallets = await wallet_service.get_or_create_wallets(
+                user_id=user.id,
+                telegram_id=update.effective_user.id,
+            )
 
-To protect your funds, please set a 4-6 digit PIN.
+            solana_wallet = wallets.get(ChainFamily.SOLANA)
+            evm_wallet = wallets.get(ChainFamily.EVM)
 
-<b>Important:</b>
-• Your PIN is NEVER stored on our servers
-• Only you can access your funds
-• If you forget your PIN, your funds are LOST
-• This makes your wallet truly non-custodial
+            text = """
+✅ <b>Wallets Created!</b>
 
-<b>Enter your PIN (4-6 digits):</b>
-"""
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-        return
+<b>🟣 Solana</b> (Kalshi)
+<code>{}</code>
+
+<b>🔷 EVM</b> (Polymarket + Opinion)
+<code>{}</code>
+
+<i>Tap address to copy. Send funds to deposit.</i>
+""".format(
+                solana_wallet.public_key if solana_wallet else "Error",
+                evm_wallet.public_key if evm_wallet else "Error",
+            )
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📈 Browse Markets", callback_data="markets:refresh")],
+                [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+            ])
+
+            await update.message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+            return
+
+        except Exception as e:
+            logger.error("Wallet creation failed", error=str(e))
+            await update.message.reply_text(
+                f"❌ Failed to create wallets: {escape_html(str(e))}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
 
     # Has wallets - show them
     wallets_dict = {w.chain_family: WalletInfo(chain_family=w.chain_family, public_key=w.public_key) for w in existing_wallets}
@@ -342,13 +373,7 @@ To protect your funds, please set a 4-6 digit PIN.
     solana_wallet = wallets_dict.get(ChainFamily.SOLANA)
     evm_wallet = wallets_dict.get(ChainFamily.EVM)
 
-    # Check if PIN protected
-    is_pin_protected = any(w.pin_protected for w in existing_wallets)
-
-    text = "💰 <b>Your Wallets</b>"
-    if is_pin_protected:
-        text += " 🔐"
-    text += "\n\n"
+    text = "💰 <b>Your Wallets</b>\n\n"
 
     # Solana wallet (for Kalshi)
     if solana_wallet:
@@ -367,22 +392,13 @@ To protect your funds, please set a 4-6 digit PIN.
 
     text += "\n<i>Tap address to copy. Send funds to deposit.</i>"
 
-    if is_pin_protected:
-        text += "\n\n🔐 <i>PIN-protected: Only you can sign transactions</i>"
-    else:
-        text += "\n\n⚠️ <i>Wallet not PIN-protected. Create a new secure wallet to trade.</i>"
-
     # Buttons
     buttons = [
         [InlineKeyboardButton("🔄 Refresh Balances", callback_data="wallet:refresh")],
         [InlineKeyboardButton("🌉 Bridge USDC", callback_data="wallet:bridge")],
+        [InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")],
+        [InlineKeyboardButton("« Back", callback_data="menu:main")],
     ]
-
-    if not is_pin_protected:
-        buttons.append([InlineKeyboardButton("🔐 Create New Secure Wallet", callback_data="wallet:create_new")])
-
-    buttons.append([InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")])
-    buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
 
     keyboard = InlineKeyboardMarkup(buttons)
 
@@ -1140,7 +1156,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         elif action == "sell_confirm":
             # Format: sell_confirm:position_id:percent
-            await handle_sell_confirm(query, parts[1], parts[2], update.effective_user.id, context)
+            await handle_sell_confirm(query, parts[1], parts[2], update.effective_user.id)
 
         elif action == "redeem":
             # Format: redeem:position_id
@@ -1316,13 +1332,10 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
     info = PLATFORM_INFO[platform_enum]
     chain_family = get_chain_family_for_platform(platform_enum)
 
-    # Check if wallet is PIN protected
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
         return
-
-    is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
 
     # For Polymarket, check USDC balance and auto-swap if needed
     if platform_enum == Platform.POLYMARKET:
@@ -1334,22 +1347,8 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
         try:
             from src.platforms.polymarket import polymarket_platform, MIN_USDC_BALANCE
 
-            # For PIN-protected wallets, ask for PIN first
-            if is_pin_protected:
-                context.user_data["pending_balance_check"] = {
-                    "platform": platform_value,
-                    "market_id": market_id,
-                    "outcome": outcome,
-                }
-                await query.edit_message_text(
-                    "🔐 <b>Enter your PIN to continue</b>\n\n"
-                    "Your wallet is PIN-protected. Please enter your PIN:",
-                    parse_mode=ParseMode.HTML,
-                )
-                return
-
-            # No PIN - get private key directly
-            private_key = await wallet_service.get_private_key(user.id, chain_family)
+            # Get private key directly (no PIN required for trading)
+            private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family)
             if not private_key:
                 await query.edit_message_text(
                     "❌ No wallet found. Please /start to create one.",
@@ -1432,7 +1431,6 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
         "platform": platform_value,
         "market_id": market_id,
         "outcome": outcome,
-        "pin_protected": is_pin_protected,
     }
 
     swap_note = locals().get("swap_note", "")
@@ -1659,7 +1657,6 @@ async def handle_bridge_start(query, source_chain: str, telegram_id: int, contex
         context.user_data["pending_bridge"] = {
             "source_chain": source_chain,
             "max_balance": str(balance),
-            "pin_protected": evm_wallet.pin_protected,
             "awaiting_amount": True,
         }
 
@@ -1899,31 +1896,12 @@ async def handle_bridge_speed(query, source_chain: str, speed: str, telegram_id:
 
     # Store the speed choice
     context.user_data["pending_bridge"]["speed"] = speed
-    context.user_data["pending_bridge"]["awaiting_pin"] = pending["pin_protected"]
 
-    from src.services.bridge import BridgeChain
-    chain = BridgeChain(source_chain.lower())
-
-    speed_label = "Fast (~30s)" if speed == "fast" else "Standard (~15min)"
-
-    if pending["pin_protected"]:
-        text = f"""
-🌉 <b>Bridge USDC</b>
-
-From: {chain.value.title()}
-To: Polygon
-Amount: <b>${float(amount):.2f} USDC</b>
-Speed: <b>{speed_label}</b>
-
-<b>🔐 Enter your PIN to confirm:</b>
-"""
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML)
-    else:
-        # No PIN - proceed directly
-        await execute_bridge(query, user.id, telegram_id, source_chain, amount, "", context)
+    # Execute bridge directly (no PIN required)
+    await execute_bridge(query, user.id, telegram_id, source_chain, amount, context)
 
 
-async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: str, amount: Decimal, pin: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: str, amount: Decimal, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Execute the bridge operation (fast or standard based on pending_bridge settings)."""
     try:
         from src.services.bridge import bridge_service, BridgeChain
@@ -1936,8 +1914,8 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
         pending = context.user_data.get("pending_bridge", {})
         use_fast_bridge = pending.get("speed") == "fast"
 
-        # Get private key
-        private_key = await wallet_service.get_private_key(user_id, telegram_id, chain_family, pin)
+        # Get private key directly (no PIN required)
+        private_key = await wallet_service.get_private_key(user_id, telegram_id, chain_family)
         if not private_key:
             await query.edit_message_text(
                 "❌ Failed to get wallet key.",
@@ -3421,7 +3399,7 @@ Select amount to sell:
     )
 
 
-async def handle_sell_confirm(query, position_id: str, percent_str: str, telegram_id: int, context, user_pin: str = "") -> None:
+async def handle_sell_confirm(query, position_id: str, percent_str: str, telegram_id: int) -> None:
     """Execute the sell order."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
@@ -3457,49 +3435,17 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
 
     outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
 
-    # Check if PIN protected
-    is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
-
-    if is_pin_protected and not user_pin:
-        # Need PIN - store context and ask for it
-        context.user_data["pending_sell"] = {
-            "position_id": position_id,
-            "percent": percent,
-            "awaiting_pin": True,
-        }
-        await query.edit_message_text(
-            "🔐 <b>Enter your PIN to confirm sell</b>\n\n"
-            f"Selling {percent}% of {outcome_str} position\n\n"
-            "Please send your PIN:",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
     await query.edit_message_text(
         f"⏳ Executing sell...\n\nSelling {percent}% of {outcome_str} position (~{sell_amount:.4f} tokens)",
         parse_mode=ParseMode.HTML,
     )
 
     try:
-        # Get wallet
-        wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
-        wallet = wallets.get(chain_family)
-
-        if not wallet:
+        # Get private key directly (no PIN required for trading)
+        private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family)
+        if not private_key:
             await query.edit_message_text("❌ Wallet not found. Please try again.")
             return
-
-        # Get private key
-        try:
-            private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family, user_pin)
-        except Exception as decrypt_error:
-            if "Decryption failed" in str(decrypt_error):
-                await query.edit_message_text(
-                    "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect. Please try again.",
-                    parse_mode=ParseMode.HTML,
-                )
-                return
-            raise
 
         # Get quote for selling
         from src.db.models import Outcome as OutcomeEnum
@@ -3643,30 +3589,10 @@ async def handle_redeem(query, position_id: str, telegram_id: int) -> None:
     )
 
     try:
-        # Get wallet and private key
-        wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
-        wallet = wallets.get(chain_family)
-
-        if not wallet:
-            await query.edit_message_text("❌ Wallet not found. Please try again.")
-            return
-
-        # Check if PIN protected
-        is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
-
-        if is_pin_protected:
-            await query.edit_message_text(
-                "🔐 <b>PIN required for redemption</b>\n\n"
-                "PIN-protected redemption is not yet supported.\n"
-                "Please export your keys and redeem manually.",
-                parse_mode=ParseMode.HTML,
-            )
-            return
-
-        # Get private key
+        # Get private key directly (no PIN required for trading)
         private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family)
         if not private_key:
-            await query.edit_message_text("❌ Failed to get wallet key.")
+            await query.edit_message_text("❌ Wallet not found. Please try again.")
             return
 
         # Get outcome enum
@@ -3756,7 +3682,6 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     platform_value = pending["platform"]
     market_id = pending["market_id"]
     outcome = pending["outcome"]
-    is_pin_protected = pending.get("pin_protected", False)
 
     try:
         platform_enum = Platform(platform_value)
@@ -3800,34 +3725,10 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         fee = calculate_fee(str(amount))
         fee_display = format_usdc(fee)
 
-        # If PIN protected, ask for PIN before confirming
-        if is_pin_protected:
-            # Store quote info for PIN confirmation
-            context.user_data["pending_buy"]["amount"] = str(amount)
-            context.user_data["pending_buy"]["awaiting_pin"] = True
+        # Clear pending and show confirm button
+        del context.user_data["pending_buy"]
 
-            text = f"""
-📋 <b>Order Quote</b>
-
-Market: {escape_html(market.title[:50])}...
-Side: BUY {outcome.upper()}
-
-💰 <b>You Pay:</b> {amount} {platform_info['collateral']}
-💸 <b>Fee (1%):</b> {fee_display}
-📦 <b>You Receive:</b> ~{expected_tokens:.2f} {outcome.upper()} tokens
-📊 <b>Price:</b> {format_probability(price)} per token
-
-🔐 <b>Enter your PIN to confirm:</b>
-<i>(Your PIN is never stored and only you know it)</i>
-
-Type /cancel to cancel.
-"""
-            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-        else:
-            # No PIN - show confirm button
-            del context.user_data["pending_buy"]
-
-            text = f"""
+        text = f"""
 📋 <b>Order Quote</b>
 
 Market: {escape_html(market.title[:50])}...
@@ -3841,16 +3742,16 @@ Side: BUY {outcome.upper()}
 <i>⚠️ This is a quote. Actual execution may vary slightly.</i>
 """
 
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Confirm Order", callback_data=f"confirm_buy:{platform_value}:{market_id}:{outcome}:{amount}:")],
-                [InlineKeyboardButton("❌ Cancel", callback_data=f"market:{platform_value}:{market_id}")],
-            ])
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm Order", callback_data=f"confirm_buy:{platform_value}:{market_id}:{outcome}:{amount}:")],
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"market:{platform_value}:{market_id}")],
+        ])
 
-            await update.message.reply_text(
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-            )
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
 
     except Exception as e:
         logger.error("Quote failed", error=str(e))
@@ -4766,15 +4667,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if "pending_buy" in context.user_data:
             del context.user_data["pending_buy"]
             await update.message.reply_text("Order cancelled.")
-        elif "pending_sell" in context.user_data:
-            del context.user_data["pending_sell"]
-            await update.message.reply_text("Sell cancelled.")
-        elif "pending_balance_check" in context.user_data:
-            del context.user_data["pending_balance_check"]
-            await update.message.reply_text("Balance check cancelled.")
-        elif "pending_wallet_pin" in context.user_data:
-            del context.user_data["pending_wallet_pin"]
-            await update.message.reply_text("Wallet creation cancelled.")
         elif "pending_withdrawal" in context.user_data:
             del context.user_data["pending_withdrawal"]
             await update.message.reply_text("Withdrawal cancelled.")
@@ -4788,56 +4680,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("Nothing to cancel.")
         return
 
-    # Check if user is setting up a new wallet with PIN
-    if "pending_wallet_pin" in context.user_data and not text.startswith("/"):
-        await handle_wallet_pin_setup(update, context, text)
-        return
-
-    # Check if user has a pending export
+    # Check if user has a pending export (PIN required for security)
     if "pending_export" in context.user_data and not text.startswith("/"):
         await handle_export_with_pin(update, context, text)
         return
 
-    # Check if user has a pending withdrawal
+    # Check if user has a pending withdrawal (PIN required for security)
     if "pending_withdrawal" in context.user_data and not text.startswith("/"):
         await handle_withdrawal_with_pin(update, context, text)
         return
 
-    # Check if user has a pending balance check (PIN entry for Polymarket)
-    if "pending_balance_check" in context.user_data and not text.startswith("/"):
-        await handle_balance_check_with_pin(update, context, text)
-        return
-
-    # Check if user has a pending bridge (custom amount or PIN entry)
+    # Check if user has a pending bridge with custom amount input
     if "pending_bridge" in context.user_data and not text.startswith("/"):
         pending = context.user_data["pending_bridge"]
         if pending.get("awaiting_custom_amount"):
             await handle_bridge_custom_amount_input(update, context, text)
-        else:
-            await handle_bridge_with_pin(update, context, text)
-        return
-
-    # Check if user has a pending buy order
-    if "pending_buy" in context.user_data and not text.startswith("/"):
-        pending = context.user_data["pending_buy"]
-
-        # If awaiting PIN, process PIN input
-        if pending.get("awaiting_pin"):
-            await handle_buy_with_pin(update, context, text)
             return
 
-        # Otherwise, process amount input
+    # Check if user has a pending buy order (amount input)
+    if "pending_buy" in context.user_data and not text.startswith("/"):
         await handle_buy_amount(update, context, text)
         return
-
-    # Check if user has a pending sell order awaiting PIN
-    if "pending_sell" in context.user_data and not text.startswith("/"):
-        pending = context.user_data["pending_sell"]
-
-        # If awaiting PIN, process PIN input
-        if pending.get("awaiting_pin"):
-            await handle_sell_with_pin(update, context, text)
-            return
 
     # Check if it's a search query (doesn't start with /)
     if not text.startswith("/"):
