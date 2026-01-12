@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from src.db.models import Platform
 from src.utils.logging import get_logger
@@ -22,7 +22,6 @@ class PnLStats:
     """Data class for PnL statistics."""
     platform: Platform
     platform_name: str
-    platform_emoji: str
     total_pnl: Decimal
     trade_count: int
     total_invested: Decimal
@@ -41,20 +40,26 @@ class PnLStats:
 
 
 class PnLCardGenerator:
-    """Generates PnL card images."""
+    """Generates premium PnL card images."""
 
     CARD_WIDTH = 800
     CARD_HEIGHT = 500
 
-    # Unified color theme - Black background with orange accent
+    # Premium color theme
     THEME = {
-        "background": (13, 13, 13),       # #0D0D0D - Black
-        "secondary": (26, 26, 26),        # #1A1A1A - Dark gray for boxes
-        "accent": (249, 115, 22),         # #F97316 - Orange
-        "text": (255, 255, 255),          # #FFFFFF - White
-        "muted": (156, 163, 175),         # #9CA3AF - Gray
-        "profit": (0, 255, 136),          # #00FF88 - Green
-        "loss": (255, 71, 87),            # #FF4757 - Red
+        "background": (8, 8, 12),          # Near black with slight blue
+        "card_bg": (16, 16, 22),            # Slightly lighter for card
+        "accent": (249, 115, 22),           # #F97316 - Orange
+        "accent_glow": (249, 115, 22, 80),  # Orange with alpha for glow
+        "text": (255, 255, 255),            # #FFFFFF - White
+        "text_secondary": (180, 180, 190),  # Light gray
+        "muted": (100, 100, 110),           # Muted gray
+        "profit": (16, 185, 129),           # #10B981 - Emerald green
+        "profit_glow": (16, 185, 129, 60),  # Green with alpha
+        "loss": (239, 68, 68),              # #EF4444 - Red
+        "loss_glow": (239, 68, 68, 60),     # Red with alpha
+        "stat_box": (24, 24, 32),           # Dark box background
+        "stat_box_border": (40, 40, 50),    # Subtle border
     }
 
     def __init__(self, assets_path: Path):
@@ -67,8 +72,8 @@ class PnLCardGenerator:
         if logo_path.exists():
             try:
                 logo = Image.open(logo_path).convert("RGBA")
-                # Resize to fit in corner (max height 60px)
-                max_height = 60
+                # Resize to fit nicely (max height 80px for premium look)
+                max_height = 80
                 if logo.height > max_height:
                     ratio = max_height / logo.height
                     new_size = (int(logo.width * ratio), max_height)
@@ -80,7 +85,6 @@ class PnLCardGenerator:
 
     def _get_font(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
         """Get a font at the specified size."""
-        # Try common font paths
         font_paths = []
 
         if bold:
@@ -105,141 +109,248 @@ class PnLCardGenerator:
             except (OSError, IOError):
                 continue
 
-        # Fallback to default
         try:
             return ImageFont.load_default(size)
         except TypeError:
             return ImageFont.load_default()
 
+    def _draw_rounded_rect(
+        self,
+        draw: ImageDraw.ImageDraw,
+        coords: Tuple[int, int, int, int],
+        radius: int,
+        fill: Tuple[int, ...],
+        outline: Optional[Tuple[int, ...]] = None,
+        outline_width: int = 1,
+    ) -> None:
+        """Draw a rounded rectangle with optional outline."""
+        x1, y1, x2, y2 = coords
+        draw.rounded_rectangle(coords, radius=radius, fill=fill)
+        if outline:
+            draw.rounded_rectangle(
+                coords, radius=radius, fill=None, outline=outline, width=outline_width
+            )
+
+    def _create_glow_layer(
+        self, text: str, font: ImageFont.FreeTypeFont, color: Tuple[int, ...], blur_radius: int = 15
+    ) -> Image.Image:
+        """Create a glow effect layer for text."""
+        # Get text bounding box
+        bbox = font.getbbox(text)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+
+        # Create larger canvas for glow
+        padding = blur_radius * 3
+        glow_img = Image.new(
+            "RGBA",
+            (text_width + padding * 2, text_height + padding * 2),
+            (0, 0, 0, 0),
+        )
+        glow_draw = ImageDraw.Draw(glow_img)
+
+        # Draw text in glow color
+        glow_color = (*color[:3], 120) if len(color) == 3 else color
+        glow_draw.text((padding, padding - bbox[1]), text, font=font, fill=glow_color)
+
+        # Apply blur
+        glow_img = glow_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+        return glow_img
+
     def generate_card(self, stats: PnLStats) -> BytesIO:
-        """Generate a PnL card image and return as BytesIO."""
+        """Generate a premium PnL card image and return as BytesIO."""
         theme = self.THEME
 
-        # Create image with black background
-        img = Image.new("RGB", (self.CARD_WIDTH, self.CARD_HEIGHT), theme["background"])
+        # Create base image
+        img = Image.new("RGBA", (self.CARD_WIDTH, self.CARD_HEIGHT), theme["background"])
         draw = ImageDraw.Draw(img)
 
-        # Draw logo in top-left
-        if self.logo:
-            # Create a new image to paste logo with alpha
-            img.paste(self.logo, (30, 25), self.logo if self.logo.mode == 'RGBA' else None)
+        # Draw subtle gradient overlay (darker at edges)
+        for i in range(self.CARD_HEIGHT):
+            alpha = int(20 * (1 - abs(i - self.CARD_HEIGHT / 2) / (self.CARD_HEIGHT / 2)))
+            draw.line([(0, i), (self.CARD_WIDTH, i)], fill=(*theme["card_bg"], alpha))
 
-        # Draw "ALL-TIME" label in top-right
-        time_font = self._get_font(16, bold=True)
-        draw.text(
-            (self.CARD_WIDTH - 30, 35),
-            "ALL-TIME",
-            font=time_font,
-            fill=theme["muted"],
-            anchor="ra",
+        # Draw main card area with subtle border
+        card_margin = 20
+        self._draw_rounded_rect(
+            draw,
+            (card_margin, card_margin, self.CARD_WIDTH - card_margin, self.CARD_HEIGHT - card_margin),
+            radius=16,
+            fill=theme["card_bg"],
+            outline=theme["stat_box_border"],
+            outline_width=1,
         )
 
-        # Draw platform name with emoji
-        platform_font = self._get_font(32, bold=True)
-        platform_text = f"{stats.platform_emoji} {stats.platform_name.upper()}"
+        # Draw orange accent line at top of card
+        accent_y = card_margin
+        draw.rounded_rectangle(
+            (card_margin, accent_y, self.CARD_WIDTH - card_margin, accent_y + 4),
+            radius=2,
+            fill=theme["accent"],
+        )
+
+        # Draw logo in top-left (larger)
+        logo_x = 45
+        logo_y = 40
+        if self.logo:
+            img.paste(self.logo, (logo_x, logo_y), self.logo if self.logo.mode == "RGBA" else None)
+
+        # Draw "ALL-TIME" badge in top-right
+        badge_font = self._get_font(12, bold=True)
+        badge_text = "ALL-TIME"
+        badge_bbox = badge_font.getbbox(badge_text)
+        badge_width = badge_bbox[2] - badge_bbox[0] + 20
+        badge_height = 24
+        badge_x = self.CARD_WIDTH - card_margin - badge_width - 25
+        badge_y = 45
+
+        self._draw_rounded_rect(
+            draw,
+            (badge_x, badge_y, badge_x + badge_width, badge_y + badge_height),
+            radius=4,
+            fill=theme["stat_box"],
+            outline=theme["stat_box_border"],
+        )
         draw.text(
-            (self.CARD_WIDTH // 2, 100),
+            (badge_x + badge_width // 2, badge_y + badge_height // 2),
+            badge_text,
+            font=badge_font,
+            fill=theme["muted"],
+            anchor="mm",
+        )
+
+        # Draw platform name (large, centered)
+        platform_font = self._get_font(36, bold=True)
+        platform_text = stats.platform_name.upper()
+        draw.text(
+            (self.CARD_WIDTH // 2, 130),
             platform_text,
             font=platform_font,
             fill=theme["text"],
             anchor="mm",
         )
 
-        # Draw main P&L value
-        pnl_font = self._get_font(72, bold=True)
+        # Draw "PROFIT & LOSS" label
+        label_font = self._get_font(14, bold=False)
+        draw.text(
+            (self.CARD_WIDTH // 2, 170),
+            "PROFIT & LOSS",
+            font=label_font,
+            fill=theme["muted"],
+            anchor="mm",
+        )
+
+        # Main P&L value with glow effect
+        pnl_font = self._get_font(64, bold=True)
         pnl_color = theme["profit"] if stats.is_profit else theme["loss"]
         pnl_sign = "+" if stats.is_profit else "-"
         pnl_value = abs(float(stats.total_pnl))
         pnl_text = f"{pnl_sign}${pnl_value:,.2f}"
 
+        # Create and paste glow
+        glow_color = theme["profit"] if stats.is_profit else theme["loss"]
+        glow_layer = self._create_glow_layer(pnl_text, pnl_font, glow_color, blur_radius=20)
+
+        # Calculate position for glow
+        pnl_bbox = pnl_font.getbbox(pnl_text)
+        pnl_width = pnl_bbox[2] - pnl_bbox[0]
+        glow_x = (self.CARD_WIDTH - glow_layer.width) // 2
+        glow_y = 210 - glow_layer.height // 2
+
+        img.paste(glow_layer, (glow_x, glow_y), glow_layer)
+
+        # Draw P&L text on top
+        draw = ImageDraw.Draw(img)  # Refresh draw object after paste
         draw.text(
-            (self.CARD_WIDTH // 2, 220),
+            (self.CARD_WIDTH // 2, 230),
             pnl_text,
             font=pnl_font,
             fill=pnl_color,
             anchor="mm",
         )
 
-        # Draw stats boxes
-        box_width = 180
-        box_height = 70
+        # Stats boxes
+        box_width = 160
+        box_height = 80
         box_y = 320
-        spacing = 40
+        box_spacing = 30
+        total_boxes_width = box_width * 2 + box_spacing
+        box1_x = (self.CARD_WIDTH - total_boxes_width) // 2
 
         # Trade count box
-        box1_x = (self.CARD_WIDTH // 2) - box_width - (spacing // 2)
-        draw.rounded_rectangle(
+        self._draw_rounded_rect(
+            draw,
             (box1_x, box_y, box1_x + box_width, box_y + box_height),
             radius=12,
-            fill=theme["secondary"],
+            fill=theme["stat_box"],
+            outline=theme["stat_box_border"],
         )
 
-        # Trade count text
-        label_font = self._get_font(14, bold=False)
-        value_font = self._get_font(24, bold=True)
+        stat_label_font = self._get_font(12, bold=False)
+        stat_value_font = self._get_font(28, bold=True)
 
         draw.text(
-            (box1_x + box_width // 2, box_y + 20),
+            (box1_x + box_width // 2, box_y + 25),
             "TRADES",
-            font=label_font,
+            font=stat_label_font,
             fill=theme["muted"],
             anchor="mm",
         )
         draw.text(
-            (box1_x + box_width // 2, box_y + 48),
+            (box1_x + box_width // 2, box_y + 55),
             str(stats.trade_count),
-            font=value_font,
+            font=stat_value_font,
             fill=theme["text"],
             anchor="mm",
         )
 
         # ROI box
-        box2_x = (self.CARD_WIDTH // 2) + (spacing // 2)
-        draw.rounded_rectangle(
+        box2_x = box1_x + box_width + box_spacing
+        self._draw_rounded_rect(
+            draw,
             (box2_x, box_y, box2_x + box_width, box_y + box_height),
             radius=12,
-            fill=theme["secondary"],
+            fill=theme["stat_box"],
+            outline=theme["stat_box_border"],
         )
 
-        # ROI text
         roi_value = stats.roi_percent
         roi_sign = "+" if roi_value >= 0 else ""
         roi_color = theme["profit"] if roi_value >= 0 else theme["loss"]
 
         draw.text(
-            (box2_x + box_width // 2, box_y + 20),
+            (box2_x + box_width // 2, box_y + 25),
             "ROI",
-            font=label_font,
+            font=stat_label_font,
             fill=theme["muted"],
             anchor="mm",
         )
         draw.text(
-            (box2_x + box_width // 2, box_y + 48),
+            (box2_x + box_width // 2, box_y + 55),
             f"{roi_sign}{roi_value:.1f}%",
-            font=value_font,
+            font=stat_value_font,
             fill=roi_color,
             anchor="mm",
         )
 
-        # Draw footer with URL
-        footer_font = self._get_font(16, bold=False)
+        # Footer with URL and subtle styling
+        footer_font = self._get_font(14, bold=False)
         draw.text(
-            (self.CARD_WIDTH // 2, self.CARD_HEIGHT - 40),
+            (self.CARD_WIDTH // 2, self.CARD_HEIGHT - 45),
             "spredd.markets",
             font=footer_font,
             fill=theme["muted"],
             anchor="mm",
         )
 
-        # Draw orange accent line at bottom
-        draw.rectangle(
-            [(0, self.CARD_HEIGHT - 4), (self.CARD_WIDTH, self.CARD_HEIGHT)],
-            fill=theme["accent"],
-        )
+        # Convert to RGB for PNG save (remove alpha)
+        img_rgb = Image.new("RGB", img.size, theme["background"])
+        img_rgb.paste(img, mask=img.split()[3] if img.mode == "RGBA" else None)
 
         # Save to BytesIO
         buffer = BytesIO()
-        img.save(buffer, format="PNG", quality=95)
+        img_rgb.save(buffer, format="PNG", quality=95)
         buffer.seek(0)
         return buffer
 
@@ -272,7 +383,7 @@ def generate_pnl_card(
     Args:
         platform: Platform enum value
         platform_name: Display name of the platform
-        platform_emoji: Emoji for the platform
+        platform_emoji: Emoji for the platform (unused, kept for compatibility)
         total_pnl: Total realized P&L in USD
         trade_count: Number of trades
         total_invested: Total amount invested (for ROI calculation)
@@ -285,7 +396,6 @@ def generate_pnl_card(
     stats = PnLStats(
         platform=platform,
         platform_name=platform_name,
-        platform_emoji=platform_emoji,
         total_pnl=total_pnl,
         trade_count=trade_count,
         total_invested=total_invested,
