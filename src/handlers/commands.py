@@ -984,8 +984,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await handle_categories_menu(query, update.effective_user.id)
 
         elif action == "category":
-            # Format: category:category_id
-            await handle_category_view(query, parts[1], update.effective_user.id)
+            # Format: category:category_id or category:category_id:page
+            page = int(parts[2]) if len(parts) > 2 else 0
+            await handle_category_view(query, parts[1], update.effective_user.id, page=page)
         
         elif action == "menu":
             if parts[1] == "main":
@@ -2430,8 +2431,8 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
     )
 
 
-async def handle_category_view(query, category_id: str, telegram_id: int) -> None:
-    """Show markets in a category."""
+async def handle_category_view(query, category_id: str, telegram_id: int, page: int = 0) -> None:
+    """Show markets in a category with pagination."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
@@ -2445,10 +2446,13 @@ async def handle_category_view(query, category_id: str, telegram_id: int) -> Non
     category_label = category_info["label"] if category_info else category_id.title()
     category_emoji = category_info["emoji"] if category_info else "📂"
 
-    try:
-        markets = await platform.get_markets_by_category(category_id, limit=10)
+    MARKETS_PER_PAGE = 10
 
-        if not markets:
+    try:
+        # Fetch more markets to enable pagination (get up to 100)
+        all_markets = await platform.get_markets_by_category(category_id, limit=100)
+
+        if not all_markets:
             await query.edit_message_text(
                 f"{category_emoji} <b>{category_label}</b>\n\n"
                 "No active markets found in this category.",
@@ -2459,10 +2463,22 @@ async def handle_category_view(query, category_id: str, telegram_id: int) -> Non
             )
             return
 
-        text = f"{category_emoji} <b>{category_label} Markets</b>\n\n"
+        # Calculate pagination
+        total_markets = len(all_markets)
+        total_pages = (total_markets + MARKETS_PER_PAGE - 1) // MARKETS_PER_PAGE
+        page = max(0, min(page, total_pages - 1))  # Clamp page to valid range
+
+        start_idx = page * MARKETS_PER_PAGE
+        end_idx = min(start_idx + MARKETS_PER_PAGE, total_markets)
+        markets = all_markets[start_idx:end_idx]
+
+        text = f"{category_emoji} <b>{category_label} Markets</b>"
+        if total_pages > 1:
+            text += f" (Page {page + 1}/{total_pages})"
+        text += "\n\n"
 
         buttons = []
-        for i, market in enumerate(markets, 1):
+        for i, market in enumerate(markets, start_idx + 1):
             title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
             yes_prob = format_probability(market.yes_price)
             exp = format_expiration(market.close_time)
@@ -2476,6 +2492,16 @@ async def handle_category_view(query, category_id: str, telegram_id: int) -> Non
                     callback_data=f"market:{user.active_platform.value}:{market.market_id[:20]}"
                 )
             ])
+
+        # Add pagination buttons if needed
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("« Prev", callback_data=f"category:{category_id}:{page - 1}"))
+            nav_buttons.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"category:{category_id}:{page + 1}"))
+            buttons.append(nav_buttons)
 
         buttons.append([InlineKeyboardButton("« Back to Categories", callback_data="categories")])
 
