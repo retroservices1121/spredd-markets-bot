@@ -213,6 +213,7 @@ async def run_bot() -> None:
             BotCommand("markets", "Browse trending markets"),
             BotCommand("search", "Search for markets"),
             BotCommand("wallet", "View your wallets & balances"),
+            BotCommand("resetwallet", "Reset wallets (new keys)"),
             BotCommand("positions", "View open positions"),
             BotCommand("pnl", "View profit & loss"),
             BotCommand("orders", "View order history"),
