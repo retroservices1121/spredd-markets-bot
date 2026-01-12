@@ -80,7 +80,7 @@ def format_usd(amount: Optional[Decimal]) -> str:
     return f"${float(amount):,.2f}"
 
 
-def format_expiration(close_time: Optional[str]) -> str:
+def format_expiration(close_time) -> str:
     """Format expiration date/time in a user-friendly way."""
     if not close_time:
         return "N/A"
@@ -88,14 +88,26 @@ def format_expiration(close_time: Optional[str]) -> str:
     try:
         from datetime import datetime, timezone
 
-        # Parse ISO format date string
-        if close_time.endswith("Z"):
-            dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
-        elif "T" in close_time:
-            dt = datetime.fromisoformat(close_time)
-        else:
-            # Try parsing date-only format
-            dt = datetime.fromisoformat(close_time + "T23:59:59+00:00")
+        dt = None
+
+        # Handle Unix timestamp (integer or numeric string)
+        if isinstance(close_time, (int, float)):
+            dt = datetime.fromtimestamp(close_time, tz=timezone.utc)
+        elif isinstance(close_time, str):
+            # Check if it's a numeric string (Unix timestamp)
+            if close_time.isdigit() or (close_time.replace('.', '', 1).isdigit()):
+                dt = datetime.fromtimestamp(float(close_time), tz=timezone.utc)
+            # Parse ISO format date string
+            elif close_time.endswith("Z"):
+                dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+            elif "T" in close_time:
+                dt = datetime.fromisoformat(close_time)
+            else:
+                # Try parsing date-only format
+                dt = datetime.fromisoformat(close_time + "T23:59:59+00:00")
+
+        if dt is None:
+            return "N/A"
 
         # Make timezone-aware if not already
         if dt.tzinfo is None:
