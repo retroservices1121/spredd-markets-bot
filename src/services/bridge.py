@@ -392,8 +392,8 @@ class BridgeService:
                     amount=str(amount)
                 )
 
-                nonce = source_w3.eth.get_transaction_count(wallet)
-                gas_price = int(source_w3.eth.gas_price * 1.2)
+                nonce = source_w3.eth.get_transaction_count(wallet, 'pending')
+                gas_price = int(source_w3.eth.gas_price * 1.5)
 
                 approve_tx = usdc_contract.functions.approve(
                     token_messenger,
@@ -424,8 +424,8 @@ class BridgeService:
             # Convert destination address to bytes32 (padded)
             mint_recipient = Web3.to_bytes(hexstr=wallet).rjust(32, b'\x00')
 
-            nonce = source_w3.eth.get_transaction_count(wallet)
-            gas_price = int(source_w3.eth.gas_price * 1.2)
+            nonce = source_w3.eth.get_transaction_count(wallet, 'pending')
+            gas_price = int(source_w3.eth.gas_price * 1.5)
 
             burn_tx = messenger_contract.functions.depositForBurn(
                 amount_raw,
@@ -630,7 +630,7 @@ class BridgeService:
                 abi=MESSAGE_TRANSMITTER_ABI
             )
 
-            nonce = dest_w3.eth.get_transaction_count(wallet)
+            nonce = dest_w3.eth.get_transaction_count(wallet, 'pending')
             gas_price = int(dest_w3.eth.gas_price * 1.5)
 
             mint_tx = transmitter_contract.functions.receiveMessage(
@@ -882,8 +882,8 @@ class BridgeService:
                     logger.info("Building tx", to=to_address, value=value, data_len=len(data) if data else 0)
 
                     # Build transaction
-                    nonce = source_w3.eth.get_transaction_count(wallet)
-                    gas_price = int(source_w3.eth.gas_price * 1.2)
+                    nonce = source_w3.eth.get_transaction_count(wallet, 'pending')
+                    gas_price = int(source_w3.eth.gas_price * 1.5)
 
                     tx = {
                         "from": wallet,
