@@ -695,9 +695,9 @@ class BridgeService:
         try:
             amount_raw = int(amount * Decimal(10**6))
 
-            # Relay.link quote API
-            url = "https://api.relay.link/quote"
-            params = {
+            # Relay.link quote API v2 - uses POST with JSON body
+            url = "https://api.relay.link/quote/v2"
+            payload = {
                 "user": wallet_address,
                 "originChainId": RELAY_CHAIN_IDS[source_chain],
                 "destinationChainId": RELAY_CHAIN_IDS[dest_chain],
@@ -708,7 +708,7 @@ class BridgeService:
             }
 
             with httpx.Client(timeout=30) as client:
-                resp = client.get(url, params=params)
+                resp = client.post(url, json=payload)
 
                 if resp.status_code != 200:
                     logger.warning("Relay quote failed", status=resp.status_code, body=resp.text[:200])
@@ -811,9 +811,9 @@ class BridgeService:
             if progress_callback:
                 progress_callback("🚀 Getting fast bridge quote...", 0, 30)
 
-            # Step 1: Get quote from Relay
-            url = "https://api.relay.link/quote"
-            params = {
+            # Step 1: Get quote from Relay v2 API (POST with JSON body)
+            url = "https://api.relay.link/quote/v2"
+            payload = {
                 "user": wallet,
                 "originChainId": RELAY_CHAIN_IDS[source_chain],
                 "destinationChainId": RELAY_CHAIN_IDS[dest_chain],
@@ -824,7 +824,7 @@ class BridgeService:
             }
 
             with httpx.Client(timeout=30) as client:
-                quote_resp = client.get(url, params=params)
+                quote_resp = client.post(url, json=payload)
 
                 if quote_resp.status_code != 200:
                     return BridgeResult(
