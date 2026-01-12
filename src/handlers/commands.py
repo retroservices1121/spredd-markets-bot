@@ -1533,21 +1533,13 @@ async def handle_wallet_refresh(query, telegram_id: int) -> None:
 
     await query.edit_message_text("🔄 Refreshing balances...")
 
-    # Get existing wallets from DB to check PIN status
-    from src.db.database import get_user_wallets
-    existing_wallets = await get_user_wallets(user.id)
-    is_pin_protected = any(w.pin_protected for w in existing_wallets) if existing_wallets else False
-
     wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
     balances = await wallet_service.get_all_balances(user.id)
 
     solana_wallet = wallets.get(ChainFamily.SOLANA)
     evm_wallet = wallets.get(ChainFamily.EVM)
 
-    text = "💰 <b>Your Wallets</b>"
-    if is_pin_protected:
-        text += " 🔐"
-    text += "\n\n"
+    text = "💰 <b>Your Wallets</b>\n\n"
 
     if solana_wallet:
         text += f"<b>🟣 Solana</b> (Kalshi)\n"
@@ -1562,22 +1554,15 @@ async def handle_wallet_refresh(query, telegram_id: int) -> None:
         for bal in balances.get(ChainFamily.EVM, []):
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
 
-    if is_pin_protected:
-        text += "\n🔐 <i>PIN-protected: Only you can sign transactions</i>"
-    else:
-        text += "\n⚠️ <i>Wallet not PIN-protected. Create a new secure wallet to trade.</i>"
+    text += "\n<i>Tap address to copy. Send funds to deposit.</i>"
 
     # Build buttons
     buttons = [
         [InlineKeyboardButton("🔄 Refresh", callback_data="wallet:refresh")],
         [InlineKeyboardButton("🌉 Bridge USDC", callback_data="wallet:bridge")],
+        [InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")],
+        [InlineKeyboardButton("« Back", callback_data="menu:main")],
     ]
-
-    if not is_pin_protected:
-        buttons.append([InlineKeyboardButton("🔐 Create New Secure Wallet", callback_data="wallet:create_new")])
-
-    buttons.append([InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")])
-    buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
 
     keyboard = InlineKeyboardMarkup(buttons)
 
