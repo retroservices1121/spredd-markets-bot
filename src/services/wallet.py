@@ -17,8 +17,6 @@ from solana.rpc.commitment import Confirmed
 from web3 import AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 
-import hashlib
-
 from src.config import settings
 from src.db.database import (
     get_wallet,
@@ -134,29 +132,7 @@ class WalletService(LoggerMixin):
         public_key = account.address
         private_key = account.key
         return public_key, private_key
-
-    def _hash_export_pin(self, pin: str, telegram_id: int) -> str:
-        """Create a secure hash of the export PIN.
-
-        Uses PBKDF2 with telegram_id as additional salt for security.
-        The PIN itself is never stored, only the hash for verification.
-        """
-        # Create a unique salt using telegram_id and a constant
-        salt = f"spredd_export_{telegram_id}".encode()
-        # Use PBKDF2 with SHA256
-        pin_hash = hashlib.pbkdf2_hmac(
-            'sha256',
-            pin.encode(),
-            salt,
-            100000  # iterations
-        )
-        return pin_hash.hex()
-
-    def verify_export_pin(self, pin: str, telegram_id: int, stored_hash: str) -> bool:
-        """Verify a PIN against the stored hash."""
-        computed_hash = self._hash_export_pin(pin, telegram_id)
-        return computed_hash == stored_hash
-
+    
     async def create_wallet_for_user(
         self,
         user_id: str,
@@ -170,15 +146,10 @@ class WalletService(LoggerMixin):
             user_id: Database user ID
             telegram_id: Telegram user ID
             chain_family: SOLANA or EVM
-            user_pin: PIN for export verification (required for security)
+            user_pin: Optional PIN for non-custodial encryption (recommended)
 
         Returns:
             WalletInfo with public key
-
-        Note:
-            - Keys are encrypted WITHOUT PIN (allows PIN-less trading)
-            - PIN hash is stored separately for export verification
-            - This allows convenient trading while securing key exports
         """
         # Check if wallet already exists
         existing = await get_wallet(user_id, chain_family)
@@ -194,19 +165,14 @@ class WalletService(LoggerMixin):
         else:
             public_key, private_key = self._generate_evm_keypair()
 
-        # Encrypt private key WITHOUT PIN - allows trading without PIN entry
-        # Security comes from master_key + telegram_id combination
+        # Encrypt private key with user-specific encryption + optional PIN
+        # If PIN is provided, even the operator cannot decrypt without it
         encrypted_key = encrypt(
             private_key,
             settings.encryption_key,
             telegram_id,
-            "",  # No PIN in encryption - enables PIN-less trading
+            user_pin,
         )
-
-        # Hash the PIN for export verification (if provided)
-        export_pin_hash = None
-        if user_pin:
-            export_pin_hash = self._hash_export_pin(user_pin, telegram_id)
 
         # Store in database
         await create_wallet(
@@ -214,8 +180,7 @@ class WalletService(LoggerMixin):
             chain_family=chain_family,
             public_key=public_key,
             encrypted_private_key=encrypted_key,
-            pin_protected=False,  # Trading doesn't require PIN
-            export_pin_hash=export_pin_hash,  # Export requires PIN verification
+            pin_protected=bool(user_pin),
         )
 
         self.log.info(
@@ -223,7 +188,7 @@ class WalletService(LoggerMixin):
             user_id=user_id,
             chain_family=chain_family.value,
             public_key=public_key[:8] + "...",
-            has_export_pin=bool(export_pin_hash),
+            pin_protected=bool(user_pin),
         )
 
         return WalletInfo(
@@ -264,32 +229,12 @@ class WalletService(LoggerMixin):
         user_id: str,
         chain_family: ChainFamily,
     ) -> bool:
-        """Check if a wallet requires PIN to decrypt (legacy - always False now)."""
-        # Trading never requires PIN anymore - keys are encrypted without PIN
-        return False
-
-    async def has_export_pin(
-        self,
-        user_id: str,
-        chain_family: ChainFamily,
-    ) -> bool:
-        """Check if a wallet has an export PIN set."""
+        """Check if a wallet requires PIN to decrypt."""
         wallet = await get_wallet(user_id, chain_family)
         if not wallet:
             return False
-        return bool(wallet.export_pin_hash)
-
-    async def get_export_pin_hash(
-        self,
-        user_id: str,
-        chain_family: ChainFamily,
-    ) -> Optional[str]:
-        """Get the export PIN hash for a wallet."""
-        wallet = await get_wallet(user_id, chain_family)
-        if not wallet:
-            return None
-        return wallet.export_pin_hash
-
+        return wallet.pin_protected
+    
     # ===================
     # Key Retrieval
     # ===================
