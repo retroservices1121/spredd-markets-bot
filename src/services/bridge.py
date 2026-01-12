@@ -27,6 +27,7 @@ class BridgeChain(Enum):
     ARBITRUM = "arbitrum"
     OPTIMISM = "optimism"
     AVALANCHE = "avalanche"
+    MONAD = "monad"
 
 
 # Chain configurations for CCTP
@@ -78,6 +79,14 @@ CHAIN_CONFIG = {
         "token_messenger": "0x6B25532e1060CE10cc3B0A99e5683b91BFDe6982",
         "message_transmitter": "0x8186359aF5F57FbB40c6b14A588d2A59C0C29880",
         "rpc_env": "AVALANCHE_RPC_URL",
+    },
+    BridgeChain.MONAD: {
+        "chain_id": 143,
+        "domain": 15,  # CCTP domain for Monad
+        "usdc": "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",  # Native USDC on Monad
+        "token_messenger": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",  # TokenMessengerV2
+        "message_transmitter": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # MessageTransmitterV2
+        "rpc_env": "MONAD_RPC_URL",
     },
 }
 
@@ -177,6 +186,7 @@ RELAY_CHAIN_IDS = {
     BridgeChain.BASE: 8453,
     BridgeChain.ARBITRUM: 42161,
     BridgeChain.OPTIMISM: 10,
+    BridgeChain.MONAD: 143,
 }
 
 # USDC addresses for Relay
@@ -186,6 +196,7 @@ RELAY_USDC = {
     BridgeChain.BASE: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     BridgeChain.ARBITRUM: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
     BridgeChain.OPTIMISM: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+    BridgeChain.MONAD: "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",
 }
 
 

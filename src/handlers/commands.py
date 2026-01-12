@@ -1827,6 +1827,7 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
                 BridgeChain.OPTIMISM: "🔴",
                 BridgeChain.ETHEREUM: "⚪",
                 BridgeChain.POLYGON: "🟣",
+                BridgeChain.MONAD: "🟢",
             }.get(chain, "🔹")
 
             text += f"{chain_emoji} {chain.value.title()}: ${float(balance):.2f}\n"
@@ -3108,13 +3109,14 @@ You'll be asked to deposit more USDC
             "title": "🌉 Cross-Chain Bridging",
             "text": """<b>Trade on Polymarket with USDC from Other Chains</b>
 
-Have USDC on Base, Arbitrum, or other L2s? The bot can bridge it to Polygon for you!
+Have USDC on Base, Arbitrum, Monad or other chains? The bot can bridge it to Polygon for you!
 
 <b>Supported Source Chains:</b>
 • Base
 • Arbitrum One
 • Optimism
 • Ethereum Mainnet
+• Monad
 
 <b>Two Bridge Options:</b>
 
