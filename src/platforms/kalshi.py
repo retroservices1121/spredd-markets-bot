@@ -358,8 +358,13 @@ class KalshiPlatform(BasePlatform):
         outcome: Outcome,
         side: str,
         amount: Decimal,
+        token_id: str = None,
     ) -> Quote:
-        """Get a quote for a trade via DFlow."""
+        """Get a quote for a trade via DFlow.
+
+        Note: token_id is accepted for API compatibility but ignored -
+        Kalshi determines tokens from market data.
+        """
         # Get market to find token addresses
         market = await self.get_market(market_id)
         if not market:

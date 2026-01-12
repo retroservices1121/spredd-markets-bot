@@ -365,8 +365,13 @@ class OpinionPlatform(BasePlatform):
         outcome: Outcome,
         side: str,
         amount: Decimal,
+        token_id: str = None,
     ) -> Quote:
-        """Get a quote for a trade."""
+        """Get a quote for a trade.
+
+        Note: token_id is accepted for API compatibility but ignored -
+        Opinion determines tokens from market data.
+        """
         market = await self.get_market(market_id)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.OPINION)

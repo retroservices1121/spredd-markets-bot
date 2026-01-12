@@ -279,16 +279,18 @@ class BasePlatform(ABC):
         outcome: Outcome,
         side: str,
         amount: Decimal,
+        token_id: str = None,
     ) -> Quote:
         """
         Get a quote for a potential trade.
-        
+
         Args:
             market_id: Market identifier
             outcome: YES or NO
             side: "buy" or "sell"
             amount: Amount in collateral (e.g., USDC)
-            
+            token_id: Optional token ID (used by Polymarket for sells)
+
         Returns:
             Quote with expected output and fees
         """
