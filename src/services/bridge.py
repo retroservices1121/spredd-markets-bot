@@ -156,6 +156,39 @@ class BridgeResult:
     error_message: Optional[str] = None
 
 
+@dataclass
+class FastBridgeQuote:
+    """Quote for fast bridge via Relay.link."""
+    input_amount: Decimal  # Amount user sends
+    output_amount: Decimal  # Amount user receives
+    fee_amount: Decimal  # Total fee
+    fee_percent: float  # Fee as percentage
+    gas_fee: Decimal  # Gas portion of fee
+    relay_fee: Decimal  # Relayer fee
+    estimated_time_seconds: int  # ~20-60 seconds
+    quote_id: Optional[str] = None  # For executing the quote
+    error: Optional[str] = None
+
+
+# Chain ID mapping for Relay
+RELAY_CHAIN_IDS = {
+    BridgeChain.ETHEREUM: 1,
+    BridgeChain.POLYGON: 137,
+    BridgeChain.BASE: 8453,
+    BridgeChain.ARBITRUM: 42161,
+    BridgeChain.OPTIMISM: 10,
+}
+
+# USDC addresses for Relay
+RELAY_USDC = {
+    BridgeChain.ETHEREUM: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    BridgeChain.POLYGON: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    BridgeChain.BASE: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    BridgeChain.ARBITRUM: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    BridgeChain.OPTIMISM: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+}
+
+
 # Type alias for progress callback
 # Callback receives (status_message: str, elapsed_seconds: int, estimated_total_seconds: int)
 ProgressCallback = Optional[callable]
@@ -632,6 +665,301 @@ class BridgeService:
         except Exception as e:
             logger.error("Mint failed", error=str(e))
             return None
+
+
+    def get_fast_bridge_quote(
+        self,
+        source_chain: BridgeChain,
+        dest_chain: BridgeChain,
+        amount: Decimal,
+        wallet_address: str,
+    ) -> FastBridgeQuote:
+        """
+        Get a quote for fast bridging via Relay.link.
+        Returns fee information and estimated time.
+        """
+        import httpx
+
+        if source_chain not in RELAY_CHAIN_IDS or dest_chain not in RELAY_CHAIN_IDS:
+            return FastBridgeQuote(
+                input_amount=amount,
+                output_amount=Decimal(0),
+                fee_amount=Decimal(0),
+                fee_percent=0,
+                gas_fee=Decimal(0),
+                relay_fee=Decimal(0),
+                estimated_time_seconds=0,
+                error=f"Fast bridge not supported for {source_chain.value} -> {dest_chain.value}"
+            )
+
+        try:
+            amount_raw = int(amount * Decimal(10**6))
+
+            # Relay.link quote API
+            url = "https://api.relay.link/quote"
+            params = {
+                "user": wallet_address,
+                "originChainId": RELAY_CHAIN_IDS[source_chain],
+                "destinationChainId": RELAY_CHAIN_IDS[dest_chain],
+                "originCurrency": RELAY_USDC[source_chain],
+                "destinationCurrency": RELAY_USDC[dest_chain],
+                "amount": str(amount_raw),
+                "tradeType": "EXACT_INPUT",
+            }
+
+            with httpx.Client(timeout=30) as client:
+                resp = client.get(url, params=params)
+
+                if resp.status_code != 200:
+                    logger.warning("Relay quote failed", status=resp.status_code, body=resp.text[:200])
+                    return FastBridgeQuote(
+                        input_amount=amount,
+                        output_amount=Decimal(0),
+                        fee_amount=Decimal(0),
+                        fee_percent=0,
+                        gas_fee=Decimal(0),
+                        relay_fee=Decimal(0),
+                        estimated_time_seconds=0,
+                        error=f"Quote failed: {resp.status_code}"
+                    )
+
+                data = resp.json()
+
+                # Parse the quote response
+                # Relay returns fees in the response
+                details = data.get("details", {})
+                fees = details.get("totalFees", {})
+
+                output_raw = int(data.get("details", {}).get("currencyOut", {}).get("amount", "0"))
+                output_amount = Decimal(output_raw) / Decimal(10**6)
+
+                fee_raw = int(fees.get("amount", "0"))
+                fee_amount = Decimal(fee_raw) / Decimal(10**6) if fee_raw else amount - output_amount
+
+                gas_raw = int(fees.get("gas", "0"))
+                gas_fee = Decimal(gas_raw) / Decimal(10**6)
+
+                relay_raw = int(fees.get("relayer", "0"))
+                relay_fee = Decimal(relay_raw) / Decimal(10**6)
+
+                fee_percent = float(fee_amount / amount * 100) if amount > 0 else 0
+
+                return FastBridgeQuote(
+                    input_amount=amount,
+                    output_amount=output_amount,
+                    fee_amount=fee_amount,
+                    fee_percent=fee_percent,
+                    gas_fee=gas_fee,
+                    relay_fee=relay_fee,
+                    estimated_time_seconds=30,  # Relay is typically ~20-30 seconds
+                    quote_id=data.get("requestId"),
+                )
+
+        except Exception as e:
+            logger.error("Failed to get fast bridge quote", error=str(e))
+            return FastBridgeQuote(
+                input_amount=amount,
+                output_amount=Decimal(0),
+                fee_amount=Decimal(0),
+                fee_percent=0,
+                gas_fee=Decimal(0),
+                relay_fee=Decimal(0),
+                estimated_time_seconds=0,
+                error=str(e)
+            )
+
+    def bridge_usdc_fast(
+        self,
+        private_key: LocalAccount,
+        source_chain: BridgeChain,
+        dest_chain: BridgeChain,
+        amount: Decimal,
+        progress_callback: ProgressCallback = None,
+    ) -> BridgeResult:
+        """
+        Fast bridge USDC via Relay.link (~30 seconds, small fee).
+        Uses relayers to front the funds for instant bridging.
+        """
+        import httpx
+
+        if source_chain not in self._web3_clients:
+            return BridgeResult(
+                success=False,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=amount,
+                error_message=f"Source chain {source_chain.value} not configured"
+            )
+
+        try:
+            source_w3 = self._web3_clients[source_chain]
+            wallet = Web3.to_checksum_address(private_key.address)
+            amount_raw = int(amount * Decimal(10**6))
+
+            # Check native balance for gas
+            native_balance = source_w3.eth.get_balance(wallet)
+            min_gas_wei = int(0.0001 * 10**18)  # 0.0001 ETH for fast bridge
+            if native_balance < min_gas_wei:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=amount,
+                    error_message=f"Insufficient ETH for gas. Need at least 0.0001 ETH."
+                )
+
+            if progress_callback:
+                progress_callback("🚀 Getting fast bridge quote...", 0, 30)
+
+            # Step 1: Get quote from Relay
+            url = "https://api.relay.link/quote"
+            params = {
+                "user": wallet,
+                "originChainId": RELAY_CHAIN_IDS[source_chain],
+                "destinationChainId": RELAY_CHAIN_IDS[dest_chain],
+                "originCurrency": RELAY_USDC[source_chain],
+                "destinationCurrency": RELAY_USDC[dest_chain],
+                "amount": str(amount_raw),
+                "tradeType": "EXACT_INPUT",
+            }
+
+            with httpx.Client(timeout=30) as client:
+                quote_resp = client.get(url, params=params)
+
+                if quote_resp.status_code != 200:
+                    return BridgeResult(
+                        success=False,
+                        source_chain=source_chain,
+                        dest_chain=dest_chain,
+                        amount=amount,
+                        error_message=f"Failed to get quote: {quote_resp.text[:100]}"
+                    )
+
+                quote_data = quote_resp.json()
+
+            if progress_callback:
+                progress_callback("📝 Preparing transaction...", 5, 30)
+
+            # Step 2: Get the execution steps
+            steps = quote_data.get("steps", [])
+            if not steps:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=amount,
+                    error_message="No bridge steps returned"
+                )
+
+            tx_hash = None
+
+            # Execute each step (usually approve + deposit)
+            for i, step in enumerate(steps):
+                items = step.get("items", [])
+                for item in items:
+                    tx_data = item.get("data", {})
+
+                    if not tx_data:
+                        continue
+
+                    to_address = tx_data.get("to")
+                    data = tx_data.get("data")
+                    value = int(tx_data.get("value", "0"))
+
+                    if not to_address or not data:
+                        continue
+
+                    # Build transaction
+                    nonce = source_w3.eth.get_transaction_count(wallet)
+                    gas_price = int(source_w3.eth.gas_price * 1.2)
+
+                    tx = {
+                        "from": wallet,
+                        "to": Web3.to_checksum_address(to_address),
+                        "data": data,
+                        "value": value,
+                        "nonce": nonce,
+                        "gasPrice": gas_price,
+                        "chainId": RELAY_CHAIN_IDS[source_chain],
+                    }
+
+                    # Estimate gas
+                    try:
+                        gas_estimate = source_w3.eth.estimate_gas(tx)
+                        tx["gas"] = int(gas_estimate * 1.3)
+                    except Exception as e:
+                        logger.warning("Gas estimation failed, using default", error=str(e))
+                        tx["gas"] = 300000
+
+                    if progress_callback:
+                        step_name = step.get("id", f"Step {i+1}")
+                        progress_callback(f"✍️ Signing {step_name}...", 10 + i * 5, 30)
+
+                    # Sign and send
+                    signed_tx = source_w3.eth.account.sign_transaction(tx, private_key.key)
+                    tx_hash = source_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+                    tx_hash_hex = tx_hash.hex()
+
+                    logger.info(f"Fast bridge tx sent", step=step.get("id"), tx_hash=tx_hash_hex)
+
+                    # Wait for confirmation
+                    if progress_callback:
+                        progress_callback(f"⏳ Confirming transaction...", 15 + i * 5, 30)
+
+                    receipt = source_w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+                    if receipt.status != 1:
+                        return BridgeResult(
+                            success=False,
+                            source_chain=source_chain,
+                            dest_chain=dest_chain,
+                            amount=amount,
+                            burn_tx_hash=tx_hash_hex,
+                            error_message="Transaction failed on-chain"
+                        )
+
+            if progress_callback:
+                progress_callback("✅ Bridge complete! Funds arriving shortly...", 30, 30)
+
+            # Get output amount from quote
+            output_raw = int(quote_data.get("details", {}).get("currencyOut", {}).get("amount", str(amount_raw)))
+            output_amount = Decimal(output_raw) / Decimal(10**6)
+
+            logger.info(
+                "Fast bridge completed",
+                source=source_chain.value,
+                dest=dest_chain.value,
+                input=str(amount),
+                output=str(output_amount),
+                tx_hash=tx_hash.hex() if tx_hash else None
+            )
+
+            return BridgeResult(
+                success=True,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=output_amount,  # Amount received after fees
+                burn_tx_hash=tx_hash.hex() if tx_hash else None,
+                mint_tx_hash=None,  # Relay handles the mint
+            )
+
+        except Exception as e:
+            import traceback
+            error_msg = str(e) if str(e) else type(e).__name__
+            logger.error(
+                "Fast bridge failed",
+                source=source_chain.value,
+                dest=dest_chain.value,
+                error=error_msg,
+                traceback=traceback.format_exc()
+            )
+            return BridgeResult(
+                success=False,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=amount,
+                error_message=error_msg
+            )
 
 
 # Singleton instance

@@ -951,7 +951,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await handle_bridge_menu(query, update.effective_user.id, context)
 
         elif action == "bridge":
-            # Format: bridge:start:source_chain, bridge:amount:chain:percent, bridge:custom:chain
+            # Format: bridge:start:source_chain, bridge:amount:chain:percent, bridge:custom:chain, bridge:speed:chain:mode
             logger.info("Bridge callback received", callback_data=data, parts=parts)
             if parts[1] == "start":
                 # bridge:start:source_chain - user selected a chain to bridge from
@@ -962,6 +962,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             elif parts[1] == "custom":
                 # bridge:custom:chain - user wants to enter custom amount
                 await handle_bridge_custom(query, parts[2], update.effective_user.id, context)
+            elif parts[1] == "speed":
+                # bridge:speed:chain:mode - user selected fast or standard
+                await handle_bridge_speed(query, parts[2], parts[3], update.effective_user.id, context)
             else:
                 # bridge:source_chain - legacy format
                 logger.info("Using legacy bridge format", chain=parts[1])
@@ -1556,7 +1559,7 @@ Select amount to bridge or enter a custom amount:
 
 
 async def handle_bridge_amount(query, source_chain: str, percentage: int, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle bridge amount selection."""
+    """Handle bridge amount selection - show speed options."""
     pending = context.user_data.get("pending_bridge")
     if not pending:
         await query.edit_message_text("No pending bridge. Please start again.")
@@ -1573,26 +1576,46 @@ async def handle_bridge_amount(query, source_chain: str, percentage: int, telegr
     # Update pending bridge with amount
     context.user_data["pending_bridge"]["amount"] = str(amount)
     context.user_data["pending_bridge"]["awaiting_amount"] = False
-    context.user_data["pending_bridge"]["awaiting_pin"] = pending["pin_protected"]
 
-    from src.services.bridge import BridgeChain
+    from src.services.bridge import BridgeChain, bridge_service
     chain = BridgeChain(source_chain.lower())
 
-    if pending["pin_protected"]:
-        text = f"""
-🌉 <b>Bridge USDC</b>
+    # Get fast bridge quote for fee display
+    evm_wallet = await get_user_wallet(user.id, ChainFamily.EVM)
+    fast_quote = None
+    if evm_wallet:
+        fast_quote = bridge_service.get_fast_bridge_quote(
+            chain, BridgeChain.POLYGON, amount, evm_wallet.public_key
+        )
 
-Source: {chain.value.title()}
-Amount: <b>${float(amount):.2f} USDC</b>
-Destination: Polygon
-
-<b>🔐 Enter your PIN to confirm:</b>
-<i>(Bridging takes ~10-15 minutes via Circle CCTP)</i>
-"""
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+    # Show speed selection
+    fee_text = ""
+    if fast_quote and not fast_quote.error:
+        fee_display = f"${float(fast_quote.fee_amount):.2f}" if fast_quote.fee_amount > 0 else f"{fast_quote.fee_percent:.1f}%"
+        receive_amount = f"${float(fast_quote.output_amount):.2f}"
+        fee_text = f"\n<b>🚀 Fast:</b> ~30 seconds, {fee_display} fee → receive {receive_amount}"
     else:
-        # No PIN - proceed directly
-        await execute_bridge(query, user.id, telegram_id, source_chain, amount, "", context)
+        fee_text = "\n<b>🚀 Fast:</b> ~30 seconds (small fee)"
+
+    text = f"""
+🌉 <b>Bridge USDC - Select Speed</b>
+
+From: {chain.value.title()}
+To: Polygon
+Amount: <b>${float(amount):.2f} USDC</b>
+
+<b>Choose bridge speed:</b>
+{fee_text}
+<b>🐢 Standard:</b> ~10-15 min, FREE (Circle CCTP)
+"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🚀 Fast (~30s)", callback_data=f"bridge:speed:{source_chain}:fast")],
+        [InlineKeyboardButton("🐢 Standard (Free)", callback_data=f"bridge:speed:{source_chain}:standard")],
+        [InlineKeyboardButton("« Back", callback_data=f"bridge:start:{source_chain}")],
+    ])
+
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
 async def handle_bridge_custom(query, source_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1622,7 +1645,7 @@ Available: <b>${float(max_balance):.2f} USDC</b>
 
 
 async def handle_bridge_custom_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, amount_str: str) -> None:
-    """Handle custom bridge amount input from user."""
+    """Handle custom bridge amount input from user - show speed selection."""
     pending = context.user_data.get("pending_bridge")
     if not pending:
         await update.message.reply_text("No pending bridge. Please start again.")
@@ -1657,104 +1680,100 @@ async def handle_bridge_custom_amount_input(update: Update, context: ContextType
     # Update pending bridge with amount
     context.user_data["pending_bridge"]["amount"] = str(amount)
     context.user_data["pending_bridge"]["awaiting_custom_amount"] = False
+
+    from src.services.bridge import BridgeChain, bridge_service
+    chain = BridgeChain(source_chain.lower())
+
+    # Get fast bridge quote for fee display
+    evm_wallet = await get_user_wallet(user.id, ChainFamily.EVM)
+    fast_quote = None
+    if evm_wallet:
+        fast_quote = bridge_service.get_fast_bridge_quote(
+            chain, BridgeChain.POLYGON, amount, evm_wallet.public_key
+        )
+
+    # Show speed selection
+    fee_text = ""
+    if fast_quote and not fast_quote.error:
+        fee_display = f"${float(fast_quote.fee_amount):.2f}" if fast_quote.fee_amount > 0 else f"{fast_quote.fee_percent:.1f}%"
+        receive_amount = f"${float(fast_quote.output_amount):.2f}"
+        fee_text = f"\n<b>🚀 Fast:</b> ~30 seconds, {fee_display} fee → receive {receive_amount}"
+    else:
+        fee_text = "\n<b>🚀 Fast:</b> ~30 seconds (small fee)"
+
+    text = f"""
+🌉 <b>Bridge USDC - Select Speed</b>
+
+From: {chain.value.title()}
+To: Polygon
+Amount: <b>${float(amount):.2f} USDC</b>
+
+<b>Choose bridge speed:</b>
+{fee_text}
+<b>🐢 Standard:</b> ~10-15 min, FREE (Circle CCTP)
+"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🚀 Fast (~30s)", callback_data=f"bridge:speed:{source_chain}:fast")],
+        [InlineKeyboardButton("🐢 Standard (Free)", callback_data=f"bridge:speed:{source_chain}:standard")],
+        [InlineKeyboardButton("« Back", callback_data=f"bridge:start:{source_chain}")],
+    ])
+
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+async def handle_bridge_speed(query, source_chain: str, speed: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle bridge speed selection (fast or standard)."""
+    pending = context.user_data.get("pending_bridge")
+    if not pending:
+        await query.edit_message_text("No pending bridge. Please start again.")
+        return
+
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    amount = Decimal(pending["amount"])
+
+    # Store the speed choice
+    context.user_data["pending_bridge"]["speed"] = speed
     context.user_data["pending_bridge"]["awaiting_pin"] = pending["pin_protected"]
 
     from src.services.bridge import BridgeChain
     chain = BridgeChain(source_chain.lower())
 
+    speed_label = "Fast (~30s)" if speed == "fast" else "Standard (~15min)"
+
     if pending["pin_protected"]:
         text = f"""
 🌉 <b>Bridge USDC</b>
 
-Source: {chain.value.title()}
+From: {chain.value.title()}
+To: Polygon
 Amount: <b>${float(amount):.2f} USDC</b>
-Destination: Polygon
+Speed: <b>{speed_label}</b>
 
 <b>🔐 Enter your PIN to confirm:</b>
-<i>(Bridging takes ~10-15 minutes via Circle CCTP)</i>
 """
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML)
     else:
         # No PIN - proceed directly
-        status_msg = await update.message.reply_text(
-            "🌉 <b>Starting Bridge</b>\n\n⏳ Initiating transfer...",
-            parse_mode=ParseMode.HTML,
-        )
-        # Clear custom amount flag
-        del context.user_data["pending_bridge"]
-
-        # Execute bridge (need to create a simulated query object)
-        try:
-            from src.services.bridge import bridge_service, BridgeChain
-            import asyncio
-
-            chain_family = ChainFamily.EVM
-            private_key = await wallet_service.get_private_key(user.id, update.effective_user.id, chain_family, "")
-
-            if not private_key:
-                await status_msg.edit_text("❌ Failed to get wallet key.")
-                return
-
-            main_loop = asyncio.get_event_loop()
-            last_update_time = [0]
-
-            async def update_progress(msg: str, elapsed: int, total: int):
-                import time
-                now = time.time()
-                if now - last_update_time[0] < 5:
-                    return
-                last_update_time[0] = now
-                try:
-                    progress_pct = min(100, int((elapsed / max(1, total)) * 100))
-                    progress_bar = "█" * (progress_pct // 10) + "░" * (10 - progress_pct // 10)
-                    await status_msg.edit_text(
-                        f"🌉 <b>Bridging USDC</b>\n\n{escape_html(msg)}\n\n[{progress_bar}] {progress_pct}%",
-                        parse_mode=ParseMode.HTML,
-                    )
-                except:
-                    pass
-
-            def sync_progress_callback(msg: str, elapsed: int, total: int):
-                try:
-                    asyncio.run_coroutine_threadsafe(update_progress(msg, elapsed, total), main_loop)
-                except:
-                    pass
-
-            result = await asyncio.to_thread(
-                bridge_service.bridge_usdc,
-                private_key,
-                chain,
-                BridgeChain.POLYGON,
-                amount,
-                sync_progress_callback,
-            )
-
-            if result.success:
-                text = f"✅ <b>Bridge Initiated!</b>\n\nFrom: {chain.value.title()}\nTo: Polygon\nAmount: ${float(amount):.2f} USDC\n\nBurn TX: <code>{result.burn_tx_hash[:16]}...</code>\n\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
-            else:
-                text = f"❌ <b>Bridge Failed</b>\n\n{escape_html(result.error_message or 'Unknown error')}"
-
-            await status_msg.edit_text(
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Refresh Wallet", callback_data="wallet:refresh")],
-                    [InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")],
-                ]),
-            )
-        except Exception as e:
-            logger.error("Bridge custom amount failed", error=str(e))
-            await status_msg.edit_text(f"❌ Bridge failed: {escape_html(str(e))}")
+        await execute_bridge(query, user.id, telegram_id, source_chain, amount, "", context)
 
 
 async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: str, amount: Decimal, pin: str, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Execute the bridge operation."""
+    """Execute the bridge operation (fast or standard based on pending_bridge settings)."""
     try:
         from src.services.bridge import bridge_service, BridgeChain
         import asyncio
 
         chain = BridgeChain(source_chain.lower())
         chain_family = ChainFamily.EVM
+
+        # Get speed from pending bridge (default to standard)
+        pending = context.user_data.get("pending_bridge", {})
+        use_fast_bridge = pending.get("speed") == "fast"
 
         # Get private key
         private_key = await wallet_service.get_private_key(user_id, telegram_id, chain_family, pin)
@@ -1769,8 +1788,9 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
             return
 
         # Show progress message
+        speed_label = "🚀 Fast" if use_fast_bridge else "🐢 Standard"
         await query.edit_message_text(
-            f"🌉 <b>Bridging USDC</b>\n\n"
+            f"🌉 <b>Bridging USDC ({speed_label})</b>\n\n"
             f"From: {chain.value.title()}\n"
             f"To: Polygon\n"
             f"Amount: ${float(amount):.2f}\n\n"
@@ -1785,7 +1805,7 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
         async def update_progress(msg: str, elapsed: int, total: int):
             import time
             now = time.time()
-            if now - last_update_time[0] < 5:
+            if now - last_update_time[0] < 3:  # Update more frequently for fast bridge
                 return
             last_update_time[0] = now
 
@@ -1793,7 +1813,7 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
                 progress_pct = min(100, int((elapsed / max(1, total)) * 100))
                 progress_bar = "█" * (progress_pct // 10) + "░" * (10 - progress_pct // 10)
                 await query.edit_message_text(
-                    f"🌉 <b>Bridging USDC</b>\n\n"
+                    f"🌉 <b>Bridging USDC ({speed_label})</b>\n\n"
                     f"{escape_html(msg)}\n\n"
                     f"[{progress_bar}] {progress_pct}%",
                     parse_mode=ParseMode.HTML,
@@ -1810,18 +1830,41 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
             except Exception:
                 pass
 
-        # Execute bridge in thread
-        result = await asyncio.to_thread(
-            bridge_service.bridge_usdc,
-            private_key,
-            chain,
-            BridgeChain.POLYGON,
-            amount,
-            sync_progress_callback,
-        )
+        # Execute bridge in thread (fast or standard)
+        if use_fast_bridge:
+            result = await asyncio.to_thread(
+                bridge_service.bridge_usdc_fast,
+                private_key,
+                chain,
+                BridgeChain.POLYGON,
+                amount,
+                sync_progress_callback,
+            )
+        else:
+            result = await asyncio.to_thread(
+                bridge_service.bridge_usdc,
+                private_key,
+                chain,
+                BridgeChain.POLYGON,
+                amount,
+                sync_progress_callback,
+            )
 
         if result.success:
-            text = f"""
+            if use_fast_bridge:
+                text = f"""
+✅ <b>Fast Bridge Complete!</b>
+
+From: {chain.value.title()}
+To: Polygon
+Amount: ${float(result.amount):.2f} USDC (after fees)
+
+TX: <code>{result.burn_tx_hash[:16] if result.burn_tx_hash else 'pending'}...</code>
+
+🚀 Funds are arriving on Polygon now!
+"""
+            else:
+                text = f"""
 ✅ <b>Bridge Initiated!</b>
 
 From: {chain.value.title()}
@@ -1830,11 +1873,11 @@ Amount: ${float(amount):.2f} USDC
 
 Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
 """
-            if result.mint_tx_hash:
-                text += f"Mint TX: <code>{result.mint_tx_hash[:16]}...</code>\n"
-                text += "\n✅ Bridge complete! Funds are now on Polygon."
-            else:
-                text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
+                if result.mint_tx_hash:
+                    text += f"Mint TX: <code>{result.mint_tx_hash[:16]}...</code>\n"
+                    text += "\n✅ Bridge complete! Funds are now on Polygon."
+                else:
+                    text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
 
         else:
             text = f"❌ <b>Bridge Failed</b>\n\n{escape_html(result.error_message or 'Unknown error')}"
@@ -1873,7 +1916,7 @@ Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
 
 
 async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
-    """Handle PIN entry for bridge operation."""
+    """Handle PIN entry for bridge operation (fast or standard)."""
     pending = context.user_data.get("pending_bridge")
     if not pending:
         await update.message.reply_text("No pending bridge operation.")
@@ -1898,21 +1941,22 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("User not found.")
         return
 
-    # Send initial status
-    status_msg = await update.message.reply_text(
-        "🌉 <b>Starting Bridge</b>\n\n⏳ Verifying PIN and initiating transfer...",
-        parse_mode=ParseMode.HTML,
-    )
-
-    # Get bridge info from pending
+    # Get bridge info from pending (before deleting)
     source_chain = pending["source_chain"]
     amount = Decimal(pending["amount"])
+    use_fast_bridge = pending.get("speed") == "fast"
+    speed_label = "🚀 Fast" if use_fast_bridge else "🐢 Standard"
+
+    # Send initial status
+    status_msg = await update.message.reply_text(
+        f"🌉 <b>Starting Bridge ({speed_label})</b>\n\n⏳ Verifying PIN and initiating transfer...",
+        parse_mode=ParseMode.HTML,
+    )
 
     # Clear pending bridge before executing
     del context.user_data["pending_bridge"]
 
     # Execute the bridge using the status message as query
-    # We need to create a mock query object or modify execute_bridge
     try:
         from src.services.bridge import bridge_service, BridgeChain
         import asyncio
@@ -1941,7 +1985,7 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
 
         # Show progress message
         await status_msg.edit_text(
-            f"🌉 <b>Bridging USDC</b>\n\n"
+            f"🌉 <b>Bridging USDC ({speed_label})</b>\n\n"
             f"From: {chain.value.title()}\n"
             f"To: Polygon\n"
             f"Amount: ${float(amount):.2f}\n\n"
@@ -1956,7 +2000,7 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
         async def update_progress(msg: str, elapsed: int, total: int):
             import time
             now = time.time()
-            if now - last_update_time[0] < 5:
+            if now - last_update_time[0] < 3:  # Update more frequently for fast bridge
                 return
             last_update_time[0] = now
 
@@ -1964,7 +2008,7 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
                 progress_pct = min(100, int((elapsed / max(1, total)) * 100))
                 progress_bar = "█" * (progress_pct // 10) + "░" * (10 - progress_pct // 10)
                 await status_msg.edit_text(
-                    f"🌉 <b>Bridging USDC</b>\n\n"
+                    f"🌉 <b>Bridging USDC ({speed_label})</b>\n\n"
                     f"{escape_html(msg)}\n\n"
                     f"[{progress_bar}] {progress_pct}%",
                     parse_mode=ParseMode.HTML,
@@ -1981,18 +2025,41 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
             except Exception:
                 pass
 
-        # Execute bridge in thread
-        result = await asyncio.to_thread(
-            bridge_service.bridge_usdc,
-            private_key,
-            chain,
-            BridgeChain.POLYGON,
-            amount,
-            sync_progress_callback,
-        )
+        # Execute bridge in thread (fast or standard)
+        if use_fast_bridge:
+            result = await asyncio.to_thread(
+                bridge_service.bridge_usdc_fast,
+                private_key,
+                chain,
+                BridgeChain.POLYGON,
+                amount,
+                sync_progress_callback,
+            )
+        else:
+            result = await asyncio.to_thread(
+                bridge_service.bridge_usdc,
+                private_key,
+                chain,
+                BridgeChain.POLYGON,
+                amount,
+                sync_progress_callback,
+            )
 
         if result.success:
-            text = f"""
+            if use_fast_bridge:
+                text = f"""
+✅ <b>Fast Bridge Complete!</b>
+
+From: {chain.value.title()}
+To: Polygon
+Amount: ${float(result.amount):.2f} USDC (after fees)
+
+TX: <code>{result.burn_tx_hash[:16] if result.burn_tx_hash else 'pending'}...</code>
+
+🚀 Funds are arriving on Polygon now!
+"""
+            else:
+                text = f"""
 ✅ <b>Bridge Initiated!</b>
 
 From: {chain.value.title()}
@@ -2001,11 +2068,11 @@ Amount: ${float(amount):.2f} USDC
 
 Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
 """
-            if result.mint_tx_hash:
-                text += f"Mint TX: <code>{result.mint_tx_hash[:16]}...</code>\n"
-                text += "\n✅ Bridge complete! Funds are now on Polygon."
-            else:
-                text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
+                if result.mint_tx_hash:
+                    text += f"Mint TX: <code>{result.mint_tx_hash[:16]}...</code>\n"
+                    text += "\n✅ Bridge complete! Funds are now on Polygon."
+                else:
+                    text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
 
         else:
             text = f"❌ <b>Bridge Failed</b>\n\n{escape_html(result.error_message or 'Unknown error')}"
