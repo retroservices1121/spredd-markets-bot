@@ -182,6 +182,7 @@ async def create_wallet(
     public_key: str,
     encrypted_private_key: str,
     pin_protected: bool = False,
+    export_pin_hash: Optional[str] = None,
 ) -> Wallet:
     """Create a new wallet for user."""
     async with get_session() as session:
@@ -192,6 +193,7 @@ async def create_wallet(
             public_key=public_key,
             encrypted_private_key=encrypted_private_key,
             pin_protected=pin_protected,
+            export_pin_hash=export_pin_hash,
         )
         session.add(wallet)
         await session.flush()
@@ -201,6 +203,7 @@ async def create_wallet(
             user_id=user_id,
             chain_family=chain_family.value,
             pin_protected=pin_protected,
+            has_export_pin=bool(export_pin_hash),
         )
         return wallet
 

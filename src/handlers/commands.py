@@ -2477,17 +2477,17 @@ async def handle_export_key(query, chain_type: str, telegram_id: int, context: C
         await query.edit_message_text("Invalid chain type.")
         return
 
-    # Check if wallet exists and is PIN protected
-    is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
+    # Check if wallet has export PIN set
+    has_pin = await wallet_service.has_export_pin(user.id, chain_family)
 
-    if not is_pin_protected:
-        # Wallet not PIN protected - require PIN setup first for security
+    if not has_pin:
+        # No export PIN set - require PIN setup first for security
         text = f"""
 🔑 <b>Export {chain_name} Private Key</b>
 
 ⚠️ <b>PIN Required for Security</b>
 
-Your wallet doesn't have PIN protection enabled. For security, you must set up a PIN before exporting private keys.
+Your wallet doesn't have an export PIN set. For security, you must set up a PIN before exporting private keys.
 
 <b>To add PIN protection:</b>
 Use /resetwallet to create a new wallet with PIN protection.
@@ -2495,7 +2495,7 @@ Use /resetwallet to create a new wallet with PIN protection.
 <b>Important:</b>
 • Transfer any funds first before resetting
 • Your new wallet will have a different address
-• PIN protects your keys from unauthorized access
+• PIN protects your keys from unauthorized export
 """
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Reset Wallet", callback_data="wallet:create")],
@@ -4543,7 +4543,7 @@ Your wallets are protected with your PIN.
 
 
 async def handle_export_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
-    """Export private key with user's PIN."""
+    """Export private key after verifying user's PIN."""
     if not update.effective_user or not update.message:
         return
 
@@ -4587,22 +4587,30 @@ async def handle_export_with_pin(update: Update, context: ContextTypes.DEFAULT_T
 
     # Send processing message
     status_msg = await update.effective_chat.send_message(
-        "🔐 Decrypting private key...",
+        "🔐 Verifying PIN...",
         parse_mode=ParseMode.HTML,
     )
 
     try:
-        # Get private key with PIN (export returns string, not account object)
-        try:
-            private_key = await wallet_service.export_private_key(user.id, update.effective_user.id, chain_family, pin)
-        except Exception as decrypt_error:
-            if "Decryption failed" in str(decrypt_error):
-                await status_msg.edit_text(
-                    "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect.",
-                    parse_mode=ParseMode.HTML,
-                )
-                return
-            raise
+        # Verify PIN against stored hash
+        stored_hash = await wallet_service.get_export_pin_hash(user.id, chain_family)
+        if not stored_hash:
+            await status_msg.edit_text(
+                "❌ No export PIN set for this wallet.\n\nUse /resetwallet to create a new PIN-protected wallet.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        if not wallet_service.verify_export_pin(pin, update.effective_user.id, stored_hash):
+            await status_msg.edit_text(
+                "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # PIN verified - export key (key is not PIN-encrypted, so pass empty string)
+        await status_msg.edit_text("🔐 Exporting private key...", parse_mode=ParseMode.HTML)
+        private_key = await wallet_service.export_private_key(user.id, update.effective_user.id, chain_family, "")
 
         if private_key:
             text = f"""
