@@ -27,6 +27,8 @@ from src.db.database import (
     get_all_fee_balances,
     process_withdrawal,
     create_position,
+    get_position_by_id,
+    update_position,
     create_order,
     update_order,
     get_orders_for_pnl,
@@ -646,8 +648,21 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         text += f"  {outcome_str} ({spent_str}) • Entry: {entry} • Now: {current}\n"
         text += f"  {pnl_emoji} P&L: {pnl_str}\n\n"
 
-    # Build pagination buttons
+    # Build buttons - sell button for each position + pagination
     buttons = []
+
+    # Add sell buttons for each position on current page
+    for pos in positions:
+        short_title = pos.market_title[:20] + "..." if len(pos.market_title) > 20 else pos.market_title
+        outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
+        buttons.append([
+            InlineKeyboardButton(
+                f"💰 Sell {outcome_str}: {short_title}",
+                callback_data=f"sell:{pos.id}"
+            )
+        ])
+
+    # Add pagination buttons
     if total_pages > 1:
         nav_buttons = []
         if page > 0:
@@ -1087,6 +1102,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             # Format: orders:page
             page = int(parts[1]) if len(parts) > 1 else 0
             await show_orders(query, update.effective_user.id, page=page, is_callback=True)
+
+        elif action == "sell":
+            # Format: sell:position_id
+            await handle_sell_start(query, parts[1], update.effective_user.id)
+
+        elif action == "sell_confirm":
+            # Format: sell_confirm:position_id:percent
+            await handle_sell_confirm(query, parts[1], parts[2], update.effective_user.id)
 
         elif action == "menu":
             if parts[1] == "main":
@@ -3265,6 +3288,287 @@ Please check your wallet balance and try again.
         logger.error("Trade execution failed", error=str(e))
         await query.edit_message_text(
             f"❌ Trade failed: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_sell_start(query, position_id: str, telegram_id: int) -> None:
+    """Show sell options for a position."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    position = await get_position_by_id(position_id)
+    if not position:
+        await query.edit_message_text("❌ Position not found.")
+        return
+
+    if position.user_id != user.id:
+        await query.edit_message_text("❌ This position doesn't belong to you.")
+        return
+
+    if position.status != PositionStatus.OPEN:
+        await query.edit_message_text("❌ This position is already closed.")
+        return
+
+    platform = get_platform(position.platform)
+    platform_info = PLATFORM_INFO[position.platform]
+
+    # Get current price
+    current_price = None
+    try:
+        market = await platform.get_market(position.market_id)
+        if market:
+            outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
+            if outcome_str == "YES":
+                current_price = market.yes_price
+            else:
+                current_price = market.no_price
+    except Exception:
+        pass
+
+    # Calculate position value
+    token_amount = Decimal(position.token_amount) / Decimal(10**6)
+    entry_price = Decimal(str(position.entry_price)) if position.entry_price else Decimal("0")
+    current_price_dec = Decimal(str(current_price)) if current_price else entry_price
+
+    # Position value = tokens * current price (what you'd get if you sold)
+    position_value = token_amount * current_price_dec
+    cost_basis = token_amount * entry_price
+
+    # P&L
+    if current_price and entry_price:
+        pnl = position_value - cost_basis
+        pnl_pct = ((current_price_dec - entry_price) / entry_price) * 100 if entry_price > 0 else Decimal(0)
+        pnl_str = f"+${pnl:.2f} (+{pnl_pct:.1f}%)" if pnl >= 0 else f"-${abs(pnl):.2f} ({pnl_pct:.1f}%)"
+        pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+    else:
+        pnl_str = "N/A"
+        pnl_emoji = "⚪"
+
+    outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
+    title = escape_html(position.market_title[:50] + "..." if len(position.market_title) > 50 else position.market_title)
+
+    text = f"""
+💰 <b>Sell Position</b>
+
+<b>{title}</b>
+
+Outcome: {outcome_str}
+Tokens: {token_amount:.4f}
+Entry Price: {format_price(entry_price)}
+Current Price: {format_price(current_price_dec)}
+
+💵 <b>Position Value: ~${position_value:.2f}</b>
+{pnl_emoji} P&L: {pnl_str}
+
+Select amount to sell:
+"""
+
+    # Sell amount buttons
+    buttons = [
+        [
+            InlineKeyboardButton("25%", callback_data=f"sell_confirm:{position_id}:25"),
+            InlineKeyboardButton("50%", callback_data=f"sell_confirm:{position_id}:50"),
+        ],
+        [
+            InlineKeyboardButton("75%", callback_data=f"sell_confirm:{position_id}:75"),
+            InlineKeyboardButton("100% (All)", callback_data=f"sell_confirm:{position_id}:100"),
+        ],
+        [InlineKeyboardButton("« Back to Positions", callback_data="positions:0")],
+    ]
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_sell_confirm(query, position_id: str, percent_str: str, telegram_id: int, user_pin: str = "") -> None:
+    """Execute the sell order."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    position = await get_position_by_id(position_id)
+    if not position:
+        await query.edit_message_text("❌ Position not found.")
+        return
+
+    if position.user_id != user.id:
+        await query.edit_message_text("❌ This position doesn't belong to you.")
+        return
+
+    if position.status != PositionStatus.OPEN:
+        await query.edit_message_text("❌ This position is already closed.")
+        return
+
+    try:
+        percent = int(percent_str)
+    except ValueError:
+        await query.edit_message_text("❌ Invalid percentage.")
+        return
+
+    platform = get_platform(position.platform)
+    platform_info = PLATFORM_INFO[position.platform]
+    chain_family = get_chain_family_for_platform(position.platform)
+
+    # Calculate sell amount
+    token_amount = Decimal(position.token_amount) / Decimal(10**6)
+    sell_amount = (token_amount * Decimal(percent)) / Decimal(100)
+
+    outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
+
+    await query.edit_message_text(
+        f"⏳ Executing sell...\n\nSelling {percent}% of {outcome_str} position (~{sell_amount:.4f} tokens)",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Get wallet
+        wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
+        wallet = wallets.get(chain_family)
+
+        if not wallet:
+            await query.edit_message_text("❌ Wallet not found. Please try again.")
+            return
+
+        # Check if PIN protected and get private key
+        is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
+
+        if is_pin_protected and not user_pin:
+            # Need PIN - store context and ask for it
+            from telegram.ext import ContextTypes
+            # We can't easily get context here, so we'll handle PIN in callback routing
+            await query.edit_message_text(
+                "🔐 <b>Enter your PIN to confirm sell</b>\n\n"
+                f"Selling {percent}% of {outcome_str} position\n\n"
+                "Please send your PIN:",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Get private key
+        try:
+            private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family, user_pin)
+        except Exception as decrypt_error:
+            if "Decryption failed" in str(decrypt_error):
+                await query.edit_message_text(
+                    "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect. Please try again.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            raise
+
+        # Get quote for selling
+        from src.db.models import Outcome as OutcomeEnum
+        outcome_enum = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
+
+        quote = await platform.get_quote(
+            market_id=position.market_id,
+            outcome=outcome_enum,
+            side="sell",
+            amount=sell_amount,
+        )
+
+        # Create order record
+        order = await create_order(
+            user_id=user.id,
+            platform=position.platform,
+            chain=quote.chain,
+            market_id=position.market_id,
+            outcome=outcome_str.lower(),
+            side="sell",
+            input_token=quote.input_token,
+            input_amount=str(int(sell_amount * Decimal(10**6))),
+            output_token=quote.output_token,
+            expected_output=str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0",
+            price=float(quote.price_per_token) if quote.price_per_token else None,
+        )
+
+        # Execute trade
+        result = await platform.execute_trade(quote, private_key)
+
+        if result.success:
+            # Update order as confirmed
+            await update_order(
+                order.id,
+                status=OrderStatus.CONFIRMED,
+                tx_hash=result.tx_hash,
+            )
+
+            # Process trading fee
+            fee_result = await process_trade_fee(
+                trader_telegram_id=telegram_id,
+                order_id=order.id,
+                trade_amount_usdc=str(quote.expected_output) if quote.expected_output else "0",
+                platform=position.platform,
+            )
+
+            # Update position
+            remaining_tokens = Decimal(position.token_amount) - int(sell_amount * Decimal(10**6))
+            if remaining_tokens <= 0 or percent == 100:
+                # Position fully closed
+                await update_position(
+                    position_id,
+                    status=PositionStatus.CLOSED,
+                    token_amount="0",
+                )
+            else:
+                # Partial sell - update remaining tokens
+                await update_position(
+                    position_id,
+                    token_amount=str(int(remaining_tokens)),
+                )
+
+            fee_amount = fee_result.get("fee", "0")
+            fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
+            fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
+
+            text = f"""
+✅ <b>Sold Successfully!</b>
+
+Sold {percent}% of {outcome_str} position
+Tokens Sold: ~{sell_amount:.4f}
+Received: ~${quote.expected_output:.2f} USDC{fee_line}
+
+<a href="{result.explorer_url}">View Transaction</a>
+"""
+        else:
+            # Update order as failed
+            await update_order(
+                order.id,
+                status=OrderStatus.FAILED,
+                error_message=result.error_message,
+            )
+
+            text = f"""
+❌ <b>Sell Failed</b>
+
+{escape_html(result.error_message or 'Unknown error')}
+
+Please try again.
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 View Positions", callback_data="positions:0")],
+            [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+            disable_web_page_preview=False,
+        )
+
+    except Exception as e:
+        logger.error("Sell execution failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Sell failed: {escape_html(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 

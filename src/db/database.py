@@ -301,6 +301,15 @@ async def get_user_positions(
         return list(result.scalars().all())
 
 
+async def get_position_by_id(position_id: str) -> Optional[Position]:
+    """Get a position by its ID."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(Position).where(Position.id == position_id)
+        )
+        return result.scalar_one_or_none()
+
+
 async def update_position(
     position_id: str,
     **kwargs,
