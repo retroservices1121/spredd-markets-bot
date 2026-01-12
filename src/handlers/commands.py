@@ -557,7 +557,18 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("Please /start first!")
         return
 
-    positions = await get_user_positions(
+    await show_positions(update.message, update.effective_user.id, page=0, is_callback=False)
+
+
+async def show_positions(target, telegram_id: int, page: int = 0, is_callback: bool = False) -> None:
+    """Show user positions with pagination."""
+    POSITIONS_PER_PAGE = 5
+
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        return
+
+    all_positions = await get_user_positions(
         user_id=user.id,
         platform=user.active_platform,
         status=PositionStatus.OPEN,
@@ -566,18 +577,33 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     platform_info = PLATFORM_INFO[user.active_platform]
     platform = get_platform(user.active_platform)
 
-    if not positions:
-        await update.message.reply_text(
+    if not all_positions:
+        text = (
             f"📊 <b>No Open Positions</b>\n\n"
             f"You don't have any open positions on {platform_info['name']}.\n\n"
-            f"Use /markets or /search to find markets and trade!",
-            parse_mode=ParseMode.HTML,
+            f"Use /markets or /search to find markets and trade!"
         )
+        if is_callback:
+            await target.edit_message_text(text, parse_mode=ParseMode.HTML)
+        else:
+            await target.reply_text(text, parse_mode=ParseMode.HTML)
         return
 
-    text = f"📊 <b>Your {platform_info['name']} Positions</b>\n\n"
+    # Calculate pagination
+    total_positions = len(all_positions)
+    total_pages = (total_positions + POSITIONS_PER_PAGE - 1) // POSITIONS_PER_PAGE
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * POSITIONS_PER_PAGE
+    end_idx = start_idx + POSITIONS_PER_PAGE
+    positions = all_positions[start_idx:end_idx]
 
-    for pos in positions:
+    # Build header with page info
+    if total_pages > 1:
+        text = f"📊 <b>Your {platform_info['name']} Positions</b> (Page {page + 1}/{total_pages})\n\n"
+    else:
+        text = f"📊 <b>Your {platform_info['name']} Positions</b>\n\n"
+
+    for i, pos in enumerate(positions, start=start_idx + 1):
         title = escape_html(pos.market_title[:40] + "..." if len(pos.market_title) > 40 else pos.market_title)
         outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
         entry = format_price(pos.entry_price)
@@ -615,41 +641,88 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             pnl_str = "N/A"
             pnl_emoji = "⚪"
 
-        text += f"<b>{title}</b>\n"
+        text += f"<b>{i}. {title}</b>\n"
         text += f"  {outcome_str} ({spent_str}) • Entry: {entry} • Now: {current}\n"
         text += f"  {pnl_emoji} P&L: {pnl_str}\n\n"
 
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    # Build pagination buttons
+    buttons = []
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("« Prev", callback_data=f"positions:{page - 1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"positions:{page + 1}"))
+        buttons.append(nav_buttons)
+
+    if is_callback:
+        if buttons:
+            await target.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons))
+        else:
+            await target.edit_message_text(text, parse_mode=ParseMode.HTML)
+    else:
+        if buttons:
+            await target.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons))
+        else:
+            await target.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /orders command - show order history."""
     if not update.effective_user or not update.message:
         return
-    
+
     user = await get_user_by_telegram_id(update.effective_user.id)
     if not user:
         await update.message.reply_text("Please /start first!")
         return
-    
-    orders = await get_user_orders(
+
+    await show_orders(update.message, update.effective_user.id, page=0, is_callback=False)
+
+
+async def show_orders(target, telegram_id: int, page: int = 0, is_callback: bool = False) -> None:
+    """Show user orders with pagination."""
+    ORDERS_PER_PAGE = 10
+
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        return
+
+    # Fetch up to 100 orders for pagination
+    all_orders = await get_user_orders(
         user_id=user.id,
         platform=user.active_platform,
-        limit=10,
+        limit=100,
     )
-    
+
     platform_info = PLATFORM_INFO[user.active_platform]
-    
-    if not orders:
-        await update.message.reply_text(
+
+    if not all_orders:
+        text = (
             f"📋 <b>No Order History</b>\n\n"
-            f"You haven't placed any orders on {platform_info['name']} yet.",
-            parse_mode=ParseMode.HTML,
+            f"You haven't placed any orders on {platform_info['name']} yet."
         )
+        if is_callback:
+            await target.edit_message_text(text, parse_mode=ParseMode.HTML)
+        else:
+            await target.reply_text(text, parse_mode=ParseMode.HTML)
         return
-    
-    text = f"📋 <b>Recent Orders on {platform_info['name']}</b>\n\n"
-    
+
+    # Calculate pagination
+    total_orders = len(all_orders)
+    total_pages = (total_orders + ORDERS_PER_PAGE - 1) // ORDERS_PER_PAGE
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * ORDERS_PER_PAGE
+    end_idx = start_idx + ORDERS_PER_PAGE
+    orders = all_orders[start_idx:end_idx]
+
+    # Build header with page info
+    if total_pages > 1:
+        text = f"📋 <b>Orders on {platform_info['name']}</b> (Page {page + 1}/{total_pages})\n\n"
+    else:
+        text = f"📋 <b>Recent Orders on {platform_info['name']}</b>\n\n"
+
     status_emoji = {
         "confirmed": "✅",
         "pending": "⏳",
@@ -657,23 +730,39 @@ async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "failed": "❌",
         "cancelled": "🚫",
     }
-    
-    for order in orders:
+
+    for i, order in enumerate(orders, start=start_idx + 1):
         side = order.side.value.upper()
         outcome = order.outcome.value.upper()
         status = status_emoji.get(order.status.value, "❓")
         amount = format_usd(Decimal(order.input_amount) / Decimal(10**6))
-        
-        text += f"{status} {side} {outcome} • {amount}\n"
+
+        text += f"{i}. {status} {side} {outcome} • {amount}\n"
         if order.tx_hash:
             text += f"   <a href='{get_platform(user.active_platform).get_explorer_url(order.tx_hash)}'>View TX</a>\n"
         text += "\n"
 
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
+    # Build pagination buttons
+    buttons = []
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("« Prev", callback_data=f"orders:{page - 1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"orders:{page + 1}"))
+        buttons.append(nav_buttons)
+
+    if is_callback:
+        if buttons:
+            await target.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+        else:
+            await target.edit_message_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    else:
+        if buttons:
+            await target.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+        else:
+            await target.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -987,7 +1076,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             # Format: category:category_id or category:category_id:page
             page = int(parts[2]) if len(parts) > 2 else 0
             await handle_category_view(query, parts[1], update.effective_user.id, page=page)
-        
+
+        elif action == "positions":
+            # Format: positions:page
+            page = int(parts[1]) if len(parts) > 1 else 0
+            await show_positions(query, update.effective_user.id, page=page, is_callback=True)
+
+        elif action == "orders":
+            # Format: orders:page
+            page = int(parts[1]) if len(parts) > 1 else 0
+            await show_orders(query, update.effective_user.id, page=page, is_callback=True)
+
         elif action == "menu":
             if parts[1] == "main":
                 await handle_main_menu(query, update.effective_user.id)
