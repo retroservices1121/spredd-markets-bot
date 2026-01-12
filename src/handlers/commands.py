@@ -326,12 +326,27 @@ async def wallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     existing_wallets = await get_user_wallets(user.id)
 
     if not existing_wallets:
-        # No wallets - create them immediately without PIN
+        # No wallets - prompt for PIN setup
+        context.user_data["pending_new_wallet"] = True
+
+        text = """
+🔐 <b>Set Up Your Wallet</b>
+
+Welcome! Let's create your secure wallets.
+
+<b>Enter a 4-6 digit PIN to protect key exports:</b>
+<i>(PIN is only needed when exporting keys, not for trading)</i>
+
+Type /cancel to cancel.
+"""
         await update.message.reply_text(
-            "🔄 Creating your wallets...",
+            text,
             parse_mode=ParseMode.HTML,
         )
+        return
 
+    # Existing code for when wallets already exist - kept for reference but unreachable now
+    if False:  # Dead code - keeping structure for potential future use
         try:
             wallets = await wallet_service.get_or_create_wallets(
                 user_id=user.id,
@@ -1151,6 +1166,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await handle_wallet_confirm_create(query, update.effective_user.id, context)
             elif parts[1] == "bridge":
                 await handle_bridge_menu(query, update.effective_user.id, context)
+            elif parts[1] == "setup":
+                await handle_wallet_setup(query, update.effective_user.id, context)
 
         elif action == "bridge":
             # Format: bridge:start:source_chain, bridge:amount:chain:percent, bridge:custom:chain, bridge:speed:chain:mode
@@ -1241,21 +1258,51 @@ async def handle_platform_select(query, platform_value: str, telegram_id: int) -
     except ValueError:
         await query.edit_message_text("Invalid platform selection.")
         return
-    
+
     await update_user_platform(telegram_id, platform)
-    
+
     info = PLATFORM_INFO[platform]
     chain_family = get_chain_family_for_platform(platform)
-    
-    # Get user and ensure wallet exists
+
+    # Get user and check if wallet exists
     user = await get_user_by_telegram_id(telegram_id)
-    if user:
-        wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
-        wallet = wallets.get(chain_family)
-        wallet_addr = wallet.public_key if wallet else "Not created"
-    else:
-        wallet_addr = "Not created"
-    
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Check if user has wallets
+    from src.db.database import get_user_wallets
+    existing_wallets = await get_user_wallets(user.id)
+
+    if not existing_wallets:
+        # No wallets - redirect to wallet setup with PIN
+        text = f"""
+{info['emoji']} <b>{info['name']} Selected!</b>
+
+Before you can trade, you need to set up your wallet.
+
+<b>Use /wallet to create your secure wallets with PIN protection.</b>
+"""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔐 Set Up Wallet", callback_data="wallet:setup")],
+            [InlineKeyboardButton("🔄 Switch Platform", callback_data="menu:platform")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+        return
+
+    # User has wallets - show normal platform selected screen
+    wallet = None
+    for w in existing_wallets:
+        if w.chain_family == chain_family:
+            wallet = w
+            break
+    wallet_addr = wallet.public_key if wallet else "Not created"
+
     text = f"""
 {info['emoji']} <b>{info['name']} Selected!</b>
 
@@ -1267,7 +1314,7 @@ Your {info['chain']} Wallet:
 
 <b>What would you like to do?</b>
 """
-    
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📈 Browse Markets", callback_data="markets:refresh")],
         [InlineKeyboardButton("🔍 Search Markets", callback_data="menu:search")],
@@ -1516,10 +1563,37 @@ async def handle_wallet_refresh(query, telegram_id: int) -> None:
         await query.edit_message_text("Please /start first!")
         return
 
+    # Check if user has wallets
+    from src.db.database import get_user_wallets
+    existing_wallets = await get_user_wallets(user.id)
+
+    if not existing_wallets:
+        # No wallets - redirect to setup
+        text = """
+🔐 <b>Set Up Your Wallet</b>
+
+You haven't created your wallets yet.
+
+<b>Use /wallet to create your secure wallets with PIN protection.</b>
+"""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔐 Set Up Wallet", callback_data="wallet:setup")],
+            [InlineKeyboardButton("« Back", callback_data="menu:main")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+        return
+
     await query.edit_message_text("🔄 Refreshing balances...")
 
-    wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
     balances = await wallet_service.get_all_balances(user.id)
+
+    # Convert existing_wallets list to dict by chain_family
+    wallets = {w.chain_family: w for w in existing_wallets}
 
     solana_wallet = wallets.get(ChainFamily.SOLANA)
     evm_wallet = wallets.get(ChainFamily.EVM)
@@ -4818,6 +4892,110 @@ Trading works without PIN.
         )
 
 
+async def handle_wallet_setup(query: CallbackQuery, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle wallet setup button - prompt for PIN for new users."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Set pending state
+    context.user_data["pending_new_wallet"] = True
+
+    await query.edit_message_text(
+        "🔐 <b>Set Up Your Wallet PIN</b>\n\n"
+        "Please enter a 4-6 digit PIN to protect your private keys.\n\n"
+        "This PIN will be required <b>only when exporting</b> your private keys.\n"
+        "Trading (buy/sell/bridge) works without PIN.\n\n"
+        "Type /cancel to cancel.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def handle_new_wallet_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
+    """Handle new wallet creation with PIN for new users."""
+    if not update.effective_user or not update.message:
+        return
+
+    # Validate PIN format
+    if not pin.isdigit() or len(pin) < 4 or len(pin) > 6:
+        await update.message.reply_text(
+            "❌ PIN must be 4-6 digits. Please try again.\n\n"
+            "Type /cancel to cancel.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        del context.user_data["pending_new_wallet"]
+        await update.message.reply_text("Please /start first!")
+        return
+
+    # Clear pending state
+    del context.user_data["pending_new_wallet"]
+
+    # Delete PIN message for security
+    try:
+        await update.message.delete()
+    except:
+        pass
+
+    # Send status message
+    status_msg = await update.effective_chat.send_message(
+        "🔐 Creating your wallets with export PIN protection...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Create new wallets with export PIN
+        wallets = await wallet_service.get_or_create_wallets(
+            user_id=user.id,
+            telegram_id=update.effective_user.id,
+            user_pin=pin,  # This will hash the PIN for export verification
+        )
+
+        solana_wallet = wallets.get(ChainFamily.SOLANA)
+        evm_wallet = wallets.get(ChainFamily.EVM)
+
+        text = """
+✅ <b>Wallets Created!</b>
+
+<b>🟣 Solana</b> (Kalshi)
+<code>{}</code>
+
+<b>🔷 EVM</b> (Polymarket + Opinion)
+<code>{}</code>
+
+🔐 <b>Export PIN set!</b>
+Your PIN is required only when exporting private keys.
+Trading works without PIN.
+
+<i>Tap address to copy. Send funds to deposit.</i>
+""".format(
+            solana_wallet.public_key if solana_wallet else "Error",
+            evm_wallet.public_key if evm_wallet else "Error",
+        )
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 Browse Markets", callback_data="markets:refresh")],
+            [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+        ])
+
+        await status_msg.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("New wallet with PIN failed", error=str(e))
+        await status_msg.edit_text(
+            f"❌ Failed to create wallets: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 # ===================
 # Message Handler
 # ===================
@@ -4846,6 +5024,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif "pending_wallet_reset" in context.user_data:
             del context.user_data["pending_wallet_reset"]
             await update.message.reply_text("Wallet reset cancelled.")
+        elif "pending_new_wallet" in context.user_data:
+            del context.user_data["pending_new_wallet"]
+            await update.message.reply_text("Wallet setup cancelled.")
         else:
             await update.message.reply_text("Nothing to cancel.")
         return
@@ -4853,6 +5034,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Check if user has a pending wallet reset (PIN setup)
     if "pending_wallet_reset" in context.user_data and not text.startswith("/"):
         await handle_wallet_reset_with_pin(update, context, text)
+        return
+
+    # Check if user has a pending new wallet setup (PIN setup for new users)
+    if "pending_new_wallet" in context.user_data and not text.startswith("/"):
+        await handle_new_wallet_with_pin(update, context, text)
         return
 
     # Check if user has a pending export (PIN required for security)
