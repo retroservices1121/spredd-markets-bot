@@ -157,6 +157,10 @@ class Wallet(Base):
     # PIN is never stored, only used in key derivation
     pin_protected: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Export PIN hash - for verifying PIN during key export
+    # PIN itself is never stored, only the hash for verification
+    export_pin_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

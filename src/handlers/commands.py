@@ -429,7 +429,7 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def resetwallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /resetwallet command - delete existing wallets and create new ones without PIN."""
+    """Handle /resetwallet command - delete existing wallets and create new PIN-protected ones."""
     if not update.effective_user or not update.message:
         return
 
@@ -438,60 +438,32 @@ async def resetwallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Please /start first!")
         return
 
+    # Show warning and prompt for PIN setup
+    text = """
+⚠️ <b>Reset Wallets</b>
+
+This will:
+• <b>Delete your existing wallets</b>
+• <b>Generate new wallet addresses</b>
+• <b>Set up a PIN for key export protection</b>
+
+<b>IMPORTANT:</b>
+• Export your current keys first if needed
+• Transfer any funds to a safe location
+• Your old addresses will no longer work
+
+<b>Enter a 4-6 digit PIN to protect key exports:</b>
+<i>(PIN is only needed when exporting keys, not for trading)</i>
+
+Type /cancel to cancel.
+"""
+    # Store pending reset state
+    context.user_data["pending_wallet_reset"] = True
+
     await update.message.reply_text(
-        "⚠️ <b>Resetting Wallets</b>\n\n"
-        "This will delete your existing wallets and create new ones.\n"
-        "Make sure you have withdrawn all funds first!\n\n"
-        "Deleting old wallets...",
+        text,
         parse_mode=ParseMode.HTML,
     )
-
-    try:
-        # Delete existing wallets
-        from src.db.database import delete_user_wallets
-        await delete_user_wallets(user.id)
-
-        # Create new wallets without PIN
-        wallets = await wallet_service.get_or_create_wallets(
-            user_id=user.id,
-            telegram_id=update.effective_user.id,
-        )
-
-        solana_wallet = wallets.get(ChainFamily.SOLANA)
-        evm_wallet = wallets.get(ChainFamily.EVM)
-
-        text = """
-✅ <b>New Wallets Created!</b>
-
-<b>🟣 Solana</b> (Kalshi)
-<code>{}</code>
-
-<b>🔷 EVM</b> (Polymarket + Opinion)
-<code>{}</code>
-
-<i>Tap address to copy. Send funds to deposit.</i>
-""".format(
-            solana_wallet.public_key if solana_wallet else "Error",
-            evm_wallet.public_key if evm_wallet else "Error",
-        )
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📈 Browse Markets", callback_data="markets:refresh")],
-            [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
-        ])
-
-        await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-        )
-
-    except Exception as e:
-        logger.error("Wallet reset failed", error=str(e))
-        await update.message.reply_text(
-            f"❌ Failed to reset wallets: {escape_html(str(e))}",
-            parse_mode=ParseMode.HTML,
-        )
 
 
 async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2438,11 +2410,11 @@ async def handle_export_key(query, chain_type: str, telegram_id: int, context: C
         await query.edit_message_text("Invalid chain type.")
         return
 
-    # Check if wallet exists and is PIN protected
-    is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
+    # Check if wallet has export PIN set
+    has_pin = await wallet_service.has_export_pin(user.id, chain_family)
 
-    if is_pin_protected:
-        # Store export request and ask for PIN
+    if has_pin:
+        # Has export PIN - prompt for verification
         context.user_data["pending_export"] = {
             "chain_family": chain_type,
         }
@@ -2467,7 +2439,8 @@ Type /cancel to cancel.
             reply_markup=keyboard,
         )
     else:
-        # No PIN protection - export directly (shouldn't normally happen)
+        # No export PIN - allow direct export for legacy wallets
+        # New wallets created via /resetwallet will have export PIN
         try:
             private_key = await wallet_service.export_private_key(user.id, telegram_id, chain_family, "")
             if private_key:
@@ -2480,6 +2453,8 @@ Type /cancel to cancel.
 • Anyone with this key can access your funds
 • Never share this with anyone
 • Store it securely offline
+
+💡 <b>Tip:</b> Use /resetwallet to create a new wallet with PIN protection for exports.
 
 <i>This message should be deleted after copying.</i>
 """
@@ -4507,7 +4482,7 @@ Your wallets are protected with your PIN.
 
 
 async def handle_export_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
-    """Export private key with user's PIN."""
+    """Export private key after verifying user's PIN."""
     if not update.effective_user or not update.message:
         return
 
@@ -4551,22 +4526,30 @@ async def handle_export_with_pin(update: Update, context: ContextTypes.DEFAULT_T
 
     # Send processing message
     status_msg = await update.effective_chat.send_message(
-        "🔐 Decrypting private key...",
+        "🔐 Verifying PIN...",
         parse_mode=ParseMode.HTML,
     )
 
     try:
-        # Get private key with PIN (export returns string, not account object)
-        try:
-            private_key = await wallet_service.export_private_key(user.id, update.effective_user.id, chain_family, pin)
-        except Exception as decrypt_error:
-            if "Decryption failed" in str(decrypt_error):
-                await status_msg.edit_text(
-                    "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect.",
-                    parse_mode=ParseMode.HTML,
-                )
-                return
-            raise
+        # Verify PIN against stored hash
+        stored_hash = await wallet_service.get_export_pin_hash(user.id, chain_family)
+        if not stored_hash:
+            await status_msg.edit_text(
+                "❌ No export PIN set for this wallet.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        if not wallet_service.verify_export_pin(pin, update.effective_user.id, stored_hash):
+            await status_msg.edit_text(
+                "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # PIN verified - export key (key not PIN-encrypted, so pass empty string)
+        await status_msg.edit_text("🔐 Exporting private key...", parse_mode=ParseMode.HTML)
+        private_key = await wallet_service.export_private_key(user.id, update.effective_user.id, chain_family, "")
 
         if private_key:
             text = f"""
@@ -4747,6 +4730,94 @@ To: <code>{user_address}</code>
         )
 
 
+async def handle_wallet_reset_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
+    """Handle wallet reset with PIN for export protection."""
+    if not update.effective_user or not update.message:
+        return
+
+    # Validate PIN format
+    if not pin.isdigit() or len(pin) < 4 or len(pin) > 6:
+        await update.message.reply_text(
+            "❌ PIN must be 4-6 digits. Please try again.\n\n"
+            "Type /cancel to cancel.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        del context.user_data["pending_wallet_reset"]
+        await update.message.reply_text("Please /start first!")
+        return
+
+    # Clear pending state
+    del context.user_data["pending_wallet_reset"]
+
+    # Delete PIN message for security
+    try:
+        await update.message.delete()
+    except:
+        pass
+
+    # Send status message
+    status_msg = await update.effective_chat.send_message(
+        "🔐 Creating new wallets with export PIN protection...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Delete existing wallets
+        from src.db.database import delete_user_wallets
+        await delete_user_wallets(user.id)
+
+        # Create new wallets with export PIN
+        wallets = await wallet_service.get_or_create_wallets(
+            user_id=user.id,
+            telegram_id=update.effective_user.id,
+            user_pin=pin,  # This will hash the PIN for export verification
+        )
+
+        solana_wallet = wallets.get(ChainFamily.SOLANA)
+        evm_wallet = wallets.get(ChainFamily.EVM)
+
+        text = """
+✅ <b>New Wallets Created!</b>
+
+<b>🟣 Solana</b> (Kalshi)
+<code>{}</code>
+
+<b>🔷 EVM</b> (Polymarket + Opinion)
+<code>{}</code>
+
+🔐 <b>Export PIN set!</b>
+Your PIN is required only when exporting private keys.
+Trading works without PIN.
+
+<i>Tap address to copy. Send funds to deposit.</i>
+""".format(
+            solana_wallet.public_key if solana_wallet else "Error",
+            evm_wallet.public_key if evm_wallet else "Error",
+        )
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 Browse Markets", callback_data="markets:refresh")],
+            [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+        ])
+
+        await status_msg.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Wallet reset with PIN failed", error=str(e))
+        await status_msg.edit_text(
+            f"❌ Failed to reset wallets: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 # ===================
 # Message Handler
 # ===================
@@ -4772,8 +4843,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif "pending_bridge" in context.user_data:
             del context.user_data["pending_bridge"]
             await update.message.reply_text("Bridge cancelled.")
+        elif "pending_wallet_reset" in context.user_data:
+            del context.user_data["pending_wallet_reset"]
+            await update.message.reply_text("Wallet reset cancelled.")
         else:
             await update.message.reply_text("Nothing to cancel.")
+        return
+
+    # Check if user has a pending wallet reset (PIN setup)
+    if "pending_wallet_reset" in context.user_data and not text.startswith("/"):
+        await handle_wallet_reset_with_pin(update, context, text)
         return
 
     # Check if user has a pending export (PIN required for security)
