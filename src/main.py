@@ -32,6 +32,7 @@ from src.handlers.commands import (
     platform_command,
     wallet_command,
     balance_command,
+    resetwallet_command,
     markets_command,
     search_command,
     positions_command,
@@ -98,6 +99,7 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("platform", platform_command))
     application.add_handler(CommandHandler("wallet", wallet_command))
     application.add_handler(CommandHandler("balance", balance_command))
+    application.add_handler(CommandHandler("resetwallet", resetwallet_command))
     application.add_handler(CommandHandler("markets", markets_command))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("positions", positions_command))

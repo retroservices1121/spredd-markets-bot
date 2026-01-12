@@ -415,6 +415,72 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await wallet_command(update, context)
 
 
+async def resetwallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /resetwallet command - delete existing wallets and create new ones without PIN."""
+    if not update.effective_user or not update.message:
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        return
+
+    await update.message.reply_text(
+        "⚠️ <b>Resetting Wallets</b>\n\n"
+        "This will delete your existing wallets and create new ones.\n"
+        "Make sure you have withdrawn all funds first!\n\n"
+        "Deleting old wallets...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Delete existing wallets
+        from src.db.database import delete_user_wallets
+        await delete_user_wallets(user.id)
+
+        # Create new wallets without PIN
+        wallets = await wallet_service.get_or_create_wallets(
+            user_id=user.id,
+            telegram_id=update.effective_user.id,
+        )
+
+        solana_wallet = wallets.get(ChainFamily.SOLANA)
+        evm_wallet = wallets.get(ChainFamily.EVM)
+
+        text = """
+✅ <b>New Wallets Created!</b>
+
+<b>🟣 Solana</b> (Kalshi)
+<code>{}</code>
+
+<b>🔷 EVM</b> (Polymarket + Opinion)
+<code>{}</code>
+
+<i>Tap address to copy. Send funds to deposit.</i>
+""".format(
+            solana_wallet.public_key if solana_wallet else "Error",
+            evm_wallet.public_key if evm_wallet else "Error",
+        )
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 Browse Markets", callback_data="markets:refresh")],
+            [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+        ])
+
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Wallet reset failed", error=str(e))
+        await update.message.reply_text(
+            f"❌ Failed to reset wallets: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /markets command - show trending markets with pagination."""
     if not update.effective_user or not update.message:
