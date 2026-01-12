@@ -262,23 +262,31 @@ class KalshiPlatform(BasePlatform):
         query: str,
         limit: int = 10,
     ) -> list[Market]:
-        """Search markets by query."""
+        """Search markets by query with client-side filtering."""
+        # Fetch more markets to filter from (DFlow API doesn't support search param)
         params = {
-            "q": query,
-            "limit": limit,
+            "limit": 100,  # Fetch more to filter from
             "status": "active",
         }
 
         data = await self._metadata_request("GET", "/api/v1/markets", params=params)
 
-        markets = []
+        # Parse all markets first
+        all_markets = []
         for item in data.get("markets", data.get("data", [])):
             try:
-                markets.append(self._parse_market(item))
+                all_markets.append(self._parse_market(item))
             except Exception as e:
                 logger.warning("Failed to parse market", error=str(e))
-        
-        return markets
+
+        # Filter by query (case-insensitive search in title and question)
+        query_lower = query.lower()
+        filtered = [
+            m for m in all_markets
+            if query_lower in m.title.lower() or query_lower in m.question.lower()
+        ]
+
+        return filtered[:limit]
     
     async def get_market(self, market_id: str) -> Optional[Market]:
         """Get a specific market by ticker."""
