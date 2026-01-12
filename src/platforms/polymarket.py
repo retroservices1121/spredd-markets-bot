@@ -1384,32 +1384,37 @@ class PolymarketPlatform(BasePlatform):
             logger.debug("Using cached CLOB client", wallet=wallet[:10])
             return cached
 
-        # Create new client
+        # Set up builder config if credentials are configured
+        builder_config = None
+        if (settings.polymarket_builder_key and
+            settings.polymarket_builder_secret and
+            settings.polymarket_builder_passphrase):
+            try:
+                from py_clob_client.config import BuilderConfig
+                from py_clob_client.clob_types import BuilderApiKeyCreds
+
+                builder_creds = BuilderApiKeyCreds(
+                    key=settings.polymarket_builder_key,
+                    secret=settings.polymarket_builder_secret,
+                    passphrase=settings.polymarket_builder_passphrase,
+                )
+                builder_config = BuilderConfig(local_builder_creds=builder_creds)
+                logger.info("Builder attribution enabled for Polymarket", wallet=wallet[:10])
+            except ImportError as e:
+                logger.warning("Builder config not available in py-clob-client", error=str(e))
+
+        # Create new client with optional builder config
         client = ClobClient(
             settings.polymarket_api_url,
             key=private_key.key.hex(),
             chain_id=137,  # Polygon
             signature_type=0,  # EOA
             funder=private_key.address,  # Required for balance operations
+            builder_config=builder_config,
         )
 
-        # Use builder credentials if configured, otherwise derive from wallet
-        if (settings.polymarket_builder_key and
-            settings.polymarket_builder_secret and
-            settings.polymarket_builder_passphrase):
-            # Use builder credentials for order attribution
-            from py_clob_client.clob_types import ApiCreds
-            creds = ApiCreds(
-                api_key=settings.polymarket_builder_key,
-                api_secret=settings.polymarket_builder_secret,
-                api_passphrase=settings.polymarket_builder_passphrase,
-            )
-            logger.info("Using builder credentials for Polymarket", wallet=wallet[:10])
-        else:
-            # Derive credentials from wallet (no builder attribution)
-            creds = client.create_or_derive_api_creds()
-            logger.debug("Using derived credentials (no builder attribution)", wallet=wallet[:10])
-
+        # Derive API credentials from user's wallet for signing orders
+        creds = client.create_or_derive_api_creds()
         client.set_api_creds(creds)
 
         # Cache the client
