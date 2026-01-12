@@ -29,6 +29,7 @@ from src.handlers.commands import (
     start_command,
     help_command,
     faq_command,
+    support_command,
     platform_command,
     wallet_command,
     balance_command,
@@ -97,6 +98,7 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("faq", faq_command))
+    application.add_handler(CommandHandler("support", support_command))
     application.add_handler(CommandHandler("platform", platform_command))
     application.add_handler(CommandHandler("wallet", wallet_command))
     application.add_handler(CommandHandler("balance", balance_command))
@@ -223,6 +225,7 @@ async def run_bot() -> None:
             BotCommand("referral", "Referral Space & earnings"),
             BotCommand("platform", "Switch trading platform"),
             BotCommand("faq", "Frequently asked questions"),
+            BotCommand("support", "Customer support"),
             BotCommand("help", "Get help & commands"),
         ]
         await app.bot.set_my_commands(commands)

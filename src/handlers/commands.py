@@ -285,6 +285,29 @@ Select a topic to learn more:
     )
 
 
+async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /support command - show customer support options."""
+    if not update.message:
+        return
+
+    text = """
+📞 <b>Customer Support</b>
+
+Need help? Reach out to us:
+"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("DM on X @spreddterminal", url="https://x.com/spreddterminal")],
+        [InlineKeyboardButton("Join Telegram Group", url="https://t.me/spreddmarketsgroup")],
+    ])
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
 async def platform_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /platform command - switch platforms."""
     if not update.effective_user or not update.message:
