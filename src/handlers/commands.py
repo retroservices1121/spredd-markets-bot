@@ -3,6 +3,7 @@ Telegram bot command handlers.
 Handles all user interactions with platform selection and trading.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Optional
