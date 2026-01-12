@@ -1015,17 +1015,25 @@ class PolymarketPlatform(BasePlatform):
         self,
         market_id: str,
         outcome: Outcome,
+        token_id: str = None,
     ) -> OrderBook:
-        """Get order book from CLOB API."""
-        # Need token ID for orderbook
-        market = await self.get_market(market_id)
-        if not market:
-            raise MarketNotFoundError(f"Market {market_id} not found", Platform.POLYMARKET)
-        
-        token_id = market.yes_token if outcome == Outcome.YES else market.no_token
+        """Get order book from CLOB API.
+
+        Args:
+            market_id: The market identifier
+            outcome: YES or NO
+            token_id: Optional token ID to use (for sells with stored position token)
+        """
+        # Use provided token_id if given, otherwise get from market
         if not token_id:
-            raise PlatformError(f"Token not found for {outcome.value}", Platform.POLYMARKET)
-        
+            market = await self.get_market(market_id)
+            if not market:
+                raise MarketNotFoundError(f"Market {market_id} not found", Platform.POLYMARKET)
+
+            token_id = market.yes_token if outcome == Outcome.YES else market.no_token
+            if not token_id:
+                raise PlatformError(f"Token not found for {outcome.value}", Platform.POLYMARKET)
+
         data = await self._clob_request("GET", f"/book?token_id={token_id}")
 
         bids = []
@@ -1065,18 +1073,29 @@ class PolymarketPlatform(BasePlatform):
         outcome: Outcome,
         side: str,
         amount: Decimal,
+        token_id: str = None,
     ) -> Quote:
-        """Get a quote for a trade."""
+        """Get a quote for a trade.
+
+        Args:
+            market_id: The market identifier
+            outcome: YES or NO
+            side: "buy" or "sell"
+            amount: Amount to trade
+            token_id: Optional token ID to use (required for sells to use position's stored token)
+        """
         market = await self.get_market(market_id)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.POLYMARKET)
-        
-        token_id = market.yes_token if outcome == Outcome.YES else market.no_token
+
+        # Use provided token_id for sells (from stored position), otherwise get from market
+        if not token_id:
+            token_id = market.yes_token if outcome == Outcome.YES else market.no_token
         if not token_id:
             raise PlatformError(f"Token not found for {outcome.value}", Platform.POLYMARKET)
-        
-        # Get current price from orderbook
-        orderbook = await self.get_orderbook(market_id, outcome)
+
+        # Get current price from orderbook (pass token_id for sells)
+        orderbook = await self.get_orderbook(market_id, outcome, token_id=token_id)
         
         if side == "buy":
             # Buying - use ask price

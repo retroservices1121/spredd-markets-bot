@@ -3599,6 +3599,7 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
             outcome=outcome_enum,
             side="sell",
             amount=sell_amount,
+            token_id=position.token_id,  # Use stored token_id from position
         )
 
         # Create order record
@@ -4335,6 +4336,7 @@ async def handle_sell_with_pin(update: Update, context: ContextTypes.DEFAULT_TYP
             outcome=outcome_enum,
             side="sell",
             amount=sell_amount,
+            token_id=position.token_id,  # Use stored token_id from position
         )
 
         # Create order record
