@@ -1140,7 +1140,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         elif action == "sell_confirm":
             # Format: sell_confirm:position_id:percent
-            await handle_sell_confirm(query, parts[1], parts[2], update.effective_user.id)
+            await handle_sell_confirm(query, parts[1], parts[2], update.effective_user.id, context)
 
         elif action == "redeem":
             # Format: redeem:position_id
@@ -3421,7 +3421,7 @@ Select amount to sell:
     )
 
 
-async def handle_sell_confirm(query, position_id: str, percent_str: str, telegram_id: int, user_pin: str = "") -> None:
+async def handle_sell_confirm(query, position_id: str, percent_str: str, telegram_id: int, context, user_pin: str = "") -> None:
     """Execute the sell order."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
@@ -3457,6 +3457,24 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
 
     outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
 
+    # Check if PIN protected
+    is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
+
+    if is_pin_protected and not user_pin:
+        # Need PIN - store context and ask for it
+        context.user_data["pending_sell"] = {
+            "position_id": position_id,
+            "percent": percent,
+            "awaiting_pin": True,
+        }
+        await query.edit_message_text(
+            "🔐 <b>Enter your PIN to confirm sell</b>\n\n"
+            f"Selling {percent}% of {outcome_str} position\n\n"
+            "Please send your PIN:",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     await query.edit_message_text(
         f"⏳ Executing sell...\n\nSelling {percent}% of {outcome_str} position (~{sell_amount:.4f} tokens)",
         parse_mode=ParseMode.HTML,
@@ -3469,21 +3487,6 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
 
         if not wallet:
             await query.edit_message_text("❌ Wallet not found. Please try again.")
-            return
-
-        # Check if PIN protected and get private key
-        is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
-
-        if is_pin_protected and not user_pin:
-            # Need PIN - store context and ask for it
-            from telegram.ext import ContextTypes
-            # We can't easily get context here, so we'll handle PIN in callback routing
-            await query.edit_message_text(
-                "🔐 <b>Enter your PIN to confirm sell</b>\n\n"
-                f"Selling {percent}% of {outcome_str} position\n\n"
-                "Please send your PIN:",
-                parse_mode=ParseMode.HTML,
-            )
             return
 
         # Get private key
@@ -4194,6 +4197,198 @@ Please check your wallet balance and try again.
         )
 
 
+async def handle_sell_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
+    """Process sell order with user's PIN."""
+    if not update.effective_user or not update.message:
+        return
+
+    pending = context.user_data.get("pending_sell")
+    if not pending or not pending.get("awaiting_pin"):
+        return
+
+    # Validate PIN format (4-6 digits)
+    if not pin.isdigit() or len(pin) < 4:
+        await update.message.reply_text(
+            "❌ Invalid PIN format. Please enter your 4-6 digit PIN.\n\n"
+            "Type /cancel to cancel.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        del context.user_data["pending_sell"]
+        return
+
+    position_id = pending["position_id"]
+    percent = pending["percent"]
+
+    # Clear pending state
+    del context.user_data["pending_sell"]
+
+    # Delete the PIN message for security
+    try:
+        await update.message.delete()
+    except:
+        pass
+
+    # Get position
+    position = await get_position_by_id(position_id)
+    if not position:
+        await update.effective_chat.send_message("❌ Position not found.")
+        return
+
+    if position.user_id != user.id:
+        await update.effective_chat.send_message("❌ This position doesn't belong to you.")
+        return
+
+    if position.status != PositionStatus.OPEN:
+        await update.effective_chat.send_message("❌ This position is already closed.")
+        return
+
+    platform = get_platform(position.platform)
+    platform_info = PLATFORM_INFO[position.platform]
+    chain_family = get_chain_family_for_platform(position.platform)
+
+    # Calculate sell amount
+    token_amount = Decimal(position.token_amount) / Decimal(10**6)
+    sell_amount = (token_amount * Decimal(percent)) / Decimal(100)
+    outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
+
+    # Send executing message
+    executing_msg = await update.effective_chat.send_message(
+        f"⏳ Executing sell...\n\nSelling {percent}% of {outcome_str} position (~{sell_amount:.4f} tokens)",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Get private key with PIN
+        try:
+            private_key = await wallet_service.get_private_key(user.id, update.effective_user.id, chain_family, pin)
+        except Exception as decrypt_error:
+            if "Decryption failed" in str(decrypt_error):
+                await executing_msg.edit_text(
+                    "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            raise
+
+        if not private_key:
+            await executing_msg.edit_text("❌ Wallet not found.")
+            return
+
+        # Get quote for selling
+        from src.db.models import Outcome as OutcomeEnum
+        outcome_enum = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
+
+        quote = await platform.get_quote(
+            market_id=position.market_id,
+            outcome=outcome_enum,
+            side="sell",
+            amount=sell_amount,
+        )
+
+        # Create order record
+        order = await create_order(
+            user_id=user.id,
+            platform=position.platform,
+            chain=quote.chain,
+            market_id=position.market_id,
+            outcome=outcome_str.lower(),
+            side="sell",
+            input_token=quote.input_token,
+            input_amount=str(int(sell_amount * Decimal(10**6))),
+            output_token=quote.output_token,
+            expected_output=str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0",
+            price=float(quote.price_per_token) if quote.price_per_token else None,
+        )
+
+        # Execute trade
+        result = await platform.execute_trade(quote, private_key)
+
+        if result.success:
+            # Update order as confirmed
+            await update_order(
+                order.id,
+                status=OrderStatus.CONFIRMED,
+                tx_hash=result.tx_hash,
+            )
+
+            # Process trading fee
+            fee_result = await process_trade_fee(
+                trader_telegram_id=update.effective_user.id,
+                order_id=order.id,
+                trade_amount_usdc=str(quote.expected_output) if quote.expected_output else "0",
+                platform=position.platform,
+            )
+
+            # Update position
+            remaining_tokens = Decimal(position.token_amount) - int(sell_amount * Decimal(10**6))
+            if remaining_tokens <= 0 or percent == 100:
+                # Position fully closed
+                await update_position(
+                    position_id,
+                    status=PositionStatus.CLOSED,
+                    token_amount="0",
+                )
+            else:
+                # Partial sell - update remaining tokens
+                await update_position(
+                    position_id,
+                    token_amount=str(int(remaining_tokens)),
+                )
+
+            fee_amount = fee_result.get("fee", "0")
+            fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
+            fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
+
+            text = f"""
+✅ <b>Sold Successfully!</b>
+
+Sold {percent}% of {outcome_str} position
+Tokens Sold: ~{sell_amount:.4f}
+Received: ~{quote.expected_output:.2f} {platform_info['collateral']}{fee_line}
+
+<a href="{result.explorer_url}">View Transaction</a>
+"""
+        else:
+            # Update order as failed
+            await update_order(
+                order.id,
+                status=OrderStatus.FAILED,
+                error_message=result.error_message,
+            )
+
+            text = f"""
+❌ <b>Sell Failed</b>
+
+{escape_html(result.error_message or 'Unknown error')}
+
+Please try again later.
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 View Positions", callback_data="positions:0")],
+            [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+        ])
+
+        await executing_msg.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+            disable_web_page_preview=False,
+        )
+
+    except Exception as e:
+        logger.error("Sell with PIN failed", error=str(e))
+        await executing_msg.edit_text(
+            f"❌ Sell failed: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def handle_wallet_pin_setup(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
     """Handle PIN setup for new wallet."""
     if not update.effective_user or not update.message:
@@ -4571,6 +4766,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if "pending_buy" in context.user_data:
             del context.user_data["pending_buy"]
             await update.message.reply_text("Order cancelled.")
+        elif "pending_sell" in context.user_data:
+            del context.user_data["pending_sell"]
+            await update.message.reply_text("Sell cancelled.")
         elif "pending_balance_check" in context.user_data:
             del context.user_data["pending_balance_check"]
             await update.message.reply_text("Balance check cancelled.")
@@ -4631,6 +4829,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Otherwise, process amount input
         await handle_buy_amount(update, context, text)
         return
+
+    # Check if user has a pending sell order awaiting PIN
+    if "pending_sell" in context.user_data and not text.startswith("/"):
+        pending = context.user_data["pending_sell"]
+
+        # If awaiting PIN, process PIN input
+        if pending.get("awaiting_pin"):
+            await handle_sell_with_pin(update, context, text)
+            return
 
     # Check if it's a search query (doesn't start with /)
     if not text.startswith("/"):
