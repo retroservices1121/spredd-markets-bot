@@ -881,9 +881,11 @@ class BridgeService:
 
                     logger.info("Building tx", to=to_address, value=value, data_len=len(data) if data else 0)
 
-                    # Build transaction
+                    # Build transaction - use higher gas multiplier to avoid underpriced errors
                     nonce = source_w3.eth.get_transaction_count(wallet, 'pending')
-                    gas_price = int(source_w3.eth.gas_price * 1.5)
+                    base_gas_price = source_w3.eth.gas_price
+                    gas_price = int(base_gas_price * 2.0)  # 2x base gas price
+                    logger.info("Transaction params", nonce=nonce, base_gas=base_gas_price, gas_price=gas_price)
 
                     tx = {
                         "from": wallet,
@@ -910,8 +912,30 @@ class BridgeService:
 
                     # Sign and send
                     signed_tx = source_w3.eth.account.sign_transaction(tx, private_key.key)
-                    tx_hash = source_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-                    tx_hash_hex = tx_hash.hex()
+                    try:
+                        tx_hash = source_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+                        tx_hash_hex = tx_hash.hex()
+                    except Exception as send_error:
+                        error_str = str(send_error)
+                        logger.error("Failed to send transaction", error=error_str, nonce=nonce, gas_price=gas_price)
+                        # Check for specific errors
+                        if "underpriced" in error_str.lower() or "replacement" in error_str.lower():
+                            return BridgeResult(
+                                success=False,
+                                source_chain=source_chain,
+                                dest_chain=dest_chain,
+                                amount=amount,
+                                error_message="Transaction failed: You have a pending transaction. Please wait a few minutes and try again."
+                            )
+                        elif "nonce too low" in error_str.lower():
+                            return BridgeResult(
+                                success=False,
+                                source_chain=source_chain,
+                                dest_chain=dest_chain,
+                                amount=amount,
+                                error_message="Transaction failed: Nonce conflict. Please try again."
+                            )
+                        raise
 
                     logger.info(f"Fast bridge tx sent", step=step.get("id"), tx_hash=tx_hash_hex)
 
