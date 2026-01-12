@@ -123,8 +123,9 @@ def format_expiration(close_time: Optional[str]) -> str:
             minutes = diff.seconds // 60
             return f"{minutes}m"
     except Exception:
-        # Fallback: return the raw string truncated
-        return close_time[:20] if len(close_time) > 20 else close_time
+        # Fallback: convert to string and truncate
+        close_str = str(close_time)
+        return close_str[:20] if len(close_str) > 20 else close_str
 
 
 def platform_keyboard() -> InlineKeyboardMarkup:
