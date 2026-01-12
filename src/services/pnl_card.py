@@ -65,6 +65,25 @@ class PnLCardGenerator:
     def __init__(self, assets_path: Path):
         self.assets_path = assets_path
         self.logo = self._load_logo()
+        self.custom_bg = self._load_custom_background()
+
+    def _load_custom_background(self) -> Optional[Image.Image]:
+        """Load custom background image if it exists."""
+        bg_path = self.assets_path / "pnl_card_bg.png"
+        if not bg_path.exists():
+            bg_path = self.assets_path / "pnl_card_bg.jpg"
+
+        if bg_path.exists():
+            try:
+                bg = Image.open(bg_path).convert("RGBA")
+                # Resize to card dimensions if needed
+                if bg.size != (self.CARD_WIDTH, self.CARD_HEIGHT):
+                    bg = bg.resize((self.CARD_WIDTH, self.CARD_HEIGHT), Image.Resampling.LANCZOS)
+                logger.info("Loaded custom background", path=str(bg_path))
+                return bg
+            except Exception as e:
+                logger.warning("Failed to load custom background", error=str(e))
+        return None
 
     def _load_logo(self) -> Optional[Image.Image]:
         """Load the Spredd logo."""
@@ -162,63 +181,71 @@ class PnLCardGenerator:
         """Generate a premium PnL card image and return as BytesIO."""
         theme = self.THEME
 
-        # Create base image
-        img = Image.new("RGBA", (self.CARD_WIDTH, self.CARD_HEIGHT), theme["background"])
-        draw = ImageDraw.Draw(img)
+        # Use custom background if available, otherwise generate default
+        if self.custom_bg:
+            img = self.custom_bg.copy()
+            draw = ImageDraw.Draw(img)
+            using_custom_bg = True
+        else:
+            # Create base image with default design
+            img = Image.new("RGBA", (self.CARD_WIDTH, self.CARD_HEIGHT), theme["background"])
+            draw = ImageDraw.Draw(img)
+            using_custom_bg = False
 
-        # Draw subtle gradient overlay (darker at edges)
-        for i in range(self.CARD_HEIGHT):
-            alpha = int(20 * (1 - abs(i - self.CARD_HEIGHT / 2) / (self.CARD_HEIGHT / 2)))
-            draw.line([(0, i), (self.CARD_WIDTH, i)], fill=(*theme["card_bg"], alpha))
+            # Draw subtle gradient overlay (darker at edges)
+            for i in range(self.CARD_HEIGHT):
+                alpha = int(20 * (1 - abs(i - self.CARD_HEIGHT / 2) / (self.CARD_HEIGHT / 2)))
+                draw.line([(0, i), (self.CARD_WIDTH, i)], fill=(*theme["card_bg"], alpha))
 
-        # Draw main card area with subtle border
-        card_margin = 20
-        self._draw_rounded_rect(
-            draw,
-            (card_margin, card_margin, self.CARD_WIDTH - card_margin, self.CARD_HEIGHT - card_margin),
-            radius=16,
-            fill=theme["card_bg"],
-            outline=theme["stat_box_border"],
-            outline_width=1,
-        )
+            # Draw main card area with subtle border
+            card_margin = 20
+            self._draw_rounded_rect(
+                draw,
+                (card_margin, card_margin, self.CARD_WIDTH - card_margin, self.CARD_HEIGHT - card_margin),
+                radius=16,
+                fill=theme["card_bg"],
+                outline=theme["stat_box_border"],
+                outline_width=1,
+            )
 
-        # Draw orange accent line at top of card
-        accent_y = card_margin
-        draw.rounded_rectangle(
-            (card_margin, accent_y, self.CARD_WIDTH - card_margin, accent_y + 4),
-            radius=2,
-            fill=theme["accent"],
-        )
+            # Draw orange accent line at top of card
+            accent_y = card_margin
+            draw.rounded_rectangle(
+                (card_margin, accent_y, self.CARD_WIDTH - card_margin, accent_y + 4),
+                radius=2,
+                fill=theme["accent"],
+            )
 
-        # Draw logo in top-left (larger)
-        logo_x = 45
-        logo_y = 40
-        if self.logo:
-            img.paste(self.logo, (logo_x, logo_y), self.logo if self.logo.mode == "RGBA" else None)
+        # Draw logo and badge only if not using custom background
+        if not using_custom_bg:
+            logo_x = 45
+            logo_y = 40
+            if self.logo:
+                img.paste(self.logo, (logo_x, logo_y), self.logo if self.logo.mode == "RGBA" else None)
 
-        # Draw "ALL-TIME" badge in top-right
-        badge_font = self._get_font(12, bold=True)
-        badge_text = "ALL-TIME"
-        badge_bbox = badge_font.getbbox(badge_text)
-        badge_width = badge_bbox[2] - badge_bbox[0] + 20
-        badge_height = 24
-        badge_x = self.CARD_WIDTH - card_margin - badge_width - 25
-        badge_y = 45
+            # Draw "ALL-TIME" badge in top-right
+            badge_font = self._get_font(12, bold=True)
+            badge_text = "ALL-TIME"
+            badge_bbox = badge_font.getbbox(badge_text)
+            badge_width = badge_bbox[2] - badge_bbox[0] + 20
+            badge_height = 24
+            badge_x = self.CARD_WIDTH - 20 - badge_width - 25
+            badge_y = 45
 
-        self._draw_rounded_rect(
-            draw,
-            (badge_x, badge_y, badge_x + badge_width, badge_y + badge_height),
-            radius=4,
-            fill=theme["stat_box"],
-            outline=theme["stat_box_border"],
-        )
-        draw.text(
-            (badge_x + badge_width // 2, badge_y + badge_height // 2),
-            badge_text,
-            font=badge_font,
-            fill=theme["muted"],
-            anchor="mm",
-        )
+            self._draw_rounded_rect(
+                draw,
+                (badge_x, badge_y, badge_x + badge_width, badge_y + badge_height),
+                radius=4,
+                fill=theme["stat_box"],
+                outline=theme["stat_box_border"],
+            )
+            draw.text(
+                (badge_x + badge_width // 2, badge_y + badge_height // 2),
+                badge_text,
+                font=badge_font,
+                fill=theme["muted"],
+                anchor="mm",
+            )
 
         # Draw platform name (large, centered)
         platform_font = self._get_font(36, bold=True)
@@ -270,7 +297,7 @@ class PnLCardGenerator:
             anchor="mm",
         )
 
-        # Stats boxes
+        # Stats boxes - only draw boxes if not using custom background
         box_width = 160
         box_height = 80
         box_y = 320
@@ -278,14 +305,15 @@ class PnLCardGenerator:
         total_boxes_width = box_width * 2 + box_spacing
         box1_x = (self.CARD_WIDTH - total_boxes_width) // 2
 
-        # Trade count box
-        self._draw_rounded_rect(
-            draw,
-            (box1_x, box_y, box1_x + box_width, box_y + box_height),
-            radius=12,
-            fill=theme["stat_box"],
-            outline=theme["stat_box_border"],
-        )
+        if not using_custom_bg:
+            # Trade count box
+            self._draw_rounded_rect(
+                draw,
+                (box1_x, box_y, box1_x + box_width, box_y + box_height),
+                radius=12,
+                fill=theme["stat_box"],
+                outline=theme["stat_box_border"],
+            )
 
         stat_label_font = self._get_font(12, bold=False)
         stat_value_font = self._get_font(28, bold=True)
@@ -307,13 +335,14 @@ class PnLCardGenerator:
 
         # ROI box
         box2_x = box1_x + box_width + box_spacing
-        self._draw_rounded_rect(
-            draw,
-            (box2_x, box_y, box2_x + box_width, box_y + box_height),
-            radius=12,
-            fill=theme["stat_box"],
-            outline=theme["stat_box_border"],
-        )
+        if not using_custom_bg:
+            self._draw_rounded_rect(
+                draw,
+                (box2_x, box_y, box2_x + box_width, box_y + box_height),
+                radius=12,
+                fill=theme["stat_box"],
+                outline=theme["stat_box_border"],
+            )
 
         roi_value = stats.roi_percent
         roi_sign = "+" if roi_value >= 0 else ""
@@ -334,15 +363,16 @@ class PnLCardGenerator:
             anchor="mm",
         )
 
-        # Footer with URL and subtle styling
-        footer_font = self._get_font(14, bold=False)
-        draw.text(
-            (self.CARD_WIDTH // 2, self.CARD_HEIGHT - 45),
-            "spredd.markets",
-            font=footer_font,
-            fill=theme["muted"],
-            anchor="mm",
-        )
+        # Footer - only if not using custom background
+        if not using_custom_bg:
+            footer_font = self._get_font(14, bold=False)
+            draw.text(
+                (self.CARD_WIDTH // 2, self.CARD_HEIGHT - 45),
+                "spredd.markets",
+                font=footer_font,
+                fill=theme["muted"],
+                anchor="mm",
+            )
 
         # Convert to RGB for PNG save (remove alpha)
         img_rgb = Image.new("RGB", img.size, theme["background"])

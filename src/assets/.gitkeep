@@ -1,1 +1,13 @@
-# Place spredd_logo.png here (recommended: 200x200px transparent PNG)
+# Spredd Bot Assets
+#
+# Place your assets here:
+#
+# spredd_logo.png - Logo shown on default PnL cards (recommended: 200x200px transparent PNG)
+#
+# pnl_card_bg.png - Custom PnL card background (800x500px)
+#   If provided, this image will be used as the background instead of the default design.
+#   The stats (platform name, P&L, trades, ROI) will be overlaid on top.
+#   Design your background with space for:
+#     - Platform name at y=130 (centered)
+#     - P&L value at y=230 (centered)
+#     - Stats boxes at y=320-400 (centered, ~350px wide)
