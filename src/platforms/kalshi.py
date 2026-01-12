@@ -823,11 +823,12 @@ class KalshiPlatform(BasePlatform):
                 await self.initialize()
 
             from solders.pubkey import Pubkey
+            from solana.rpc.types import TokenAccountOpts
 
             # Query token accounts for this specific mint
             response = await self._solana_client.get_token_accounts_by_owner_json_parsed(
                 Pubkey.from_string(wallet_pubkey),
-                {"mint": Pubkey.from_string(token_mint)},
+                TokenAccountOpts(mint=Pubkey.from_string(token_mint)),
             )
 
             if response.value:
