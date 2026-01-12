@@ -28,6 +28,8 @@ from src.platforms.base import (
     PlatformError,
     MarketNotFoundError,
     RateLimitError,
+    RedemptionResult,
+    MarketResolution,
 )
 from src.utils.logging import get_logger
 
@@ -581,6 +583,222 @@ class KalshiPlatform(BasePlatform):
                 tx_hash=None,
                 input_amount=quote.input_amount,
                 output_amount=None,
+                error_message=str(e),
+                explorer_url=None,
+            )
+
+    async def get_market_resolution(self, market_id: str) -> MarketResolution:
+        """
+        Check if a Kalshi market has resolved and what the outcome is.
+
+        Uses the DFlow metadata API to check market status.
+        """
+        try:
+            market = await self.get_market(market_id)
+            if not market or not market.raw_data:
+                return MarketResolution(
+                    is_resolved=False,
+                    winning_outcome=None,
+                    resolution_time=None,
+                )
+
+            # Check status from market data
+            status = market.raw_data.get("status", "")
+            result = market.raw_data.get("result")
+
+            # Kalshi uses "settled" or "finalized" for resolved markets
+            is_resolved = status.lower() in ["settled", "finalized", "closed"]
+
+            if not is_resolved:
+                return MarketResolution(
+                    is_resolved=False,
+                    winning_outcome=None,
+                    resolution_time=None,
+                )
+
+            # Determine winning outcome from result
+            winning_outcome = None
+            if result:
+                result_lower = str(result).lower()
+                if result_lower in ["yes", "1", "true"]:
+                    winning_outcome = "yes"
+                elif result_lower in ["no", "0", "false"]:
+                    winning_outcome = "no"
+
+            return MarketResolution(
+                is_resolved=True,
+                winning_outcome=winning_outcome,
+                resolution_time=market.raw_data.get("settledAt") or market.raw_data.get("close_time"),
+            )
+
+        except Exception as e:
+            logger.error("Failed to check market resolution", error=str(e), market_id=market_id)
+            return MarketResolution(
+                is_resolved=False,
+                winning_outcome=None,
+                resolution_time=None,
+            )
+
+    async def redeem_position(
+        self,
+        market_id: str,
+        outcome: Outcome,
+        token_amount: Decimal,
+        private_key: Any,
+    ) -> RedemptionResult:
+        """
+        Redeem winning tokens from a resolved Kalshi market via DFlow.
+
+        Uses the DFlow /redeem endpoint to claim winnings.
+        """
+        if not isinstance(private_key, Keypair):
+            return RedemptionResult(
+                success=False,
+                tx_hash=None,
+                amount_redeemed=None,
+                error_message="Invalid private key type, expected Solana Keypair",
+                explorer_url=None,
+            )
+
+        try:
+            # Check if market is resolved
+            resolution = await self.get_market_resolution(market_id)
+            if not resolution.is_resolved:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Market has not resolved yet",
+                    explorer_url=None,
+                )
+
+            # Check if user holds winning outcome
+            if resolution.winning_outcome and resolution.winning_outcome.lower() != outcome.value.lower():
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message=f"Your {outcome.value.upper()} tokens lost. The market resolved to {resolution.winning_outcome.upper()}.",
+                    explorer_url=None,
+                )
+
+            # Get market to find token address
+            market = await self.get_market(market_id)
+            if not market:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Market not found",
+                    explorer_url=None,
+                )
+
+            # Get the outcome token address
+            token_mint = market.yes_token if outcome == Outcome.YES else market.no_token
+            if not token_mint:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Token address not found",
+                    explorer_url=None,
+                )
+
+            # Call DFlow /redeem endpoint
+            amount_raw = int(token_amount * Decimal(10**self.collateral_decimals))
+
+            params = {
+                "tokenMint": token_mint,
+                "amount": str(amount_raw),
+                "userPublicKey": str(private_key.pubkey()),
+            }
+
+            try:
+                response = await self._trading_request("GET", "/redeem", params=params)
+            except PlatformError as e:
+                # If /redeem endpoint doesn't exist, try selling at $1
+                if "not found" in str(e).lower() or "404" in str(e):
+                    logger.warning("DFlow /redeem endpoint not available, attempting sell instead")
+                    # For resolved markets, winning tokens are worth $1
+                    # Try to sell them back
+                    quote = await self.get_quote(
+                        market_id=market_id,
+                        outcome=outcome,
+                        side="sell",
+                        amount=token_amount,
+                    )
+                    result = await self.execute_trade(quote, private_key)
+                    return RedemptionResult(
+                        success=result.success,
+                        tx_hash=result.tx_hash,
+                        amount_redeemed=result.output_amount,
+                        error_message=result.error_message,
+                        explorer_url=result.explorer_url,
+                    )
+                raise
+
+            # Get and sign the redemption transaction
+            tx_data = response.get("transaction")
+            if not tx_data:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="No transaction returned from API",
+                    explorer_url=None,
+                )
+
+            # Decode and sign transaction
+            tx_bytes = base64.b64decode(tx_data)
+            tx = VersionedTransaction.from_bytes(tx_bytes)
+
+            # Sign the transaction
+            tx.sign([private_key])
+
+            # Send transaction
+            result = await self._solana_client.send_transaction(
+                tx,
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed),
+            )
+
+            tx_hash = str(result.value)
+
+            logger.info(
+                "Redemption transaction sent",
+                tx_hash=tx_hash,
+                market_id=market_id,
+                outcome=outcome.value,
+            )
+
+            # Confirm transaction
+            await self._solana_client.confirm_transaction(
+                result.value,
+                commitment=Confirmed,
+            )
+
+            # Calculate redeemed amount (winning tokens worth $1)
+            amount_redeemed = token_amount
+
+            logger.info(
+                "Redemption confirmed",
+                tx_hash=tx_hash,
+                amount_redeemed=str(amount_redeemed),
+            )
+
+            return RedemptionResult(
+                success=True,
+                tx_hash=tx_hash,
+                amount_redeemed=amount_redeemed,
+                error_message=None,
+                explorer_url=self.get_explorer_url(tx_hash),
+            )
+
+        except Exception as e:
+            logger.error("Redemption failed", error=str(e), market_id=market_id)
+            return RedemptionResult(
+                success=False,
+                tx_hash=None,
+                amount_redeemed=None,
                 error_message=str(e),
                 explorer_url=None,
             )

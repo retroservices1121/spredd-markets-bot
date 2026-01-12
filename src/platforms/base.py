@@ -99,19 +99,45 @@ class Quote:
 class TradeResult:
     """Result of an executed trade."""
     success: bool
-    
+
     # Transaction
     tx_hash: Optional[str]
-    
+
     # Amounts
     input_amount: Decimal
     output_amount: Optional[Decimal]
-    
+
     # Error
     error_message: Optional[str]
-    
+
     # Block explorer link
     explorer_url: Optional[str]
+
+
+@dataclass
+class RedemptionResult:
+    """Result of redeeming a resolved position."""
+    success: bool
+
+    # Transaction
+    tx_hash: Optional[str]
+
+    # Amount redeemed in collateral (USDC)
+    amount_redeemed: Optional[Decimal]
+
+    # Error
+    error_message: Optional[str]
+
+    # Block explorer link
+    explorer_url: Optional[str]
+
+
+@dataclass
+class MarketResolution:
+    """Market resolution status and outcome."""
+    is_resolved: bool
+    winning_outcome: Optional[str]  # "yes", "no", or None if not resolved
+    resolution_time: Optional[str]
 
 
 @dataclass
@@ -285,7 +311,56 @@ class BasePlatform(ABC):
             TradeResult with transaction hash
         """
         pass
-    
+
+    # ===================
+    # Redemption
+    # ===================
+
+    async def get_market_resolution(self, market_id: str) -> MarketResolution:
+        """
+        Check if a market has resolved and what the outcome is.
+
+        Args:
+            market_id: Market identifier
+
+        Returns:
+            MarketResolution with resolution status and winning outcome
+        """
+        # Default implementation - subclasses should override
+        return MarketResolution(
+            is_resolved=False,
+            winning_outcome=None,
+            resolution_time=None,
+        )
+
+    async def redeem_position(
+        self,
+        market_id: str,
+        outcome: Outcome,
+        token_amount: Decimal,
+        private_key: Any,
+    ) -> RedemptionResult:
+        """
+        Redeem winning tokens from a resolved market.
+
+        Args:
+            market_id: Market identifier
+            outcome: The outcome tokens to redeem (YES or NO)
+            token_amount: Amount of tokens to redeem
+            private_key: User's private key for signing
+
+        Returns:
+            RedemptionResult with transaction hash and amount redeemed
+        """
+        # Default implementation - subclasses should override
+        return RedemptionResult(
+            success=False,
+            tx_hash=None,
+            amount_redeemed=None,
+            error_message="Redemption not supported on this platform",
+            explorer_url=None,
+        )
+
     # ===================
     # Utilities
     # ===================

@@ -23,6 +23,8 @@ from src.platforms.base import (
     PlatformError,
     MarketNotFoundError,
     RateLimitError,
+    RedemptionResult,
+    MarketResolution,
 )
 from src.utils.logging import get_logger
 
@@ -113,6 +115,49 @@ ERC20_APPROVE_ABI = [
             {"name": "_spender", "type": "address"}
         ],
         "name": "allowance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    }
+]
+
+# CTF (Conditional Token Framework) ABI for redemption
+CTF_ABI = [
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "index", "type": "uint256"}
+        ],
+        "name": "payoutNumerators",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [{"name": "conditionId", "type": "bytes32"}],
+        "name": "payoutDenominator",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "collateralToken", "type": "address"},
+            {"name": "parentCollectionId", "type": "bytes32"},
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "indexSets", "type": "uint256[]"}
+        ],
+        "name": "redeemPositions",
+        "outputs": [],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "account", "type": "address"},
+            {"name": "id", "type": "uint256"}
+        ],
+        "name": "balanceOf",
         "outputs": [{"name": "", "type": "uint256"}],
         "type": "function"
     }
@@ -1436,6 +1481,261 @@ class PolymarketPlatform(BasePlatform):
                 tx_hash=None,
                 input_amount=quote.input_amount,
                 output_amount=None,
+                error_message=str(e),
+                explorer_url=None,
+            )
+
+    async def get_market_resolution(self, market_id: str) -> MarketResolution:
+        """
+        Check if a Polymarket market has resolved and what the outcome is.
+
+        Uses the CTF contract to check payoutNumerators.
+        """
+        try:
+            if not self._sync_web3:
+                return MarketResolution(
+                    is_resolved=False,
+                    winning_outcome=None,
+                    resolution_time=None,
+                )
+
+            # Get condition ID - market_id might be truncated
+            market = await self.get_market(market_id)
+            if not market or not market.raw_data:
+                return MarketResolution(
+                    is_resolved=False,
+                    winning_outcome=None,
+                    resolution_time=None,
+                )
+
+            # Get the full condition ID from market data
+            condition_id = market.raw_data.get("conditionId")
+            if not condition_id:
+                return MarketResolution(
+                    is_resolved=False,
+                    winning_outcome=None,
+                    resolution_time=None,
+                )
+
+            # Check if market is closed/resolved from API data
+            closed = market.raw_data.get("closed", False)
+            resolved = market.raw_data.get("resolved", False)
+
+            if not closed and not resolved:
+                return MarketResolution(
+                    is_resolved=False,
+                    winning_outcome=None,
+                    resolution_time=None,
+                )
+
+            # Get resolution from raw_data if available
+            resolution_data = market.raw_data.get("resolution")
+            if resolution_data:
+                winning = "yes" if resolution_data == "Yes" else "no" if resolution_data == "No" else None
+                return MarketResolution(
+                    is_resolved=True,
+                    winning_outcome=winning,
+                    resolution_time=market.raw_data.get("resolutionTime"),
+                )
+
+            # Otherwise check CTF contract for payout numerators
+            ctf_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"]),
+                abi=CTF_ABI,
+            )
+
+            # Convert condition ID to bytes32
+            if condition_id.startswith("0x"):
+                condition_bytes = bytes.fromhex(condition_id[2:])
+            else:
+                condition_bytes = bytes.fromhex(condition_id)
+
+            # Check payout denominator (if 0, not resolved)
+            payout_denom = ctf_contract.functions.payoutDenominator(condition_bytes).call()
+            if payout_denom == 0:
+                return MarketResolution(
+                    is_resolved=False,
+                    winning_outcome=None,
+                    resolution_time=None,
+                )
+
+            # Check payout numerators for each outcome (0 = YES, 1 = NO)
+            yes_payout = ctf_contract.functions.payoutNumerators(condition_bytes, 0).call()
+            no_payout = ctf_contract.functions.payoutNumerators(condition_bytes, 1).call()
+
+            winning_outcome = None
+            if yes_payout > 0 and no_payout == 0:
+                winning_outcome = "yes"
+            elif no_payout > 0 and yes_payout == 0:
+                winning_outcome = "no"
+
+            return MarketResolution(
+                is_resolved=True,
+                winning_outcome=winning_outcome,
+                resolution_time=None,
+            )
+
+        except Exception as e:
+            logger.error("Failed to check market resolution", error=str(e), market_id=market_id)
+            return MarketResolution(
+                is_resolved=False,
+                winning_outcome=None,
+                resolution_time=None,
+            )
+
+    async def redeem_position(
+        self,
+        market_id: str,
+        outcome: Outcome,
+        token_amount: Decimal,
+        private_key: Any,
+    ) -> RedemptionResult:
+        """
+        Redeem winning tokens from a resolved Polymarket market.
+
+        Calls redeemPositions on the CTF contract.
+        """
+        if not isinstance(private_key, LocalAccount):
+            return RedemptionResult(
+                success=False,
+                tx_hash=None,
+                amount_redeemed=None,
+                error_message="Invalid private key type, expected EVM LocalAccount",
+                explorer_url=None,
+            )
+
+        try:
+            if not self._sync_web3:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Web3 not initialized",
+                    explorer_url=None,
+                )
+
+            # Get market to find condition ID
+            market = await self.get_market(market_id)
+            if not market or not market.raw_data:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Market not found",
+                    explorer_url=None,
+                )
+
+            condition_id = market.raw_data.get("conditionId")
+            if not condition_id:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Condition ID not found",
+                    explorer_url=None,
+                )
+
+            # Check if market is actually resolved
+            resolution = await self.get_market_resolution(market_id)
+            if not resolution.is_resolved:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Market has not resolved yet",
+                    explorer_url=None,
+                )
+
+            # Check if user holds winning outcome
+            if resolution.winning_outcome and resolution.winning_outcome.lower() != outcome.value.lower():
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message=f"Your {outcome.value.upper()} tokens lost. The market resolved to {resolution.winning_outcome.upper()}.",
+                    explorer_url=None,
+                )
+
+            # Build CTF contract
+            ctf_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"]),
+                abi=CTF_ABI,
+            )
+
+            # Convert condition ID to bytes32
+            if condition_id.startswith("0x"):
+                condition_bytes = bytes.fromhex(condition_id[2:])
+            else:
+                condition_bytes = bytes.fromhex(condition_id)
+
+            # Index sets: 1 for YES (binary 01), 2 for NO (binary 10)
+            index_set = 1 if outcome == Outcome.YES else 2
+
+            # Parent collection ID is null bytes32 for Polymarket
+            parent_collection_id = bytes(32)
+
+            # Build transaction
+            wallet_address = private_key.address
+
+            tx = ctf_contract.functions.redeemPositions(
+                Web3.to_checksum_address(POLYMARKET_CONTRACTS["collateral"]),
+                parent_collection_id,
+                condition_bytes,
+                [index_set],
+            ).build_transaction({
+                "from": wallet_address,
+                "nonce": self._sync_web3.eth.get_transaction_count(wallet_address),
+                "gas": 200000,
+                "gasPrice": self._sync_web3.eth.gas_price,
+                "chainId": 137,  # Polygon
+            })
+
+            # Sign and send transaction
+            signed_tx = self._sync_web3.eth.account.sign_transaction(tx, private_key.key)
+            tx_hash = self._sync_web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+            logger.info(
+                "Redemption transaction sent",
+                tx_hash=tx_hash.hex(),
+                market_id=market_id,
+                outcome=outcome.value,
+            )
+
+            # Wait for confirmation
+            receipt = self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+
+            if receipt.status == 1:
+                # Calculate redeemed amount (winning tokens are worth $1 each)
+                amount_redeemed = token_amount
+
+                logger.info(
+                    "Redemption confirmed",
+                    tx_hash=tx_hash.hex(),
+                    amount_redeemed=str(amount_redeemed),
+                )
+
+                return RedemptionResult(
+                    success=True,
+                    tx_hash=tx_hash.hex(),
+                    amount_redeemed=amount_redeemed,
+                    error_message=None,
+                    explorer_url=self.get_explorer_url(tx_hash.hex()),
+                )
+            else:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=tx_hash.hex(),
+                    amount_redeemed=None,
+                    error_message="Transaction failed",
+                    explorer_url=self.get_explorer_url(tx_hash.hex()),
+                )
+
+        except Exception as e:
+            logger.error("Redemption failed", error=str(e), market_id=market_id)
+            return RedemptionResult(
+                success=False,
+                tx_hash=None,
+                amount_redeemed=None,
                 error_message=str(e),
                 explorer_url=None,
             )

@@ -648,19 +648,50 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         text += f"  {outcome_str} ({spent_str}) • Entry: {entry} • Now: {current}\n"
         text += f"  {pnl_emoji} P&L: {pnl_str}\n\n"
 
-    # Build buttons - sell button for each position + pagination
+    # Build buttons - sell/redeem button for each position + pagination
     buttons = []
 
-    # Add sell buttons for each position on current page
+    # Add sell or redeem buttons for each position on current page
     for pos in positions:
         short_title = pos.market_title[:20] + "..." if len(pos.market_title) > 20 else pos.market_title
         outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
-        buttons.append([
-            InlineKeyboardButton(
-                f"💰 Sell {outcome_str}: {short_title}",
-                callback_data=f"sell:{pos.id}"
-            )
-        ])
+
+        # Check if market is resolved for redemption
+        try:
+            resolution = await platform.get_market_resolution(pos.market_id)
+            if resolution.is_resolved:
+                # Show Redeem button for resolved markets
+                if resolution.winning_outcome and resolution.winning_outcome.upper() == outcome_str:
+                    buttons.append([
+                        InlineKeyboardButton(
+                            f"🏆 Redeem {outcome_str}: {short_title}",
+                            callback_data=f"redeem:{pos.id}"
+                        )
+                    ])
+                else:
+                    # Lost position - show as expired
+                    buttons.append([
+                        InlineKeyboardButton(
+                            f"❌ Lost: {short_title}",
+                            callback_data=f"noop"
+                        )
+                    ])
+            else:
+                # Show Sell button for active markets
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"💰 Sell {outcome_str}: {short_title}",
+                        callback_data=f"sell:{pos.id}"
+                    )
+                ])
+        except Exception:
+            # Default to Sell if we can't check resolution
+            buttons.append([
+                InlineKeyboardButton(
+                    f"💰 Sell {outcome_str}: {short_title}",
+                    callback_data=f"sell:{pos.id}"
+                )
+            ])
 
     # Add pagination buttons
     if total_pages > 1:
@@ -1110,6 +1141,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif action == "sell_confirm":
             # Format: sell_confirm:position_id:percent
             await handle_sell_confirm(query, parts[1], parts[2], update.effective_user.id)
+
+        elif action == "redeem":
+            # Format: redeem:position_id
+            await handle_redeem(query, parts[1], update.effective_user.id)
 
         elif action == "menu":
             if parts[1] == "main":
@@ -3569,6 +3604,121 @@ Please try again.
         logger.error("Sell execution failed", error=str(e))
         await query.edit_message_text(
             f"❌ Sell failed: {escape_html(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_redeem(query, position_id: str, telegram_id: int) -> None:
+    """Redeem winning tokens from a resolved market."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    position = await get_position_by_id(position_id)
+    if not position:
+        await query.edit_message_text("❌ Position not found.")
+        return
+
+    if position.user_id != user.id:
+        await query.edit_message_text("❌ This position doesn't belong to you.")
+        return
+
+    platform = get_platform(position.platform)
+    platform_info = PLATFORM_INFO[position.platform]
+    chain_family = get_chain_family_for_platform(position.platform)
+
+    # Get position details
+    token_amount = Decimal(position.token_amount) / Decimal(10**6)
+    outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
+
+    await query.edit_message_text(
+        f"⏳ Redeeming {outcome_str} position...\n\n"
+        f"Tokens: {token_amount:.4f}\n"
+        f"Expected: ~${token_amount:.2f} USDC",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        # Get wallet and private key
+        wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
+        wallet = wallets.get(chain_family)
+
+        if not wallet:
+            await query.edit_message_text("❌ Wallet not found. Please try again.")
+            return
+
+        # Check if PIN protected
+        is_pin_protected = await wallet_service.is_wallet_pin_protected(user.id, chain_family)
+
+        if is_pin_protected:
+            await query.edit_message_text(
+                "🔐 <b>PIN required for redemption</b>\n\n"
+                "PIN-protected redemption is not yet supported.\n"
+                "Please export your keys and redeem manually.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Get private key
+        private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family)
+        if not private_key:
+            await query.edit_message_text("❌ Failed to get wallet key.")
+            return
+
+        # Get outcome enum
+        from src.db.models import Outcome as OutcomeEnum
+        outcome_enum = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
+
+        # Execute redemption
+        result = await platform.redeem_position(
+            market_id=position.market_id,
+            outcome=outcome_enum,
+            token_amount=token_amount,
+            private_key=private_key,
+        )
+
+        if result.success:
+            # Update position as redeemed
+            await update_position(
+                position_id,
+                status=PositionStatus.REDEEMED,
+                token_amount="0",
+            )
+
+            text = f"""
+🏆 <b>Redemption Successful!</b>
+
+Redeemed {outcome_str} position
+Amount: ~${result.amount_redeemed:.2f} USDC
+
+<a href="{result.explorer_url}">View Transaction</a>
+"""
+        else:
+            text = f"""
+❌ <b>Redemption Failed</b>
+
+{escape_html(result.error_message or 'Unknown error')}
+
+Please try again or redeem manually.
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 View Positions", callback_data="positions:0")],
+            [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+            disable_web_page_preview=False,
+        )
+
+    except Exception as e:
+        logger.error("Redemption failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Redemption failed: {escape_html(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
