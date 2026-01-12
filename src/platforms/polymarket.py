@@ -1390,8 +1390,8 @@ class PolymarketPlatform(BasePlatform):
             settings.polymarket_builder_secret and
             settings.polymarket_builder_passphrase):
             try:
-                from py_clob_client.config import BuilderConfig
-                from py_clob_client.clob_types import BuilderApiKeyCreds
+                from py_builder_signing_sdk.config import BuilderConfig
+                from py_builder_signing_sdk.types import BuilderApiKeyCreds
 
                 builder_creds = BuilderApiKeyCreds(
                     key=settings.polymarket_builder_key,
@@ -1401,7 +1401,7 @@ class PolymarketPlatform(BasePlatform):
                 builder_config = BuilderConfig(local_builder_creds=builder_creds)
                 logger.info("Builder attribution enabled for Polymarket", wallet=wallet[:10])
             except ImportError as e:
-                logger.warning("Builder config not available in py-clob-client", error=str(e))
+                logger.warning("Builder SDK not available", error=str(e))
 
         # Create new client with optional builder config
         client = ClobClient(
