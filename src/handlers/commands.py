@@ -404,7 +404,7 @@ Type /cancel to cancel.
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion + Monad)
+<b>🔷 EVM</b> (Polymarket + Opinion)
 <code>{}</code>
 
 <i>Tap address to copy. Send funds to deposit.</i>
@@ -455,7 +455,7 @@ Type /cancel to cancel.
 
     # EVM wallet (for Polymarket, Opinion & Monad)
     if evm_wallet:
-        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Monad)\n"
+        text += f"<b>🔷 EVM</b> (Polymarket + Opinion)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
         for bal in balances.get(ChainFamily.EVM, []):
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
@@ -1762,7 +1762,7 @@ You haven't created your wallets yet.
         text += "\n"
 
     if evm_wallet:
-        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Monad)\n"
+        text += f"<b>🔷 EVM</b> (Polymarket + Opinion)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
         for bal in balances.get(ChainFamily.EVM, []):
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
@@ -4669,7 +4669,7 @@ Your wallets are protected with your PIN.
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion + Monad)
+<b>🔷 EVM</b> (Polymarket + Opinion)
 <code>{}</code>
 
 ⚠️ <b>Important:</b>
@@ -5025,7 +5025,7 @@ async def handle_wallet_reset_with_pin(update: Update, context: ContextTypes.DEF
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion + Monad)
+<b>🔷 EVM</b> (Polymarket + Opinion)
 <code>{}</code>
 
 🔐 <b>Export PIN set!</b>
@@ -5129,7 +5129,7 @@ async def handle_new_wallet_with_pin(update: Update, context: ContextTypes.DEFAU
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion + Monad)
+<b>🔷 EVM</b> (Polymarket + Opinion)
 <code>{}</code>
 
 🔐 <b>Export PIN set!</b>
