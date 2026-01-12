@@ -2823,41 +2823,45 @@ async def handle_faq_topic(query, topic: str) -> None:
             "title": "🔐 Is this non-custodial?",
             "text": """<b>Yes, Spredd is non-custodial.</b>
 
-Your private keys are encrypted with YOUR PIN, which is never stored on our servers.
+Your private keys are encrypted and stored securely. Only YOU can export your keys using your PIN.
 
 <b>What this means:</b>
-• We cannot access your funds
-• We cannot sign transactions for you
-• We cannot recover your wallet if you forget your PIN
-• Even if our database is hacked, attackers cannot steal funds without your PIN
+• We cannot access your private keys
+• We cannot export your wallet
+• Your keys stay encrypted at rest
+• Trading is seamless - no PIN needed for trades
 
 <b>How it works:</b>
-Your wallet's private key is encrypted using:
-<code>Key = MasterKey + TelegramID + YourPIN</code>
-
-Without your PIN, decryption is mathematically impossible.
+• Private keys are encrypted using our secure encryption
+• Your PIN is hashed separately for export verification
+• Trading doesn't require PIN entry (for convenience)
+• Exporting keys requires your PIN (for security)
 
 <b>You are fully in control of your funds.</b>""",
         },
         "pin": {
             "title": "🔑 Why do I need a PIN?",
-            "text": """<b>Your PIN makes the bot non-custodial.</b>
+            "text": """<b>Your PIN protects your private key export.</b>
 
-Without a PIN, the bot operator could theoretically access your funds. With a PIN, only YOU can sign transactions.
+The PIN ensures only YOU can export your wallet's private keys. This prevents unauthorized access to your keys.
 
 <b>PIN requirements:</b>
 • 4-6 digits
-• Used to encrypt your private key
-• Required for every trade
-• Never stored anywhere
+• Set when creating your wallet
+• Required ONLY for exporting private keys
+• The PIN hash is stored (not the PIN itself)
+
+<b>How it's used:</b>
+• <b>Trading:</b> No PIN needed - trade instantly
+• <b>Exporting keys:</b> PIN required for security
 
 <b>Important:</b>
 • Choose a PIN you'll remember
 • Don't share it with anyone
-• If you forget it, your funds are LOST
-• There is NO recovery option
+• If you forget it, you cannot export your keys
+• Your funds remain accessible for trading
 
-<b>This is the same security model used by hardware wallets like Ledger and Trezor.</b>""",
+<b>This design balances security with convenience - trade fast, export securely.</b>""",
         },
         "fees": {
             "title": "💰 What are the fees?",
@@ -2943,63 +2947,62 @@ You'll be asked to deposit more USDC
 <b>The swap happens BEFORE you enter your trade amount, so prices won't change during the swap.</b>""",
         },
         "bridge": {
-            "title": "🌉 Cross-Chain Bridging (CCTP)",
+            "title": "🌉 Cross-Chain Bridging",
             "text": """<b>Trade on Polymarket with USDC from Other Chains</b>
 
-Have USDC on Base, Arbitrum, or other L2s? The bot can automatically bridge it to Polygon for you!
+Have USDC on Base, Arbitrum, or other L2s? The bot can bridge it to Polygon for you!
 
 <b>Supported Source Chains:</b>
-• Base (default enabled)
+• Base
 • Arbitrum One
 • Optimism
 • Ethereum Mainnet
 
-<b>How it works:</b>
-When you start a trade on Polymarket, the bot checks your balances in order:
+<b>Two Bridge Options:</b>
 
-1️⃣ <b>Polygon USDC.e</b> - Ready to trade
-2️⃣ <b>Polygon native USDC</b> - Auto-swaps to USDC.e
-3️⃣ <b>Other chains USDC</b> - Bridges via CCTP
+🚀 <b>FAST BRIDGE (~30 seconds)</b>
+• Powered by Relay.link
+• Near-instant transfers
+• Small fee (typically 0.1-0.5%)
+• Best for: Quick trades, time-sensitive markets
+
+🐢 <b>STANDARD BRIDGE (~15 min, FREE)</b>
+• Uses Circle's CCTP protocol
+• No fees (only gas costs)
+• Burns on source → Mints on destination
+• Best for: Large amounts, no rush
+
+<b>How it works:</b>
+1️⃣ Select source chain and amount
+2️⃣ Choose speed (Fast or Standard)
+3️⃣ Confirm the bridge transaction
+4️⃣ USDC arrives on Polygon automatically
 
 <b>What is CCTP?</b>
-Circle's Cross-Chain Transfer Protocol (CCTP) is the official way to move native USDC between chains. It's:
-• <b>Secure:</b> Backed by Circle (USDC issuer)
-• <b>Native:</b> Burns USDC on source, mints on destination
-• <b>No slippage:</b> Always 1:1 transfer
-• <b>Free:</b> No bridge fees (only gas costs)
+Circle's Cross-Chain Transfer Protocol - the official way to move native USDC. It's secure but requires ~15 min for Circle to verify the burn.
 
-<b>Bridge Time:</b>
-• Typically <b>15-20 minutes</b>
-• A progress bar shows real-time status
-• You'll see: "Waiting for attestation..."
-
-<b>Why so long?</b>
-CCTP requires Circle to verify and sign the burn transaction. This security step takes about 15 minutes but ensures your USDC is legitimate.
+<b>What is Relay.link?</b>
+A fast bridge protocol that provides instant liquidity. You pay a small fee but get your USDC in ~30 seconds.
 
 <b>Important Notes:</b>
 • You need gas tokens on BOTH chains
-• The bridge happens BEFORE your trade quote
 • Market prices won't change during bridging
-• If bridge fails, your funds stay on source chain
+• If bridge fails, funds stay on source chain
 
-<b>Gas Requirements:</b>
-• Source chain: Pay for burn transaction
-• Polygon: Pay for mint + swap + trade
-
-<b>This is the same technology used by major DeFi protocols for cross-chain USDC transfers.</b>""",
+<b>Choose Fast for convenience, Standard for savings!</b>""",
         },
         "security": {
             "title": "⚠️ Security Warnings",
             "text": """<b>Keep Your Funds Safe:</b>
 
 🔴 <b>NEVER share your PIN</b>
-Anyone with your PIN can access your funds
+Anyone with your PIN can export your private keys
 
 🔴 <b>NEVER share your private keys</b>
 Use /export only for backup purposes
 
 🔴 <b>Remember your PIN</b>
-Lost PIN = Lost funds (no recovery)
+Lost PIN = Cannot export keys (trading still works)
 
 🔴 <b>Verify addresses</b>
 Always double-check before depositing
