@@ -1578,10 +1578,11 @@ async def handle_bridge_amount(query, source_chain: str, percentage: int, telegr
     context.user_data["pending_bridge"]["awaiting_amount"] = False
 
     from src.services.bridge import BridgeChain, bridge_service
+    from src.db.database import get_wallet
     chain = BridgeChain(source_chain.lower())
 
     # Get fast bridge quote for fee display
-    evm_wallet = await get_user_wallet(user.id, ChainFamily.EVM)
+    evm_wallet = await get_wallet(user.id, ChainFamily.EVM)
     fast_quote = None
     if evm_wallet:
         fast_quote = bridge_service.get_fast_bridge_quote(
@@ -1682,10 +1683,11 @@ async def handle_bridge_custom_amount_input(update: Update, context: ContextType
     context.user_data["pending_bridge"]["awaiting_custom_amount"] = False
 
     from src.services.bridge import BridgeChain, bridge_service
+    from src.db.database import get_wallet
     chain = BridgeChain(source_chain.lower())
 
     # Get fast bridge quote for fee display
-    evm_wallet = await get_user_wallet(user.id, ChainFamily.EVM)
+    evm_wallet = await get_wallet(user.id, ChainFamily.EVM)
     fast_quote = None
     if evm_wallet:
         fast_quote = bridge_service.get_fast_bridge_quote(
