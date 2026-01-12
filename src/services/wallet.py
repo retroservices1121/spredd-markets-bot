@@ -532,170 +532,183 @@ class WalletService(LoggerMixin):
         )
     
     async def get_polygon_balances(self, address: str) -> list[Balance]:
-        """Get balances on Polygon."""
+        """Get balances on Polygon (parallel fetching)."""
         if not self._polygon_web3:
             raise RuntimeError("Polygon client not initialized")
 
-        balances = []
-
-        # MATIC
-        matic = await self._get_evm_native_balance(
-            self._polygon_web3,
-            address,
-            Chain.POLYGON,
-            "MATIC",
-        )
-        balances.append(matic)
-
-        # USDC.e (bridged - used by Polymarket)
-        try:
-            usdc_e = await self._get_erc20_balance(
+        # Fetch all balances in parallel
+        async def get_matic():
+            return await self._get_evm_native_balance(
                 self._polygon_web3,
                 address,
-                USDC_E_POLYGON,
-                "USDC.e",
-                USDC_DECIMALS,
                 Chain.POLYGON,
+                "MATIC",
             )
-            balances.append(usdc_e)
-        except Exception as e:
-            self.log.warning("Failed to get Polygon USDC.e balance", error=str(e))
 
-        # Native USDC (Circle)
-        try:
-            usdc = await self._get_erc20_balance(
-                self._polygon_web3,
-                address,
-                USDC_ADDRESSES[Chain.POLYGON],
-                "USDC",
-                USDC_DECIMALS,
-                Chain.POLYGON,
-            )
-            balances.append(usdc)
-        except Exception as e:
-            self.log.warning("Failed to get Polygon native USDC balance", error=str(e))
+        async def get_usdc_e():
+            try:
+                return await self._get_erc20_balance(
+                    self._polygon_web3,
+                    address,
+                    USDC_E_POLYGON,
+                    "USDC.e",
+                    USDC_DECIMALS,
+                    Chain.POLYGON,
+                )
+            except Exception as e:
+                self.log.warning("Failed to get Polygon USDC.e balance", error=str(e))
+                return None
 
-        return balances
+        async def get_usdc():
+            try:
+                return await self._get_erc20_balance(
+                    self._polygon_web3,
+                    address,
+                    USDC_ADDRESSES[Chain.POLYGON],
+                    "USDC",
+                    USDC_DECIMALS,
+                    Chain.POLYGON,
+                )
+            except Exception as e:
+                self.log.warning("Failed to get Polygon native USDC balance", error=str(e))
+                return None
+
+        results = await asyncio.gather(get_matic(), get_usdc_e(), get_usdc())
+        return [b for b in results if b is not None]
     
     async def get_bsc_balances(self, address: str) -> list[Balance]:
-        """Get balances on BSC."""
+        """Get balances on BSC (parallel fetching)."""
         if not self._bsc_web3:
             raise RuntimeError("BSC client not initialized")
-        
-        balances = []
-        
-        # BNB
-        bnb = await self._get_evm_native_balance(
-            self._bsc_web3,
-            address,
-            Chain.BSC,
-            "BNB",
-        )
-        balances.append(bnb)
-        
-        # USDT
-        try:
-            usdt = await self._get_erc20_balance(
+
+        # Fetch all balances in parallel
+        async def get_bnb():
+            return await self._get_evm_native_balance(
                 self._bsc_web3,
                 address,
-                USDT_ADDRESSES[Chain.BSC],
-                "USDT",
-                18,  # USDT on BSC has 18 decimals
                 Chain.BSC,
+                "BNB",
             )
-            balances.append(usdt)
-        except Exception as e:
-            self.log.warning("Failed to get BSC USDT balance", error=str(e))
-        
-        # USDC
-        try:
-            usdc = await self._get_erc20_balance(
-                self._bsc_web3,
-                address,
-                USDC_ADDRESSES[Chain.BSC],
-                "USDC",
-                18,
-                Chain.BSC,
-            )
-            balances.append(usdc)
-        except Exception as e:
-            self.log.warning("Failed to get BSC USDC balance", error=str(e))
-        
-        return balances
+
+        async def get_usdt():
+            try:
+                return await self._get_erc20_balance(
+                    self._bsc_web3,
+                    address,
+                    USDT_ADDRESSES[Chain.BSC],
+                    "USDT",
+                    18,  # USDT on BSC has 18 decimals
+                    Chain.BSC,
+                )
+            except Exception as e:
+                self.log.warning("Failed to get BSC USDT balance", error=str(e))
+                return None
+
+        async def get_usdc():
+            try:
+                return await self._get_erc20_balance(
+                    self._bsc_web3,
+                    address,
+                    USDC_ADDRESSES[Chain.BSC],
+                    "USDC",
+                    18,
+                    Chain.BSC,
+                )
+            except Exception as e:
+                self.log.warning("Failed to get BSC USDC balance", error=str(e))
+                return None
+
+        results = await asyncio.gather(get_bnb(), get_usdt(), get_usdc())
+        return [b for b in results if b is not None]
 
     async def get_base_balances(self, address: str) -> list[Balance]:
-        """Get balances on Base."""
+        """Get balances on Base (parallel fetching)."""
         if not self._base_web3:
             raise RuntimeError("Base client not initialized")
 
-        balances = []
-
-        # ETH (gas token on Base)
-        eth = await self._get_evm_native_balance(
-            self._base_web3,
-            address,
-            Chain.BASE,
-            "ETH",
-        )
-        balances.append(eth)
-
-        # USDC
-        try:
-            usdc = await self._get_erc20_balance(
+        # Fetch all balances in parallel
+        async def get_eth():
+            return await self._get_evm_native_balance(
                 self._base_web3,
                 address,
-                USDC_ADDRESSES[Chain.BASE],
-                "USDC",
-                USDC_DECIMALS,
                 Chain.BASE,
+                "ETH",
             )
-            balances.append(usdc)
-        except Exception as e:
-            self.log.warning("Failed to get Base USDC balance", error=str(e))
 
-        return balances
+        async def get_usdc():
+            try:
+                return await self._get_erc20_balance(
+                    self._base_web3,
+                    address,
+                    USDC_ADDRESSES[Chain.BASE],
+                    "USDC",
+                    USDC_DECIMALS,
+                    Chain.BASE,
+                )
+            except Exception as e:
+                self.log.warning("Failed to get Base USDC balance", error=str(e))
+                return None
+
+        results = await asyncio.gather(get_eth(), get_usdc())
+        return [b for b in results if b is not None]
 
     async def get_all_balances(
         self,
         user_id: str,
     ) -> dict[ChainFamily, list[Balance]]:
-        """Get all balances for a user across chains."""
+        """Get all balances for a user across chains (parallel fetching)."""
         wallets = await get_user_wallets(user_id)
-        
+
         result = {
             ChainFamily.SOLANA: [],
             ChainFamily.EVM: [],
         }
-        
+
+        # Collect all fetch tasks
+        solana_wallet = None
+        evm_wallet = None
         for wallet in wallets:
             if wallet.chain_family == ChainFamily.SOLANA:
-                try:
-                    sol = await self.get_solana_balance(wallet.public_key)
-                    result[ChainFamily.SOLANA].append(sol)
-                    
-                    usdc = await self.get_solana_usdc_balance(wallet.public_key)
-                    result[ChainFamily.SOLANA].append(usdc)
-                except Exception as e:
-                    self.log.error("Failed to get Solana balances", error=str(e))
-            
+                solana_wallet = wallet
             elif wallet.chain_family == ChainFamily.EVM:
-                try:
-                    polygon = await self.get_polygon_balances(wallet.public_key)
-                    result[ChainFamily.EVM].extend(polygon)
-                except Exception as e:
-                    self.log.error("Failed to get Polygon balances", error=str(e))
+                evm_wallet = wallet
 
-                try:
-                    base = await self.get_base_balances(wallet.public_key)
-                    result[ChainFamily.EVM].extend(base)
-                except Exception as e:
-                    self.log.error("Failed to get Base balances", error=str(e))
+        # Build parallel fetch tasks
+        tasks = []
+        task_labels = []
 
-                try:
-                    bsc = await self.get_bsc_balances(wallet.public_key)
-                    result[ChainFamily.EVM].extend(bsc)
-                except Exception as e:
-                    self.log.error("Failed to get BSC balances", error=str(e))
+        if solana_wallet:
+            tasks.append(self.get_solana_balance(solana_wallet.public_key))
+            task_labels.append(("solana", "sol"))
+            tasks.append(self.get_solana_usdc_balance(solana_wallet.public_key))
+            task_labels.append(("solana", "usdc"))
+
+        if evm_wallet:
+            tasks.append(self.get_polygon_balances(evm_wallet.public_key))
+            task_labels.append(("evm", "polygon"))
+            tasks.append(self.get_base_balances(evm_wallet.public_key))
+            task_labels.append(("evm", "base"))
+            tasks.append(self.get_bsc_balances(evm_wallet.public_key))
+            task_labels.append(("evm", "bsc"))
+
+        if not tasks:
+            return result
+
+        # Execute all fetches in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results
+        for (chain_type, label), res in zip(task_labels, results):
+            if isinstance(res, Exception):
+                self.log.error(f"Failed to get {label} balances", error=str(res))
+                continue
+
+            if chain_type == "solana":
+                if res:
+                    result[ChainFamily.SOLANA].append(res)
+            else:  # evm
+                if isinstance(res, list):
+                    result[ChainFamily.EVM].extend(res)
 
         return result
 

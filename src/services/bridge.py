@@ -250,10 +250,25 @@ class BridgeService:
             return Decimal(0)
 
     def get_all_usdc_balances(self, wallet_address: str) -> dict[BridgeChain, Decimal]:
-        """Get USDC balances across all supported chains."""
+        """Get USDC balances across all supported chains in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         balances = {}
-        for chain in self._web3_clients.keys():
-            balances[chain] = self.get_usdc_balance(chain, wallet_address)
+        chains = list(self._web3_clients.keys())
+
+        # Fetch all balances in parallel for speed
+        with ThreadPoolExecutor(max_workers=len(chains)) as executor:
+            future_to_chain = {
+                executor.submit(self.get_usdc_balance, chain, wallet_address): chain
+                for chain in chains
+            }
+            for future in as_completed(future_to_chain):
+                chain = future_to_chain[future]
+                try:
+                    balances[chain] = future.result()
+                except Exception:
+                    balances[chain] = Decimal(0)
+
         return balances
 
     def find_chain_with_balance(
