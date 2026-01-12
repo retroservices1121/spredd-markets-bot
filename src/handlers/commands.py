@@ -201,17 +201,35 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     welcome_text = f"""
 🎯 <b>Welcome to Spredd Markets!</b>
 {referral_message}
-Trade prediction markets across multiple platforms:
+The easiest way to trade prediction markets directly from Telegram.
 
+<b>What is Spredd?</b>
+Spredd is a non-custodial trading bot that lets you buy and sell positions on prediction markets across multiple platforms — all without leaving Telegram.
+
+<b>Supported Platforms:</b>
 {platform_registry.format_platform_list()}
 
-<b>Choose your platform to get started:</b>
+<b>Why Spredd?</b>
+• Non-custodial — you control your keys
+• Multi-platform — trade on Kalshi, Polymarket & more
+• Fast & simple — no complex interfaces
+• Shareable PnL cards — flex your wins
+
+Join our community and follow us for updates!
 """
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Get Started", callback_data="landing:start")],
+        [
+            InlineKeyboardButton("Follow on X", url="https://x.com/spreddterminal"),
+            InlineKeyboardButton("Join Telegram", url="https://t.me/spreddmarketsgroup"),
+        ],
+    ])
 
     await update.message.reply_text(
         welcome_text,
         parse_mode=ParseMode.HTML,
-        reply_markup=platform_keyboard(),
+        reply_markup=keyboard,
     )
 
 
@@ -1260,7 +1278,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     action = parts[0]
     
     try:
-        if action == "platform":
+        if action == "landing":
+            # User clicked "Get Started" on landing page - show platform selection
+            if parts[1] == "start":
+                text = """
+🎯 <b>Choose Your Platform</b>
+
+Select which prediction market you want to trade on:
+"""
+                await query.edit_message_text(
+                    text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=platform_keyboard(),
+                )
+
+        elif action == "platform":
             await handle_platform_select(query, parts[1], update.effective_user.id)
         
         elif action == "market":
