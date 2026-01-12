@@ -3275,6 +3275,7 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
                 order.id,
                 status=OrderStatus.CONFIRMED,
                 tx_hash=result.tx_hash,
+                executed_at=datetime.now(timezone.utc),
             )
 
             # Process trading fee and distribute to referrers
@@ -3572,6 +3573,7 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
                 order.id,
                 status=OrderStatus.CONFIRMED,
                 tx_hash=result.tx_hash,
+                executed_at=datetime.now(timezone.utc),
             )
 
             # Process trading fee
@@ -4110,6 +4112,7 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
                 order.id,
                 status=OrderStatus.CONFIRMED,
                 tx_hash=result.tx_hash,
+                executed_at=datetime.now(timezone.utc),
             )
 
             # Process trading fee and distribute to referrers
@@ -4306,6 +4309,7 @@ async def handle_sell_with_pin(update: Update, context: ContextTypes.DEFAULT_TYP
                 order.id,
                 status=OrderStatus.CONFIRMED,
                 tx_hash=result.tx_hash,
+                executed_at=datetime.now(timezone.utc),
             )
 
             # Process trading fee
