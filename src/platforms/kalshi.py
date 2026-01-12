@@ -803,6 +803,53 @@ class KalshiPlatform(BasePlatform):
                 explorer_url=None,
             )
 
+    async def get_token_balance(
+        self,
+        wallet_pubkey: str,
+        token_mint: str,
+    ) -> Decimal:
+        """
+        Get the actual on-chain balance of a specific token for a wallet.
+
+        Args:
+            wallet_pubkey: The wallet's public key
+            token_mint: The token mint address
+
+        Returns:
+            Token balance as Decimal (in human-readable units, not raw)
+        """
+        try:
+            if not self._solana_client:
+                await self.initialize()
+
+            from solders.pubkey import Pubkey
+
+            # Query token accounts for this specific mint
+            response = await self._solana_client.get_token_accounts_by_owner_json_parsed(
+                Pubkey.from_string(wallet_pubkey),
+                {"mint": Pubkey.from_string(token_mint)},
+            )
+
+            if response.value:
+                for account in response.value:
+                    parsed = account.account.data.parsed
+                    if parsed and "info" in parsed:
+                        token_amount = parsed["info"].get("tokenAmount", {})
+                        ui_amount = token_amount.get("uiAmount", 0)
+                        if ui_amount:
+                            return Decimal(str(ui_amount))
+
+            return Decimal("0")
+
+        except Exception as e:
+            logger.error(
+                "Failed to get token balance",
+                error=str(e),
+                wallet=wallet_pubkey[:8] + "...",
+                mint=token_mint[:8] + "...",
+            )
+            return Decimal("0")
+
 
 # Singleton instance
 kalshi_platform = KalshiPlatform()

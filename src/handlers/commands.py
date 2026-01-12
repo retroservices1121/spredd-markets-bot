@@ -3478,14 +3478,10 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
     platform_info = PLATFORM_INFO[position.platform]
     chain_family = get_chain_family_for_platform(position.platform)
 
-    # Calculate sell amount
-    token_amount = Decimal(position.token_amount) / Decimal(10**6)
-    sell_amount = (token_amount * Decimal(percent)) / Decimal(100)
-
     outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
 
     await query.edit_message_text(
-        f"⏳ Executing sell...\n\nSelling {percent}% of {outcome_str} position (~{sell_amount:.4f} tokens)",
+        f"⏳ Checking balance...",
         parse_mode=ParseMode.HTML,
     )
 
@@ -3496,9 +3492,54 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
             await query.edit_message_text("❌ Wallet not found. Please try again.")
             return
 
-        # Get quote for selling
         from src.db.models import Outcome as OutcomeEnum
         outcome_enum = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
+
+        # For Kalshi/Solana, get actual on-chain token balance
+        actual_balance = None
+        if position.platform == Platform.KALSHI:
+            # Get the market to find the token mint
+            market = await platform.get_market(position.market_id)
+            if market:
+                token_mint = market.yes_token if outcome_str == "YES" else market.no_token
+                if token_mint and hasattr(platform, 'get_token_balance'):
+                    wallet_pubkey = str(private_key.pubkey())
+                    actual_balance = await platform.get_token_balance(wallet_pubkey, token_mint)
+                    logger.info(
+                        "Checked actual token balance",
+                        stored=str(Decimal(position.token_amount) / Decimal(10**6)),
+                        actual=str(actual_balance),
+                        market_id=position.market_id,
+                    )
+
+        # Use actual balance if available, otherwise fall back to stored
+        stored_amount = Decimal(position.token_amount) / Decimal(10**6)
+        if actual_balance is not None and actual_balance > 0:
+            token_amount = actual_balance
+            if actual_balance < stored_amount:
+                logger.warning(
+                    "Actual balance less than stored",
+                    stored=str(stored_amount),
+                    actual=str(actual_balance),
+                )
+        else:
+            token_amount = stored_amount
+
+        if token_amount <= 0:
+            await query.edit_message_text(
+                "❌ No tokens found in wallet for this position.\n\n"
+                "The position may have already been sold or redeemed.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Calculate sell amount based on actual balance
+        sell_amount = (token_amount * Decimal(percent)) / Decimal(100)
+
+        await query.edit_message_text(
+            f"⏳ Executing sell...\n\nSelling {percent}% of {outcome_str} position (~{sell_amount:.4f} tokens)",
+            parse_mode=ParseMode.HTML,
+        )
 
         quote = await platform.get_quote(
             market_id=position.market_id,
@@ -3541,9 +3582,10 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
                 platform=position.platform,
             )
 
-            # Update position
-            remaining_tokens = Decimal(position.token_amount) - int(sell_amount * Decimal(10**6))
-            if remaining_tokens <= 0 or percent == 100:
+            # Update position - use actual balance for remaining calculation
+            actual_remaining = token_amount - sell_amount
+            remaining_raw = int(actual_remaining * Decimal(10**6))
+            if remaining_raw <= 0 or percent == 100:
                 # Position fully closed
                 await update_position(
                     position_id,
@@ -3551,10 +3593,10 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
                     token_amount="0",
                 )
             else:
-                # Partial sell - update remaining tokens
+                # Partial sell - update remaining tokens based on actual balance
                 await update_position(
                     position_id,
-                    token_amount=str(int(remaining_tokens)),
+                    token_amount=str(remaining_raw),
                 )
 
             fee_amount = fee_result.get("fee", "0")
@@ -4274,9 +4316,10 @@ async def handle_sell_with_pin(update: Update, context: ContextTypes.DEFAULT_TYP
                 platform=position.platform,
             )
 
-            # Update position
-            remaining_tokens = Decimal(position.token_amount) - int(sell_amount * Decimal(10**6))
-            if remaining_tokens <= 0 or percent == 100:
+            # Update position - use actual balance for remaining calculation
+            actual_remaining = token_amount - sell_amount
+            remaining_raw = int(actual_remaining * Decimal(10**6))
+            if remaining_raw <= 0 or percent == 100:
                 # Position fully closed
                 await update_position(
                     position_id,
@@ -4284,10 +4327,10 @@ async def handle_sell_with_pin(update: Update, context: ContextTypes.DEFAULT_TYP
                     token_amount="0",
                 )
             else:
-                # Partial sell - update remaining tokens
+                # Partial sell - update remaining tokens based on actual balance
                 await update_position(
                     position_id,
-                    token_amount=str(int(remaining_tokens)),
+                    token_amount=str(remaining_raw),
                 )
 
             fee_amount = fee_result.get("fee", "0")
