@@ -1086,9 +1086,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await handle_buy_start(query, parts[1], parts[2], parts[3], update.effective_user.id, context)
 
         elif action == "confirm_buy":
-            # Format: confirm_buy:platform:market_id:outcome:amount:pin (pin may be empty)
-            user_pin = parts[5] if len(parts) > 5 else ""
-            await handle_buy_confirm(query, parts[1], parts[2], parts[3], parts[4], update.effective_user.id, user_pin)
+            # Format: confirm_buy:platform:market_id:outcome:amount
+            await handle_buy_confirm(query, parts[1], parts[2], parts[3], parts[4], update.effective_user.id)
 
         elif action == "wallet":
             if parts[1] == "refresh":
@@ -3147,7 +3146,7 @@ Type /cancel to cancel.
 # Buy Order Processing
 # ===================
 
-async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome: str, amount_str: str, telegram_id: int, user_pin: str = "") -> None:
+async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome: str, amount_str: str, telegram_id: int) -> None:
     """Execute the confirmed buy order."""
     try:
         amount = Decimal(amount_str)
@@ -3171,14 +3170,6 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
     )
 
     try:
-        # Get wallet
-        wallets = await wallet_service.get_or_create_wallets(user.id, telegram_id)
-        wallet = wallets.get(chain_family)
-
-        if not wallet:
-            await query.edit_message_text("❌ Wallet not found. Please try again.")
-            return
-
         # Get fresh quote
         from src.db.models import Outcome as OutcomeEnum
         outcome_enum = OutcomeEnum.YES if outcome == "yes" else OutcomeEnum.NO
@@ -3190,17 +3181,11 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
             amount=amount,
         )
 
-        # Get private key (with PIN if provided)
-        try:
-            private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family, user_pin)
-        except Exception as decrypt_error:
-            if "Decryption failed" in str(decrypt_error):
-                await query.edit_message_text(
-                    "❌ <b>Invalid PIN</b>\n\nThe PIN you entered is incorrect. Please try again.",
-                    parse_mode=ParseMode.HTML,
-                )
-                return
-            raise
+        # Get private key directly (no PIN required for trading)
+        private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family)
+        if not private_key:
+            await query.edit_message_text("❌ Wallet not found. Please try again.")
+            return
 
         # Create order record before executing
         order = await create_order(
