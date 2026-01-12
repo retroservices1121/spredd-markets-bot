@@ -36,6 +36,9 @@ pydantic-settings>=2.0
 structlog>=24.0.0
 tenacity>=8.2.0
 
+# Image Generation
+Pillow>=10.0.0
+
 # Development (optional)
 # pytest>=8.0
 # pytest-asyncio>=0.23.0

@@ -38,6 +38,7 @@ from src.handlers.commands import (
     positions_command,
     orders_command,
     pnl_command,
+    pnlcard_command,
     referral_command,
     callback_handler,
     message_handler,
@@ -105,6 +106,7 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("positions", positions_command))
     application.add_handler(CommandHandler("orders", orders_command))
     application.add_handler(CommandHandler("pnl", pnl_command))
+    application.add_handler(CommandHandler("pnlcard", pnlcard_command))
     application.add_handler(CommandHandler("referral", referral_command))
 
     # Callback query handler for inline buttons
@@ -216,6 +218,7 @@ async def run_bot() -> None:
             BotCommand("resetwallet", "Reset wallets (new keys)"),
             BotCommand("positions", "View open positions"),
             BotCommand("pnl", "View profit & loss"),
+            BotCommand("pnlcard", "Generate shareable PnL card"),
             BotCommand("orders", "View order history"),
             BotCommand("referral", "Referral Space & earnings"),
             BotCommand("platform", "Switch trading platform"),
