@@ -772,16 +772,31 @@ class LimitlessPlatform(BasePlatform):
         if not exchange:
             raise PlatformError("Exchange address not found in venue", Platform.LIMITLESS)
 
+        # Calculate tick size from price (number of decimal places)
+        # e.g. price=0.806 has 3 decimals, so tick_size=3, round to nearest 1000
+        price_str = str(price)
+        if '.' in price_str:
+            tick_size = len(price_str.split('.')[1])
+        else:
+            tick_size = 0
+        tick_round = 10 ** tick_size if tick_size > 0 else 1
+
         # Calculate amounts (USDC has 6 decimals)
+        # contracts must be rounded so that price * contracts is a whole number
         if side == "buy":
-            # makerAmount = USDC to spend, takerAmount = tokens to receive
-            maker_amount = int(amount * Decimal(10 ** 6))
-            taker_amount = int((amount / price) * Decimal(10 ** 6))
+            # makerAmount = USDC to spend, takerAmount = tokens (contracts) to receive
+            raw_contracts = int((amount / price) * Decimal(10 ** 6))
+            # Round down to tick size
+            taker_amount = (raw_contracts // tick_round) * tick_round
+            # Recalculate maker_amount based on rounded contracts
+            maker_amount = int(Decimal(taker_amount) * price)
             order_side = 0  # BUY
         else:
             # makerAmount = tokens to sell, takerAmount = USDC to receive
             maker_amount = int(amount * Decimal(10 ** 6))
-            taker_amount = int((amount * price) * Decimal(10 ** 6))
+            # Round maker_amount to tick size
+            maker_amount = (maker_amount // tick_round) * tick_round
+            taker_amount = int(Decimal(maker_amount) * price)
             order_side = 1  # SELL
 
         # Build order struct - API requires numbers, not strings for numeric fields
