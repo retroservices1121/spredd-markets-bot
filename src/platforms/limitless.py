@@ -312,9 +312,11 @@ class LimitlessPlatform(BasePlatform):
         active_only: bool = True,
     ) -> list[Market]:
         """Get list of markets from Limitless."""
+        # API uses 'page' not 'offset'
+        page = offset // limit if limit > 0 else 0
         params = {
             "limit": limit,
-            "offset": offset,
+            "page": page,
         }
 
         try:
@@ -346,7 +348,7 @@ class LimitlessPlatform(BasePlatform):
             data = await self._api_request(
                 "GET",
                 "/markets/search",
-                params={"q": query, "limit": limit}
+                params={"query": query, "limit": limit}
             )
         except Exception as e:
             logger.error("Failed to search markets", error=str(e))
