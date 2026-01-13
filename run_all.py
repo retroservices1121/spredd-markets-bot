@@ -35,8 +35,9 @@ async def run_api():
     import uvicorn
     from src.api import create_api_app
     from src.db.database import init_db
+    from src.config import settings
 
-    await init_db()
+    await init_db(settings.database_url)
 
     app = create_api_app()
     # Railway uses PORT, fallback to API_PORT or 8000
