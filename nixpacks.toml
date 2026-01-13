@@ -9,12 +9,7 @@ nixPkgs = ["python311", "gcc", "libffi", "openssl", "nodejs_20"]
 [phases.install]
 cmds = [
     "pip install -r requirements.txt",
-    "cd webapp && npm install"
-]
-
-[phases.build]
-cmds = [
-    "cd webapp && npm run build"
+    "cd webapp && npm install && npm run build && ls -la dist/"
 ]
 
 [start]
