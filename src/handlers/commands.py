@@ -2927,12 +2927,12 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
         await query.edit_message_text("Please /start first!")
         return
 
-    # Only Polymarket supports categories currently
-    if user.active_platform != Platform.POLYMARKET:
+    # Only Polymarket and Limitless support categories currently
+    if user.active_platform not in (Platform.POLYMARKET, Platform.LIMITLESS):
         await query.edit_message_text(
             "📂 <b>Categories</b>\n\n"
-            "Categories are currently only available for Polymarket.\n\n"
-            "Switch to Polymarket to browse by category.",
+            "Categories are currently only available for Polymarket and Limitless.\n\n"
+            "Switch to one of these platforms to browse by category.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("« Back", callback_data="markets:refresh")],
@@ -2940,7 +2940,7 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
         )
         return
 
-    platform = get_platform(Platform.POLYMARKET)
+    platform = get_platform(user.active_platform)
     categories = platform.get_available_categories()
 
     text = "📂 <b>Browse by Category</b>\n\n"
@@ -2975,7 +2975,7 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
         await query.edit_message_text("Please /start first!")
         return
 
-    platform = get_platform(Platform.POLYMARKET)
+    platform = get_platform(user.active_platform)
     categories = platform.get_available_categories()
 
     # Find category info

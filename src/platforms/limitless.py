@@ -39,6 +39,23 @@ LIMITLESS_API_BASE = "https://api.limitless.exchange"
 # USDC on Base
 USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 
+# Limitless Categories (ID -> Name mapping)
+LIMITLESS_CATEGORIES = {
+    "29": "Hourly",
+    "30": "Daily",
+    "31": "Weekly",
+    "2": "Crypto",
+    "1": "Sports",
+    "49": "Football Matches",
+    "50": "Off the Pitch",
+    "23": "Economy",
+    "43": "Pre-TGE",
+    "19": "Company News",
+    "48": "This vs That",
+    "42": "Korean Market",
+    "5": "Other",
+}
+
 # ERC20 ABI for USDC transfers
 ERC20_ABI = [
     {
@@ -396,16 +413,16 @@ class LimitlessPlatform(BasePlatform):
         category: str,
         limit: int = 20,
     ) -> list[Market]:
-        """Get markets filtered by category."""
+        """Get markets filtered by category ID."""
         try:
             data = await self._api_request(
                 "GET",
                 f"/markets/active/{category}",
-                params={"limit": limit}
+                params={"limit": limit, "page": 1}
             )
 
             markets = []
-            items = data if isinstance(data, list) else data.get("markets", [])
+            items = data if isinstance(data, list) else data.get("data", data.get("markets", []))
 
             for item in items:
                 try:
@@ -421,12 +438,25 @@ class LimitlessPlatform(BasePlatform):
 
     def get_available_categories(self) -> list[dict]:
         """Get list of available market categories."""
+        # Map category IDs to emojis
+        category_emojis = {
+            "29": "⏰",  # Hourly
+            "30": "📅",  # Daily
+            "31": "📆",  # Weekly
+            "2": "🪙",   # Crypto
+            "1": "🏆",   # Sports
+            "49": "⚽",  # Football Matches
+            "50": "🏟️",  # Off the Pitch
+            "23": "📈",  # Economy
+            "43": "🚀",  # Pre-TGE
+            "19": "🏢",  # Company News
+            "48": "⚔️",  # This vs That
+            "42": "🇰🇷", # Korean Market
+            "5": "📦",   # Other
+        }
         return [
-            {"id": "politics", "label": "Politics", "emoji": "🏛️"},
-            {"id": "sports", "label": "Sports", "emoji": "🏆"},
-            {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
-            {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
-            {"id": "science", "label": "Science", "emoji": "🔬"},
+            {"id": cat_id, "label": name, "emoji": category_emojis.get(cat_id, "📊")}
+            for cat_id, name in LIMITLESS_CATEGORIES.items()
         ]
 
     # ===================
