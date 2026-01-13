@@ -850,6 +850,44 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
     platform_info = PLATFORM_INFO[user.active_platform]
     platform = get_platform(user.active_platform)
 
+    # Filter out expired/resolved positions and auto-close them
+    active_positions = []
+    for pos in all_positions:
+        try:
+            # First check if we can find the market at all
+            lookup_id = pos.event_id if pos.event_id else pos.market_id
+            market = await platform.get_market(lookup_id, search_title=pos.market_title)
+            if not market and pos.event_id:
+                market = await platform.get_market(pos.market_id, search_title=pos.market_title)
+
+            if not market:
+                # Market not found - likely expired/delisted, skip from display
+                logger.info(f"Skipping position {pos.id} - market {pos.market_id} not found (likely expired)")
+                continue
+
+            # Check market resolution status
+            resolution = await platform.get_market_resolution(lookup_id)
+
+            if resolution.is_resolved:
+                # Auto-close resolved positions
+                outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
+                if resolution.winning_outcome and resolution.winning_outcome.upper() == outcome_str:
+                    # Won - mark as redeemable but still show for redemption
+                    active_positions.append(pos)
+                else:
+                    # Lost - auto-close the position
+                    await update_position(pos.id, status=PositionStatus.CLOSED, token_amount="0")
+                    logger.info(f"Auto-closed losing position {pos.id} for resolved market {pos.market_id}")
+            else:
+                # Market still active
+                active_positions.append(pos)
+        except Exception as e:
+            # If we can't check, skip the position to avoid errors
+            logger.debug(f"Could not verify position {pos.id}: {e}")
+            continue
+
+    all_positions = active_positions
+
     if not all_positions:
         text = (
             f"📊 <b>No Open Positions</b>\n\n"
