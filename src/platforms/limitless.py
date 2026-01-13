@@ -819,13 +819,14 @@ class LimitlessPlatform(BasePlatform):
         # Generate salt
         salt = secrets.randbelow(2 ** 256)
 
-        # Build order struct - API requires numbers, not strings for numeric fields
+        # Build order struct for API
+        # Note: salt and tokenId must be strings to avoid JSON precision issues with large uint256 values
         order = {
-            "salt": salt,
+            "salt": str(salt),  # Must be string for large uint256
             "maker": wallet,
             "signer": wallet,
             "taker": "0x0000000000000000000000000000000000000000",
-            "tokenId": str(token_id),  # tokenId stays as string for API (large number)
+            "tokenId": str(token_id),  # Must be string for large uint256
             "makerAmount": maker_amount,  # Must be number
             "takerAmount": taker_amount,  # Must be number
             "expiration": "0",  # Must be "0" - expiration not currently supported
@@ -892,9 +893,11 @@ class LimitlessPlatform(BasePlatform):
             digest=digest.hex(),
             wallet=wallet,
             exchange=exchange_checksum,
+            salt=salt,
             token_id=token_id_int,
             maker_amount=maker_amount,
             taker_amount=taker_amount,
+            fee_rate_bps=fee_rate_bps,
         )
 
         # Sign the digest directly using Account._sign_hash
