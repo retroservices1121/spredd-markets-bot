@@ -298,7 +298,7 @@ class LimitlessPlatform(BasePlatform):
             no_price=no_price,
             volume_24h=Decimal(str(volume)) if volume else None,
             liquidity=Decimal(str(liquidity)) if liquidity else None,
-            is_active=data.get("status") == "active" or data.get("isActive", True),
+            is_active=data.get("status") in ("active", "FUNDED", "ACTIVE") or data.get("isActive", True),
             close_time=data.get("expirationDate") or data.get("endDate"),
             yes_token=yes_token,
             no_token=no_token,
