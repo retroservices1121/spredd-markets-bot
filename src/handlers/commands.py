@@ -706,7 +706,7 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             buttons.append([
                 InlineKeyboardButton(
                     f"{i}. {market.title[:30]}...",
-                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:20]}"
+                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:40]}"
                 )
             ])
 
@@ -790,7 +790,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             buttons.append([
                 InlineKeyboardButton(
                     f"{i}. {market.title[:30]}...",
-                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:20]}"
+                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:40]}"
                 )
             ])
         
@@ -2887,7 +2887,7 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
             buttons.append([
                 InlineKeyboardButton(
                     f"{display_num}. {market.title[:30]}...",
-                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:20]}"
+                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:40]}"
                 )
             ])
 
@@ -3026,7 +3026,7 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
             buttons.append([
                 InlineKeyboardButton(
                     f"{i}. {market.title[:30]}...",
-                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:20]}"
+                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:40]}"
                 )
             ])
 
@@ -5841,7 +5841,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 buttons.append([
                     InlineKeyboardButton(
                         f"{i}. View Market",
-                        callback_data=f"market:{user.active_platform.value}:{market.market_id[:20]}"
+                        callback_data=f"market:{user.active_platform.value}:{market.market_id[:40]}"
                     )
                 ])
             
