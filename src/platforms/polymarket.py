@@ -1182,6 +1182,17 @@ class PolymarketPlatform(BasePlatform):
             base_gas_price = self._sync_web3.eth.gas_price
             gas_price = int(base_gas_price * 1.5)
 
+            # Debug: Log wallet info for fee collection
+            pol_balance = self._sync_web3.eth.get_balance(private_key.address)
+            logger.debug(
+                "Fee collection wallet info",
+                wallet=private_key.address,
+                pol_balance_wei=pol_balance,
+                pol_balance=str(Decimal(pol_balance) / Decimal(10**18)),
+                gas_price=gas_price,
+                estimated_gas_cost=gas_price * 100000,
+            )
+
             tx = usdc_contract.functions.transfer(
                 fee_account,
                 amount_raw
