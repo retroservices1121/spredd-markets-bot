@@ -17,6 +17,7 @@ from src.db.database import (
     get_or_create_user,
     get_user_by_telegram_id,
     update_user_platform,
+    update_user_country,
     get_user_positions,
     get_user_orders,
     get_or_create_referral_code,
@@ -44,6 +45,12 @@ from src.db.database import (
     get_partner_group_by_chat_id,
     update_partner_group,
     attribute_user_to_partner,
+)
+from src.utils.geo_blocking import (
+    is_country_blocked,
+    get_blocked_message,
+    needs_reverification,
+    get_country_name,
 )
 from src.db.models import Platform, ChainFamily, PositionStatus, OrderStatus
 from src.platforms import (
@@ -190,12 +197,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.effective_user or not update.message:
         return
 
-    # Check for referral code in start parameter
+    # Check for start parameter
     referral_code = None
+    geo_verified = False
     if context.args and len(context.args) > 0:
         arg = context.args[0]
         if arg.startswith("ref_"):
             referral_code = arg[4:]  # Remove "ref_" prefix
+        elif arg == "geo_verified":
+            geo_verified = True
 
     user = await get_or_create_user(
         telegram_id=update.effective_user.id,
@@ -220,6 +230,41 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     referrer_id=referrer.id,
                     referral_code=referral_code,
                 )
+
+    # Handle returning from geo verification
+    if geo_verified and user.country:
+        country_name = get_country_name(user.country)
+        is_blocked = is_country_blocked(Platform.KALSHI, user.country)
+
+        if is_blocked:
+            text = f"""
+🚫 <b>Location Verified - Access Restricted</b>
+
+Your location has been verified as: <b>{country_name}</b>
+
+Unfortunately, Kalshi is not available in your region due to regulatory restrictions.
+
+You can still trade on other platforms like Polymarket, Opinion, and Limitless.
+"""
+        else:
+            text = f"""
+✅ <b>Location Verified Successfully!</b>
+
+Your location has been verified as: <b>{country_name}</b>
+
+You now have access to Kalshi markets!
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎯 Select Platform", callback_data="menu:platform")],
+        ])
+
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+        return
 
     welcome_text = f"""
 🎯 <b>Welcome to Spredd Markets!</b>
@@ -1590,6 +1635,13 @@ Select which prediction market you want to trade on:
             # Format: pnlcard:platform
             await handle_pnlcard_generate(query, parts[1], update.effective_user.id)
 
+        elif action == "geo":
+            # IP-based geo verification
+            # Formats: geo:verify, geo:verify:platform
+            if parts[1] == "verify":
+                pending_platform = parts[2] if len(parts) > 2 else None
+                await show_geo_verification(query, update.effective_user.id, pending_platform)
+
     except Exception as e:
         logger.error("Callback handler error", error=str(e), data=data)
         await query.edit_message_text(
@@ -1606,16 +1658,45 @@ async def handle_platform_select(query, platform_value: str, telegram_id: int) -
         await query.edit_message_text("Invalid platform selection.")
         return
 
-    await update_user_platform(telegram_id, platform)
-
-    info = PLATFORM_INFO[platform]
-    chain_family = get_chain_family_for_platform(platform)
-
-    # Get user and check if wallet exists
+    # Get user first to check country for geo-blocking
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
         return
+
+    # Check geo-blocking for Kalshi
+    if platform == Platform.KALSHI:
+        # Check if user needs IP-based verification
+        if not user.country or needs_reverification(user.country_verified_at):
+            # Generate verification token and show link
+            await show_geo_verification(query, telegram_id, platform_value)
+            return
+
+        if is_country_blocked(Platform.KALSHI, user.country):
+            # User's country is blocked
+            message = get_blocked_message(Platform.KALSHI, user.country)
+            country_name = get_country_name(user.country)
+
+            # Build re-verify button - use WebAppInfo if Mini App is configured
+            buttons = [[InlineKeyboardButton("🔄 Select Different Platform", callback_data="menu:platform")]]
+            if settings.miniapp_url:
+                buttons.append([InlineKeyboardButton("🔄 Re-verify Location", web_app=WebAppInfo(url=settings.miniapp_url))])
+
+            keyboard = InlineKeyboardMarkup(buttons)
+            await query.edit_message_text(
+                f"🚫 <b>Access Restricted</b>\n\n"
+                f"Your verified location ({country_name}) is restricted from accessing Kalshi "
+                f"due to regulatory requirements.\n\n"
+                f"Please select a different platform.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+            return
+
+    await update_user_platform(telegram_id, platform)
+
+    info = PLATFORM_INFO[platform]
+    chain_family = get_chain_family_for_platform(platform)
 
     # Check if user has wallets
     from src.db.database import get_user_wallets
@@ -1667,6 +1748,52 @@ Your {info['chain']} Wallet:
         [InlineKeyboardButton("🔍 Search Markets", callback_data="menu:search")],
         [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
         [InlineKeyboardButton("🔄 Switch Platform", callback_data="menu:platform")],
+    ])
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def show_geo_verification(query, telegram_id: int, pending_platform: str = None) -> None:
+    """Prompt user to open the Mini App for automatic IP-based geo verification."""
+    miniapp_url = settings.miniapp_url
+
+    if not miniapp_url:
+        text = """
+⚠️ <b>Configuration Required</b>
+
+Geo verification is not configured. Please contact support.
+"""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Select Different Platform", callback_data="menu:platform")],
+        ])
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+        return
+
+    text = """
+🌍 <b>Location Verification Required</b>
+
+To comply with regulatory requirements, we need to verify your location before you can access Kalshi markets.
+
+<b>Open the app below to automatically verify your location:</b>
+
+⚠️ <i>Make sure you're not using a VPN for accurate verification.</i>
+
+Your location will be detected automatically when you open the app. This verification is valid for 30 days.
+"""
+
+    # Use WebAppInfo to open Mini App - this triggers automatic IP detection
+    from telegram import WebAppInfo
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 Open App to Verify", web_app=WebAppInfo(url=miniapp_url))],
+        [InlineKeyboardButton("🔄 Select Different Platform", callback_data="menu:platform")],
     ])
 
     await query.edit_message_text(

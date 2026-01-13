@@ -3,6 +3,7 @@ Limitless Exchange platform implementation.
 Prediction market on Base chain using CLOB API.
 """
 
+import asyncio
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Optional, Tuple
 from datetime import datetime
@@ -91,6 +92,49 @@ ERC20_ABI = [
             {"name": "_spender", "type": "address"}
         ],
         "name": "allowance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    }
+]
+
+# CTF (Conditional Token Framework) ABI for redemption
+CTF_REDEEM_ABI = [
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "index", "type": "uint256"}
+        ],
+        "name": "payoutNumerators",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [{"name": "conditionId", "type": "bytes32"}],
+        "name": "payoutDenominator",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "collateralToken", "type": "address"},
+            {"name": "parentCollectionId", "type": "bytes32"},
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "indexSets", "type": "uint256[]"}
+        ],
+        "name": "redeemPositions",
+        "outputs": [],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "account", "type": "address"},
+            {"name": "id", "type": "uint256"}
+        ],
+        "name": "balanceOf",
         "outputs": [{"name": "", "type": "uint256"}],
         "type": "function"
     }
@@ -909,6 +953,10 @@ class LimitlessPlatform(BasePlatform):
             self._approval_cache.setdefault(wallet, set()).add(cache_key)
             logger.info("CTF approval confirmed", tx_hash=tx_hash.hex())
 
+            # Wait for the Limitless API to pick up the on-chain approval
+            import time
+            time.sleep(3)
+
         await asyncio.to_thread(sync_approve)
 
     def _build_eip712_order(
@@ -1170,12 +1218,30 @@ class LimitlessPlatform(BasePlatform):
                 token_id=order.get("tokenId"),
             )
 
-            result = await self._api_request(
-                "POST",
-                "/orders",
-                session_cookie=session,
-                json=payload,
-            )
+            # Submit with retry for allowance propagation delay
+            result = None
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    result = await self._api_request(
+                        "POST",
+                        "/orders",
+                        session_cookie=session,
+                        json=payload,
+                    )
+                    break  # Success
+                except Exception as api_err:
+                    error_str = str(api_err).lower()
+                    if "allowance" in error_str and attempt < max_retries - 1:
+                        # Allowance not yet visible to API, wait and retry
+                        logger.info(
+                            "Allowance not yet visible, retrying...",
+                            attempt=attempt + 1,
+                            max_retries=max_retries,
+                        )
+                        await asyncio.sleep(3)
+                        continue
+                    raise  # Re-raise if not allowance error or max retries
 
             order_id = result.get("orderId") or result.get("id") or result.get("transactionHash", "")
 
@@ -1304,16 +1370,188 @@ class LimitlessPlatform(BasePlatform):
         token_amount: Decimal,
         private_key: Any,
     ) -> RedemptionResult:
-        """Redeem winning tokens from resolved market."""
-        # This would require calling the CTF contract similar to Polymarket
-        # Implementation depends on Limitless's specific contract interface
-        return RedemptionResult(
-            success=False,
-            tx_hash=None,
-            amount_redeemed=None,
-            error_message="Redemption not yet implemented for Limitless",
-            explorer_url=None,
-        )
+        """Redeem winning tokens from resolved Limitless market.
+
+        Calls redeemPositions on the CTF contract.
+        """
+        if not isinstance(private_key, LocalAccount):
+            return RedemptionResult(
+                success=False,
+                tx_hash=None,
+                amount_redeemed=None,
+                error_message="Invalid private key type, expected EVM LocalAccount",
+                explorer_url=None,
+            )
+
+        try:
+            if not self._sync_web3:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Web3 not initialized",
+                    explorer_url=None,
+                )
+
+            # Get market data
+            market = await self.get_market(market_id)
+            if not market or not market.raw_data:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Market not found",
+                    explorer_url=None,
+                )
+
+            # Get condition ID from market data
+            condition_id = market.raw_data.get("conditionId")
+            if not condition_id:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Condition ID not found in market data",
+                    explorer_url=None,
+                )
+
+            # Check if market is resolved
+            resolution = await self.get_market_resolution(market_id)
+            if not resolution.is_resolved:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Market has not resolved yet",
+                    explorer_url=None,
+                )
+
+            # Check if user holds winning outcome
+            if resolution.winning_outcome and resolution.winning_outcome.lower() != outcome.value.lower():
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message=f"Your {outcome.value.upper()} tokens lost. The market resolved to {resolution.winning_outcome.upper()}.",
+                    explorer_url=None,
+                )
+
+            # Get venue to find exchange address
+            venue = await self._get_venue(market_id)
+            exchange_address = venue.get("exchange", venue.get("address"))
+            if not exchange_address:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Exchange address not found for market",
+                    explorer_url=None,
+                )
+
+            # Get CTF contract address from exchange
+            ctf_address = await self._get_ctf_address(exchange_address)
+            if not ctf_address:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="CTF contract address not found",
+                    explorer_url=None,
+                )
+
+            logger.info(
+                "Redeeming position",
+                market_id=market_id,
+                outcome=outcome.value,
+                ctf_address=ctf_address,
+                condition_id=condition_id,
+            )
+
+            # Build CTF contract
+            ctf_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(ctf_address),
+                abi=CTF_REDEEM_ABI,
+            )
+
+            # Convert condition ID to bytes32
+            if condition_id.startswith("0x"):
+                condition_bytes = bytes.fromhex(condition_id[2:])
+            else:
+                condition_bytes = bytes.fromhex(condition_id)
+
+            # Index sets: 1 for YES (binary 01), 2 for NO (binary 10)
+            index_set = 1 if outcome == Outcome.YES else 2
+
+            # Parent collection ID is null bytes32
+            parent_collection_id = bytes(32)
+
+            # Build and send transaction
+            wallet_address = private_key.address
+            nonce = self._sync_web3.eth.get_transaction_count(wallet_address)
+            gas_price = self._sync_web3.eth.gas_price
+
+            tx = ctf_contract.functions.redeemPositions(
+                Web3.to_checksum_address(USDC_BASE),  # collateral token
+                parent_collection_id,
+                condition_bytes,
+                [index_set],
+            ).build_transaction({
+                "from": wallet_address,
+                "nonce": nonce,
+                "gas": 200000,
+                "gasPrice": int(gas_price * 1.2),
+                "chainId": 8453,  # Base
+            })
+
+            # Sign and send
+            signed_tx = self._sync_web3.eth.account.sign_transaction(tx, private_key.key)
+            tx_hash = self._sync_web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+            logger.info(
+                "Redemption transaction sent",
+                tx_hash=tx_hash.hex(),
+                market_id=market_id,
+                outcome=outcome.value,
+            )
+
+            # Wait for confirmation
+            receipt = self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+
+            if receipt.status == 1:
+                # Winning tokens are worth $1 each
+                amount_redeemed = token_amount
+
+                logger.info(
+                    "Redemption confirmed",
+                    tx_hash=tx_hash.hex(),
+                    amount_redeemed=str(amount_redeemed),
+                )
+
+                return RedemptionResult(
+                    success=True,
+                    tx_hash=tx_hash.hex(),
+                    amount_redeemed=amount_redeemed,
+                    error_message=None,
+                    explorer_url=self.get_explorer_url(tx_hash.hex()),
+                )
+            else:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=tx_hash.hex(),
+                    amount_redeemed=None,
+                    error_message="Transaction failed on-chain",
+                    explorer_url=self.get_explorer_url(tx_hash.hex()),
+                )
+
+        except Exception as e:
+            logger.error("Redemption failed", error=str(e), market_id=market_id)
+            return RedemptionResult(
+                success=False,
+                tx_hash=None,
+                amount_redeemed=None,
+                error_message=str(e),
+                explorer_url=None,
+            )
 
     def get_explorer_url(self, tx_hash: str) -> str:
         """Get Base block explorer URL."""

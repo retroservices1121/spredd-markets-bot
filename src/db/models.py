@@ -108,6 +108,11 @@ class User(Base):
         default=Platform.KALSHI
     )
 
+    # User's country (ISO 3166-1 alpha-2 code) for geo-blocking - detected from IP
+    country: Mapped[Optional[str]] = mapped_column(String(2), nullable=True)
+    country_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    geo_verify_token: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+
     # Trading preferences
     default_slippage_bps: Mapped[int] = mapped_column(Integer, default=100)  # 1%
 

@@ -7,7 +7,7 @@ import uuid
 from decimal import Decimal
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -137,11 +137,13 @@ class PnLSummary(BaseModel):
 # ===================
 
 async def get_current_user(
+    request: Request,
     x_telegram_init_data: str = Header(..., alias="X-Telegram-Init-Data"),
     session: AsyncSession = Depends(get_session)
 ) -> User:
     """
     Validate Telegram initData and get/create user.
+    Also automatically captures user's country from IP for geo-blocking.
     """
     tg_user = get_user_from_init_data(x_telegram_init_data, settings.telegram_bot_token)
     if not tg_user:
@@ -165,6 +167,49 @@ async def get_current_user(
         session.add(user)
         await session.commit()
         await session.refresh(user)
+
+    # Auto-detect country from IP (silently, in background)
+    # Only do this if not recently verified (within last 24 hours)
+    from datetime import datetime, timezone, timedelta
+    from ..utils.geo_blocking import get_country_from_ip, is_verification_valid
+
+    should_update_geo = not is_verification_valid(user.country_verified_at)
+
+    if should_update_geo:
+        # Get client IP from headers (for proxied requests)
+        client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if not client_ip:
+            client_ip = request.headers.get("X-Real-IP", "")
+        if not client_ip and request.client:
+            client_ip = request.client.host
+
+        if client_ip:
+            try:
+                country_code = await get_country_from_ip(client_ip)
+                if country_code:
+                    # Update user's country silently
+                    from sqlalchemy import text
+                    await session.execute(
+                        text("""
+                            UPDATE users
+                            SET country = :country,
+                                country_verified_at = :now,
+                                geo_verify_token = NULL,
+                                updated_at = :now
+                            WHERE id = :uid
+                        """),
+                        {
+                            "country": country_code.upper(),
+                            "now": datetime.now(timezone.utc),
+                            "uid": user.id
+                        }
+                    )
+                    await session.commit()
+                    # Update local user object
+                    user.country = country_code.upper()
+                    user.country_verified_at = datetime.now(timezone.utc)
+            except Exception:
+                pass  # Silently ignore geo lookup failures
 
     return user
 
@@ -1226,6 +1271,117 @@ async def get_referral_stats(
             for fb in fee_balances
         ]
     }
+
+
+# ===================
+# Geo Verification Endpoints
+# ===================
+
+@router.get("/geo/verify/{token}")
+async def verify_geo_location(
+    token: str,
+    request: Request,
+):
+    """
+    Verify user's country from their IP address.
+    This endpoint is accessed via a link from Telegram.
+    """
+    from fastapi.responses import RedirectResponse, HTMLResponse
+    from ..db.database import get_user_by_geo_token, set_user_country_verified
+    from ..utils.geo_blocking import get_country_from_ip, is_country_blocked, get_country_name
+
+    # Get user by token
+    user = await get_user_by_geo_token(token)
+    if not user:
+        return HTMLResponse(
+            content="""
+            <html>
+            <head><title>Verification Failed</title></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1>❌ Verification Failed</h1>
+                <p>Invalid or expired verification link.</p>
+                <p>Please request a new verification link from the bot.</p>
+            </body>
+            </html>
+            """,
+            status_code=400
+        )
+
+    # Get client IP - check common headers for proxied requests
+    client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    if not client_ip:
+        client_ip = request.headers.get("X-Real-IP", "")
+    if not client_ip:
+        client_ip = request.client.host if request.client else ""
+
+    if not client_ip:
+        return HTMLResponse(
+            content="""
+            <html>
+            <head><title>Verification Failed</title></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1>❌ Verification Failed</h1>
+                <p>Could not determine your location.</p>
+                <p>Please try again or contact support.</p>
+            </body>
+            </html>
+            """,
+            status_code=400
+        )
+
+    # Look up country from IP
+    country_code = await get_country_from_ip(client_ip)
+
+    if not country_code:
+        return HTMLResponse(
+            content="""
+            <html>
+            <head><title>Verification Failed</title></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1>❌ Verification Failed</h1>
+                <p>Could not determine your country from your IP address.</p>
+                <p>Please disable any VPN and try again.</p>
+            </body>
+            </html>
+            """,
+            status_code=400
+        )
+
+    # Update user's country
+    await set_user_country_verified(user.id, country_code)
+
+    country_name = get_country_name(country_code)
+
+    # Check if blocked for Kalshi
+    is_blocked = is_country_blocked(Platform.KALSHI, country_code)
+    blocked_msg = ""
+    if is_blocked:
+        blocked_msg = f"""
+        <p style="color: #ff6b6b;">⚠️ Note: Access to Kalshi is restricted in {country_name}.</p>
+        <p>You can still use other platforms like Polymarket, Opinion, and Limitless.</p>
+        """
+
+    # Build redirect URL back to Telegram
+    bot_username = settings.telegram_bot_username
+    if bot_username:
+        redirect_url = f"https://t.me/{bot_username}?start=geo_verified"
+        redirect_html = f'<p><a href="{redirect_url}" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background: #0088cc; color: white; text-decoration: none; border-radius: 8px;">Return to Telegram Bot</a></p>'
+    else:
+        redirect_html = '<p>You can now return to the Telegram bot.</p>'
+
+    return HTMLResponse(
+        content=f"""
+        <html>
+        <head><title>Verification Complete</title></head>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h1>✅ Verification Complete</h1>
+            <p>Your location has been verified as: <strong>{country_name}</strong></p>
+            {blocked_msg}
+            {redirect_html}
+        </body>
+        </html>
+        """
+    )
 
 
 # ===================

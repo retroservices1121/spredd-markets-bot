@@ -189,6 +189,62 @@ async def update_user_platform(telegram_id: int, platform: Platform) -> None:
         )
 
 
+async def update_user_country(telegram_id: int, country_code: str) -> None:
+    """Update user's country (ISO 3166-1 alpha-2 code) - deprecated, use set_user_country_verified."""
+    async with get_session() as session:
+        from sqlalchemy import text
+        await session.execute(
+            text("UPDATE users SET country = :country, updated_at = now() WHERE telegram_id = :tid"),
+            {"country": country_code.upper(), "tid": telegram_id}
+        )
+
+
+async def set_user_geo_token(telegram_id: int, token: str) -> None:
+    """Set geo verification token for a user."""
+    async with get_session() as session:
+        from sqlalchemy import text
+        await session.execute(
+            text("UPDATE users SET geo_verify_token = :token, updated_at = now() WHERE telegram_id = :tid"),
+            {"token": token, "tid": telegram_id}
+        )
+
+
+async def get_user_by_geo_token(token: str) -> Optional[User]:
+    """Get user by their geo verification token."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(User).where(User.geo_verify_token == token)
+        )
+        return result.scalar_one_or_none()
+
+
+async def set_user_country_verified(user_id: str, country_code: str) -> None:
+    """Set user's country as verified from IP detection."""
+    async with get_session() as session:
+        from sqlalchemy import text
+        await session.execute(
+            text("""
+                UPDATE users
+                SET country = :country,
+                    country_verified_at = now(),
+                    geo_verify_token = NULL,
+                    updated_at = now()
+                WHERE id = :uid
+            """),
+            {"country": country_code.upper(), "uid": user_id}
+        )
+
+
+async def clear_user_geo_token(user_id: str) -> None:
+    """Clear the geo verification token after use or expiry."""
+    async with get_session() as session:
+        from sqlalchemy import text
+        await session.execute(
+            text("UPDATE users SET geo_verify_token = NULL, updated_at = now() WHERE id = :uid"),
+            {"uid": user_id}
+        )
+
+
 # ===================
 # Wallet Operations
 # ===================

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # Telegram Configuration
     # ===================
     telegram_bot_token: str = Field(..., description="Telegram bot token from @BotFather")
+    telegram_bot_username: str = Field(default="", description="Telegram bot username (without @)")
     admin_telegram_ids: str = Field(default="", description="Comma-separated admin Telegram IDs")
     
     # ===================
