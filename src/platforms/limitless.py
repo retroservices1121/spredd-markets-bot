@@ -816,13 +816,13 @@ class LimitlessPlatform(BasePlatform):
         else:
             token_id_int = 0
 
-        # Generate salt
-        salt = secrets.randbelow(2 ** 256)
+        # Generate salt - use 2^53 range for JSON number precision safety
+        # JSON numbers are IEEE 754 doubles, safe up to 2^53 - 1
+        salt = secrets.randbelow(2 ** 53)
 
         # Build order struct for API
-        # Note: salt and tokenId must be strings to avoid JSON precision issues with large uint256 values
         order = {
-            "salt": str(salt),  # Must be string for large uint256
+            "salt": salt,  # Number within JSON safe range
             "maker": wallet,
             "signer": wallet,
             "taker": "0x0000000000000000000000000000000000000000",
