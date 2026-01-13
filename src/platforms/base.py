@@ -382,6 +382,7 @@ class BasePlatform(ABC):
             Chain.SOLANA: f"https://solscan.io/tx/{tx_hash}",
             Chain.POLYGON: f"https://polygonscan.com/tx/{tx_hash}",
             Chain.BSC: f"https://bscscan.com/tx/{tx_hash}",
+            Chain.BASE: f"https://basescan.org/tx/{tx_hash}",
             Chain.MONAD: f"https://monadscan.com/tx/{tx_hash}",
         }
         return explorers.get(self.chain, tx_hash)

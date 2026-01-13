@@ -46,6 +46,7 @@ class Platform(str, Enum):
     KALSHI = "kalshi"
     POLYMARKET = "polymarket"
     OPINION = "opinion"
+    LIMITLESS = "limitless"
 
 
 class Chain(str, Enum):

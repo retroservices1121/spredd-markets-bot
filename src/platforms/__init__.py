@@ -10,6 +10,7 @@ from src.platforms.base import BasePlatform
 from src.platforms.kalshi import kalshi_platform, KalshiPlatform
 from src.platforms.polymarket import polymarket_platform, PolymarketPlatform
 from src.platforms.opinion import opinion_platform, OpinionPlatform
+from src.platforms.limitless import limitless_platform, LimitlessPlatform
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -44,6 +45,15 @@ PLATFORM_INFO = {
         "collateral": "USDT",
         "features": ["AI Oracles", "BSC Native", "Macro", "Economic Data"],
     },
+    Platform.LIMITLESS: {
+        "name": "Limitless",
+        "emoji": "♾️",
+        "chain": "Base",
+        "chain_family": ChainFamily.EVM,
+        "description": "Fast prediction market on Base",
+        "collateral": "USDC",
+        "features": ["Base L2", "Low Fees", "Fast Settlement", "Politics", "Crypto"],
+    },
 }
 
 
@@ -55,6 +65,7 @@ class PlatformRegistry:
             Platform.KALSHI: kalshi_platform,
             Platform.POLYMARKET: polymarket_platform,
             Platform.OPINION: opinion_platform,
+            Platform.LIMITLESS: limitless_platform,
         }
         self._initialized = False
     
