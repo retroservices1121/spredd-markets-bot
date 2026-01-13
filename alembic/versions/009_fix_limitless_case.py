@@ -21,9 +21,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Reset any users with 'limitless' back to 'kalshi' for now
-    # The Limitless platform needs proper enum configuration
-    op.execute("UPDATE users SET active_platform = 'kalshi' WHERE active_platform = 'limitless'")
+    # No-op migration - the fix needs to be done manually in PostgreSQL
+    # Run this SQL directly in your database:
+    # UPDATE users SET active_platform = 'kalshi' WHERE active_platform = 'limitless';
+    pass
 
 
 def downgrade() -> None:
