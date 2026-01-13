@@ -793,7 +793,7 @@ class LimitlessPlatform(BasePlatform):
             "tokenId": str(token_id),  # tokenId stays as string (large number)
             "makerAmount": maker_amount,  # Must be number
             "takerAmount": taker_amount,  # Must be number
-            "expiration": int(time.time()) + 3600,  # Must be number
+            "expiration": str(int(time.time()) + 3600),  # Must be string
             "nonce": int(time.time() * 1000),  # Must be number
             "feeRateBps": fee_rate_bps,  # Must be number
             "side": order_side,
