@@ -691,13 +691,16 @@ class LimitlessPlatform(BasePlatform):
     async def _get_venue(self, market_id: str) -> dict:
         """Get venue (exchange contract) info for a market."""
         if market_id in self._venue_cache:
-            return self._venue_cache[market_id]
+            cached = self._venue_cache[market_id]
+            logger.debug("Using cached venue", market_id=market_id, exchange=cached.get("exchange"))
+            return cached
 
         market = await self.get_market(market_id)
         if not market or not market.raw_data:
             raise PlatformError("Market not found", Platform.LIMITLESS)
 
         venue = market.raw_data.get("venue", {})
+        logger.debug("Got venue from market", market_id=market_id, venue=venue, exchange=venue.get("exchange"))
         self._venue_cache[market_id] = venue
         return venue
 
@@ -768,6 +771,8 @@ class LimitlessPlatform(BasePlatform):
         """Build and sign EIP-712 order for Limitless."""
         wallet = Web3.to_checksum_address(private_key.address)
         exchange = venue.get("exchange", venue.get("address"))
+
+        logger.debug("Building EIP-712 order", venue=venue, exchange=exchange)
 
         if not exchange:
             raise PlatformError("Exchange address not found in venue", Platform.LIMITLESS)
