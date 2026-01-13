@@ -26,6 +26,10 @@ def upgrade() -> None:
     op.execute("ALTER TYPE platform ADD VALUE IF NOT EXISTS 'limitless'")
     op.execute("ALTER TYPE platform ADD VALUE IF NOT EXISTS 'LIMITLESS'")
 
+    # Fix any existing lowercase 'limitless' values to uppercase 'LIMITLESS'
+    # This is needed because SQLAlchemy expects uppercase enum names
+    op.execute("UPDATE users SET active_platform = 'LIMITLESS' WHERE active_platform = 'limitless'")
+
 
 def downgrade() -> None:
     # PostgreSQL doesn't support removing enum values directly
