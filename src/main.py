@@ -170,6 +170,7 @@ async def run_bot() -> None:
     global app
 
     logger.info("Starting Spredd Markets Bot...")
+    logger.info("Mini App URL configured", miniapp_url=settings.miniapp_url or "NOT SET")
 
     # Run migrations first
     await run_migrations()
