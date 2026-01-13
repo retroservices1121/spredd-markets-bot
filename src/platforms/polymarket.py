@@ -948,6 +948,20 @@ class PolymarketPlatform(BasePlatform):
                     return False
 
             category_lower = category.lower().replace("-", " ")
+
+            # Category aliases for better matching
+            category_aliases = {
+                "entertainment": ["entertainment", "pop culture", "pop-culture", "celebrities", "celebrity", "movies", "movie", "tv", "television", "music", "awards", "oscars", "grammys", "emmys"],
+                "sports": ["sports", "sport", "nfl", "nba", "mlb", "nhl", "soccer", "football", "basketball", "baseball", "hockey", "tennis", "golf", "mma", "ufc", "boxing", "f1", "formula 1"],
+                "politics": ["politics", "political", "election", "elections", "government", "congress", "senate", "president", "presidential", "trump", "biden", "us politics"],
+                "crypto": ["crypto", "cryptocurrency", "bitcoin", "btc", "ethereum", "eth", "defi", "nft", "web3", "blockchain"],
+                "business": ["business", "economy", "economics", "finance", "financial", "markets", "stock", "stocks", "fed", "federal reserve", "inflation"],
+                "science": ["science", "tech", "technology", "ai", "artificial intelligence", "space", "nasa", "climate", "health", "medical"],
+            }
+
+            # Get all terms to match for this category
+            match_terms = category_aliases.get(category_lower, [category_lower])
+
             markets = []
 
             for event in data if isinstance(data, list) else []:
@@ -959,9 +973,12 @@ class PolymarketPlatform(BasePlatform):
                     for tag in event_tags:
                         tag_label = (tag.get("label") or tag.get("slug") or "").lower()
                         tag_slug = (tag.get("slug") or "").lower()
-                        # Match by label or slug
-                        if category_lower in tag_label or category_lower in tag_slug or tag_slug == category.lower():
-                            tag_matches = True
+                        # Match by any alias term
+                        for term in match_terms:
+                            if term in tag_label or term in tag_slug or tag_slug == term:
+                                tag_matches = True
+                                break
+                        if tag_matches:
                             break
 
                     if not tag_matches:
