@@ -210,65 +210,83 @@ class LimitlessPlatform(BasePlatform):
                 str(e.response.status_code),
             )
 
-    async def _get_session(self, private_key: LocalAccount) -> str:
-        """Get or create authenticated session for wallet."""
+    async def _get_session(self, private_key: LocalAccount) -> Tuple[str, str]:
+        """Get or create authenticated session for wallet.
+
+        Returns: (session_cookie, owner_id)
+        """
         wallet = private_key.address
 
         # Check cache
         cached = self._session_cache.get(wallet)
         if cached and cached.get("expires_at", 0) > time.time():
-            return cached["session"]
+            return cached["session"], cached.get("owner_id", "")
 
         # Authenticate with Limitless
         checksum_address = Web3.to_checksum_address(wallet)
 
-        # Step 1: Get signing message
+        # Step 1: Get signing message (returns plain text, not JSON)
         logger.debug("Requesting signing message", account=checksum_address)
-        message_resp = await self._api_request(
-            "GET",
-            f"/auth/signing-message?account={checksum_address}"
-        )
-        logger.debug("Signing message response", response=message_resp)
+        if not self._http_client:
+            raise RuntimeError("Client not initialized")
 
-        signing_message = message_resp.get("message") or message_resp.get("signingMessage")
+        response = await self._http_client.get(f"/auth/signing-message")
+        response.raise_for_status()
+        signing_message = response.text.strip()
+
         if not signing_message:
-            logger.warning("Empty signing message response", response=message_resp)
+            logger.warning("Empty signing message response")
             raise PlatformError("Failed to get signing message", Platform.LIMITLESS)
 
-        # Step 2: Sign the message
-        signature = private_key.sign_message(
-            encode_typed_data(text=signing_message) if isinstance(signing_message, str)
-            else signing_message
-        )
+        logger.debug("Got signing message", message_preview=signing_message[:50])
 
-        # For simple message signing
+        # Step 2: Sign the message using EIP-191 (personal_sign)
         from eth_account.messages import encode_defunct
         message = encode_defunct(text=signing_message)
         signed = private_key.sign_message(message)
 
         # Step 3: Submit for session
-        login_resp = await self._api_request(
-            "POST",
+        login_response = await self._http_client.post(
             "/auth/login",
             headers={
                 "x-account": checksum_address,
-                "x-signing-message": signing_message.encode().hex() if isinstance(signing_message, str) else signing_message,
+                "x-signing-message": signing_message.encode("utf-8").hex(),
                 "x-signature": signed.signature.hex(),
-            }
+            },
+            json={"client": "eoa"}
         )
+        login_response.raise_for_status()
 
-        session = login_resp.get("session") or login_resp.get("token")
-        if not session:
-            # Try to extract from cookies
-            raise PlatformError("Failed to authenticate", Platform.LIMITLESS)
+        login_data = login_response.json()
+        logger.debug("Login response", data=login_data)
+
+        # Extract owner_id from response
+        owner_id = login_data.get("id") or login_data.get("ownerId") or ""
+
+        # Extract session cookie
+        session_cookie = None
+        for cookie in login_response.cookies.jar:
+            if cookie.name == "limitless_session":
+                session_cookie = cookie.value
+                break
+
+        if not session_cookie:
+            # Try to get from response
+            session_cookie = login_data.get("session") or login_data.get("token")
+
+        if not session_cookie:
+            raise PlatformError("Failed to get session cookie", Platform.LIMITLESS)
+
+        logger.info("Limitless authentication successful", owner_id=owner_id)
 
         # Cache session (29 days)
         self._session_cache[wallet] = {
-            "session": session,
+            "session": session_cookie,
+            "owner_id": owner_id,
             "expires_at": time.time() + 29 * 24 * 3600,
         }
 
-        return session
+        return session_cookie, owner_id
 
     # ===================
     # Market Discovery
@@ -845,19 +863,31 @@ class LimitlessPlatform(BasePlatform):
             )
 
             # Get session for authenticated request
-            # Note: Some orders may work without authentication
             session = None
+            owner_id = None
             try:
-                session = await self._get_session(private_key)
+                session, owner_id = await self._get_session(private_key)
+                logger.debug("Got session", has_session=bool(session), owner_id=owner_id)
             except Exception as e:
-                logger.warning("Session auth failed, trying without", error=str(e))
+                logger.error("Session auth failed", error=str(e))
+                return TradeResult(
+                    success=False,
+                    tx_hash=None,
+                    input_amount=quote.input_amount,
+                    output_amount=Decimal(0),
+                    error_message=f"Authentication failed: {str(e)}",
+                )
 
             # Submit order
             payload = {
                 "order": order,
-                "orderType": "FOK",  # Fill-or-Kill for market orders
+                "orderType": "GTC",  # Good Till Cancelled
                 "marketSlug": market_slug,
             }
+
+            # Add ownerId if we have it
+            if owner_id:
+                payload["ownerId"] = owner_id
 
             result = await self._api_request(
                 "POST",
