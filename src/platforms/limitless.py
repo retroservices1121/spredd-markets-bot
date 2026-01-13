@@ -312,8 +312,8 @@ class LimitlessPlatform(BasePlatform):
         active_only: bool = True,
     ) -> list[Market]:
         """Get list of markets from Limitless."""
-        # API uses 'page' not 'offset'
-        page = offset // limit if limit > 0 else 0
+        # API uses 1-indexed pages
+        page = (offset // limit) + 1 if limit > 0 else 1
         params = {
             "limit": limit,
             "page": page,
