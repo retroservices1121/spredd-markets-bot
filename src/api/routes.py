@@ -20,6 +20,7 @@ from ..db.models import (
     ChainFamily,
     FeeBalance,
     Order,
+    Outcome,
     Platform,
     Position,
     PositionStatus,
@@ -588,26 +589,41 @@ async def get_quote(
         # Convert amount to Decimal for platform methods
         amount_decimal = Decimal(str(request.amount))
 
+        # Convert outcome string to Outcome enum
+        try:
+            outcome_enum = Outcome(request.outcome.lower())
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid outcome: {request.outcome}")
+
         quote = await plat.get_quote(
             market_id=request.market_id,
-            outcome=request.outcome,
+            outcome=outcome_enum,
             side=request.side,
             amount=amount_decimal,
         )
 
+        # Quote is a dataclass, access attributes directly
         return QuoteResponse(
             platform=platform,
             market_id=request.market_id,
             outcome=request.outcome,
             side=request.side,
-            input_amount=quote.get("input_amount", request.amount),
-            expected_output=quote.get("expected_output", "0"),
-            price=float(quote.get("price", 0)),
-            price_impact=quote.get("price_impact"),
-            fees=quote.get("fees", {}),
+            input_amount=str(quote.input_amount),
+            expected_output=str(quote.expected_output),
+            price=float(quote.price_per_token),
+            price_impact=float(quote.price_impact) if quote.price_impact else None,
+            fees={
+                "platform_fee": str(quote.platform_fee) if quote.platform_fee else "0",
+                "network_fee": str(quote.network_fee_estimate) if quote.network_fee_estimate else "0",
+            },
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
+        import traceback
+        print(f"[Quote Error] {type(e).__name__}: {e}")
+        print(f"[Quote Error] Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -664,14 +680,34 @@ async def execute_order(
         # Convert amount to Decimal for platform methods
         amount_decimal = Decimal(str(request.amount))
 
-        # Execute order
-        tx_result = await plat.execute_order(
+        # Convert outcome string to Outcome enum
+        try:
+            outcome_enum = Outcome(request.outcome.lower())
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid outcome: {request.outcome}")
+
+        # Convert private key to appropriate type based on platform
+        if platform == "kalshi":
+            from solders.keypair import Keypair
+            # Solana private key is base58 encoded
+            signing_key = Keypair.from_base58_string(private_key)
+        else:
+            from eth_account import Account
+            # EVM private key is hex
+            signing_key = Account.from_key(private_key)
+
+        # First get a quote
+        quote = await plat.get_quote(
             market_id=request.market_id,
-            outcome=request.outcome,
+            outcome=outcome_enum,
             side=request.side,
             amount=amount_decimal,
-            private_key=private_key,
-            slippage_bps=request.slippage_bps,
+        )
+
+        # Execute the trade using the quote
+        tx_result = await plat.execute_trade(
+            quote=quote,
+            private_key=signing_key,
         )
 
         # Create order record
@@ -686,10 +722,10 @@ async def execute_order(
             input_token="USDC",
             input_amount=request.amount,
             output_token=f"{request.outcome.upper()} shares",
-            expected_output=tx_result.get("expected_output", "0"),
-            actual_output=tx_result.get("actual_output"),
-            status=tx_result.get("status", "submitted"),
-            tx_hash=tx_result.get("tx_hash"),
+            expected_output=str(quote.expected_output),
+            actual_output=str(tx_result.output_amount) if tx_result.output_amount else None,
+            status="completed" if tx_result.success else "failed",
+            tx_hash=tx_result.tx_hash,
         )
         session.add(order)
         await session.commit()
@@ -698,7 +734,7 @@ async def execute_order(
             order_id=order.id,
             status=order.status,
             tx_hash=order.tx_hash,
-            message=tx_result.get("message", "Order submitted"),
+            message=f"Trade {'completed' if tx_result.success else 'failed'}: {tx_result.error_message or 'Success'}",
         )
 
     except HTTPException:

@@ -75,15 +75,17 @@ export function formatShares(amount: string | number): string {
   const num = typeof amount === "string" ? parseFloat(amount) : amount;
   if (isNaN(num)) return "0";
 
-  // If the number is very large (like wei), convert it
+  // If the number is very large (like wei - 18 decimals), convert it
   if (num > 1e15) {
-    return (num / 1e18).toFixed(4);
+    return formatNumber(num / 1e18);
   }
-  if (num > 1e9) {
-    return (num / 1e6).toFixed(4);
+  // 6-decimal tokens (Kalshi shares, USDC) - values > 100,000 are likely raw
+  // This handles cases where 1 share = 1,000,000 (6 decimals)
+  if (num > 1e5) {
+    return formatNumber(num / 1e6);
   }
 
-  // Normal formatting
+  // Normal formatting for small human-readable amounts
   if (num >= 1000) {
     return formatNumber(num);
   }
