@@ -184,7 +184,7 @@ async def update_user_platform(telegram_id: int, platform: Platform) -> None:
         await session.execute(
             update(User)
             .where(User.telegram_id == telegram_id)
-            .values(active_platform=platform)
+            .values(active_platform=platform.value)
         )
 
 
