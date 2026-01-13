@@ -277,6 +277,12 @@ class LimitlessPlatform(BasePlatform):
                 yes_price = Decimal("0.5")
                 no_price = Decimal("0.5")
 
+        # Normalize prices: if they're in 0-100 range, convert to 0-1
+        if yes_price is not None and yes_price > 1:
+            yes_price = yes_price / Decimal("100")
+        if no_price is not None and no_price > 1:
+            no_price = no_price / Decimal("100")
+
         # Extract token IDs
         outcomes = data.get("outcomes") or data.get("tokens") or []
         yes_token = None
@@ -316,7 +322,8 @@ class LimitlessPlatform(BasePlatform):
             volume_24h=Decimal(str(volume)) if volume else None,
             liquidity=Decimal(str(liquidity)) if liquidity else None,
             is_active=data.get("status") in ("active", "FUNDED", "ACTIVE") or data.get("isActive", True),
-            close_time=data.get("expirationDate") or data.get("endDate"),
+            # Prefer expirationTimestamp (milliseconds) for accurate time, fallback to date strings
+            close_time=data.get("expirationTimestamp") or data.get("expirationDate") or data.get("endDate"),
             yes_token=yes_token,
             no_token=no_token,
             raw_data=data,

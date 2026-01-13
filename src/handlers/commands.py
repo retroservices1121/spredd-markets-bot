@@ -92,7 +92,7 @@ def format_usd(amount: Optional[Decimal]) -> str:
     return f"${float(amount):,.2f}"
 
 
-def format_expiration(close_time) -> str:
+def format_expiration(close_time, show_time: bool = True) -> str:
     """Format expiration date/time in a user-friendly way."""
     if not close_time:
         return "N/A"
@@ -104,11 +104,18 @@ def format_expiration(close_time) -> str:
 
         # Handle Unix timestamp (integer or numeric string)
         if isinstance(close_time, (int, float)):
+            # Check if timestamp is in milliseconds (Limitless uses ms)
+            if close_time > 1e12:
+                close_time = close_time / 1000
             dt = datetime.fromtimestamp(close_time, tz=timezone.utc)
         elif isinstance(close_time, str):
             # Check if it's a numeric string (Unix timestamp)
             if close_time.isdigit() or (close_time.replace('.', '', 1).isdigit()):
-                dt = datetime.fromtimestamp(float(close_time), tz=timezone.utc)
+                ts = float(close_time)
+                # Check if timestamp is in milliseconds
+                if ts > 1e12:
+                    ts = ts / 1000
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
             # Parse ISO format date string
             elif close_time.endswith("Z"):
                 dt = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
@@ -135,16 +142,21 @@ def format_expiration(close_time) -> str:
         # Format based on time remaining
         days = diff.days
         hours = diff.seconds // 3600
+        minutes = (diff.seconds % 3600) // 60
 
         if days > 30:
             return dt.strftime("%b %d, %Y")
         elif days > 0:
             return f"{days}d {hours}h"
         elif hours > 0:
-            minutes = (diff.seconds % 3600) // 60
+            # For hourly markets, show actual time
+            if show_time and hours < 6:
+                return f"{hours}h {minutes}m ({dt.strftime('%H:%M')} UTC)"
             return f"{hours}h {minutes}m"
         else:
-            minutes = diff.seconds // 60
+            # Show actual time for very short expiration
+            if show_time:
+                return f"{minutes}m ({dt.strftime('%H:%M')} UTC)"
             return f"{minutes}m"
     except Exception:
         # Fallback: convert to string and truncate
