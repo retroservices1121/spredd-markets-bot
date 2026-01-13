@@ -306,3 +306,87 @@ export interface ReferralStats {
 export async function getReferralStats(initData: string): Promise<ReferralStats> {
   return apiRequest("/referral/stats", { initData });
 }
+
+// ===================
+// Bridge API
+// ===================
+
+export interface BridgeChain {
+  id: string;
+  name: string;
+  balance: string;
+  has_balance: boolean;
+}
+
+export interface BridgeChainsResponse {
+  chains: BridgeChain[];
+  wallet_address: string | null;
+  dest_chain: string;
+}
+
+export async function getBridgeChains(initData: string): Promise<BridgeChainsResponse> {
+  return apiRequest("/bridge/chains", { initData });
+}
+
+export interface BridgeQuoteRequest {
+  source_chain: string;
+  amount: string;
+}
+
+export interface BridgeQuoteResponse {
+  source_chain: string;
+  dest_chain: string;
+  amount: string;
+  fast_bridge: {
+    output_amount: string;
+    fee_amount: string;
+    fee_percent: number;
+    estimated_time: string;
+    available: boolean;
+    error?: string;
+  } | null;
+  standard_bridge: {
+    output_amount: string;
+    fee_amount: string;
+    fee_percent: number;
+    estimated_time: string;
+    available: boolean;
+  } | null;
+}
+
+export async function getBridgeQuote(
+  initData: string,
+  request: BridgeQuoteRequest
+): Promise<BridgeQuoteResponse> {
+  return apiRequest("/bridge/quote", {
+    method: "POST",
+    body: request,
+    initData,
+  });
+}
+
+export interface BridgeExecuteRequest {
+  source_chain: string;
+  amount: string;
+  mode: "fast" | "standard";
+}
+
+export interface BridgeExecuteResponse {
+  success: boolean;
+  source_chain: string;
+  dest_chain: string;
+  amount: string;
+  tx_hash: string | null;
+  message: string;
+}
+
+export async function executeBridge(
+  initData: string,
+  request: BridgeExecuteRequest
+): Promise<BridgeExecuteResponse> {
+  return apiRequest("/bridge/execute", {
+    method: "POST",
+    body: request,
+    initData,
+  });
+}

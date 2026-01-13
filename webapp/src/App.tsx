@@ -4,6 +4,7 @@ import Layout from "@/components/layout/Layout";
 import MarketsPage from "@/pages/MarketsPage";
 import MarketDetailsPage from "@/pages/MarketDetailsPage";
 import WalletPage from "@/pages/WalletPage";
+import BridgePage from "@/pages/BridgePage";
 import PositionsPage from "@/pages/PositionsPage";
 import ProfilePage from "@/pages/ProfilePage";
 import { useTelegram } from "@/contexts/TelegramContext";
@@ -31,6 +32,7 @@ function App() {
           <Route path="markets" element={<MarketsPage />} />
           <Route path="markets/:platform/:marketId" element={<MarketDetailsPage />} />
           <Route path="wallet" element={<WalletPage />} />
+          <Route path="bridge" element={<BridgePage />} />
           <Route path="positions" element={<PositionsPage />} />
           <Route path="profile" element={<ProfilePage />} />
         </Route>

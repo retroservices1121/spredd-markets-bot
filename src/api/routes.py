@@ -630,6 +630,232 @@ async def execute_order(
 
 
 # ===================
+# Bridge Endpoints
+# ===================
+
+class BridgeQuoteRequest(BaseModel):
+    """Bridge quote request."""
+    source_chain: str
+    amount: str
+
+
+class BridgeQuoteResponse(BaseModel):
+    """Bridge quote response."""
+    source_chain: str
+    dest_chain: str
+    amount: str
+    fast_bridge: Optional[dict] = None
+    standard_bridge: Optional[dict] = None
+
+
+class BridgeExecuteRequest(BaseModel):
+    """Bridge execution request."""
+    source_chain: str
+    amount: str
+    mode: str = "fast"  # "fast" or "standard"
+
+
+class BridgeExecuteResponse(BaseModel):
+    """Bridge execution response."""
+    success: bool
+    source_chain: str
+    dest_chain: str
+    amount: str
+    tx_hash: Optional[str] = None
+    message: str
+
+
+@router.get("/bridge/chains")
+async def get_bridge_chains(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """Get available bridge source chains with balances."""
+    from ..services.bridge import bridge_service, BridgeChain
+
+    # Initialize bridge service if needed
+    if not bridge_service._initialized:
+        bridge_service.initialize()
+
+    # Get user's EVM wallet
+    result = await session.execute(
+        select(Wallet).where(
+            Wallet.user_id == user.id,
+            Wallet.chain_family == ChainFamily.EVM
+        )
+    )
+    wallet = result.scalar_one_or_none()
+
+    if not wallet:
+        return {"chains": [], "wallet_address": None}
+
+    # Get balances for all supported chains
+    balances = bridge_service.get_all_usdc_balances(wallet.public_key)
+
+    chains = []
+    for chain, balance in balances.items():
+        if chain != BridgeChain.POLYGON:  # Polygon is destination, not source
+            chains.append({
+                "id": chain.value,
+                "name": chain.value.title(),
+                "balance": str(balance),
+                "has_balance": balance > Decimal("1"),  # Minimum $1 to bridge
+            })
+
+    return {
+        "chains": chains,
+        "wallet_address": wallet.public_key,
+        "dest_chain": "polygon",
+    }
+
+
+@router.post("/bridge/quote", response_model=BridgeQuoteResponse)
+async def get_bridge_quote(
+    request: BridgeQuoteRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """Get a quote for bridging USDC to Polygon."""
+    from ..services.bridge import bridge_service, BridgeChain
+
+    # Initialize bridge service if needed
+    if not bridge_service._initialized:
+        bridge_service.initialize()
+
+    try:
+        source_chain = BridgeChain(request.source_chain.lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid source chain: {request.source_chain}")
+
+    amount = Decimal(str(request.amount))
+
+    # Get user's EVM wallet
+    result = await session.execute(
+        select(Wallet).where(
+            Wallet.user_id == user.id,
+            Wallet.chain_family == ChainFamily.EVM
+        )
+    )
+    wallet = result.scalar_one_or_none()
+
+    if not wallet:
+        raise HTTPException(status_code=400, detail="EVM wallet not found")
+
+    # Check balance on source chain
+    balance = bridge_service.get_usdc_balance(source_chain, wallet.public_key)
+    if balance < amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient USDC on {source_chain.value}. Have {balance}, need {amount}"
+        )
+
+    # Get fast bridge quote
+    fast_quote = bridge_service.get_fast_bridge_quote(
+        source_chain,
+        BridgeChain.POLYGON,
+        amount,
+        wallet.public_key
+    )
+
+    return BridgeQuoteResponse(
+        source_chain=source_chain.value,
+        dest_chain="polygon",
+        amount=str(amount),
+        fast_bridge={
+            "output_amount": str(fast_quote.output_amount),
+            "fee_amount": str(fast_quote.fee_amount),
+            "fee_percent": fast_quote.fee_percent,
+            "estimated_time": "~30 seconds",
+            "available": fast_quote.error is None,
+            "error": fast_quote.error,
+        } if fast_quote else None,
+        standard_bridge={
+            "output_amount": str(amount),  # No fee for standard
+            "fee_amount": "0",
+            "fee_percent": 0,
+            "estimated_time": "~15 minutes",
+            "available": True,
+        },
+    )
+
+
+@router.post("/bridge/execute", response_model=BridgeExecuteResponse)
+async def execute_bridge(
+    request: BridgeExecuteRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """Execute a bridge transfer to Polygon."""
+    import asyncio
+    from ..services.bridge import bridge_service, BridgeChain
+    from ..utils.encryption import decrypt
+
+    # Initialize bridge service if needed
+    if not bridge_service._initialized:
+        bridge_service.initialize()
+
+    try:
+        source_chain = BridgeChain(request.source_chain.lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid source chain: {request.source_chain}")
+
+    amount = Decimal(str(request.amount))
+
+    # Get user's EVM wallet
+    result = await session.execute(
+        select(Wallet).where(
+            Wallet.user_id == user.id,
+            Wallet.chain_family == ChainFamily.EVM
+        )
+    )
+    wallet = result.scalar_one_or_none()
+
+    if not wallet:
+        raise HTTPException(status_code=400, detail="EVM wallet not found")
+
+    # Decrypt private key
+    private_key = decrypt(
+        wallet.encrypted_private_key,
+        settings.encryption_key,
+        user.telegram_id,
+        "",  # No PIN required for bridging
+    )
+
+    # Execute bridge in thread pool (blocking operation)
+    if request.mode == "fast":
+        bridge_result = await asyncio.to_thread(
+            bridge_service.bridge_usdc_fast,
+            private_key,
+            source_chain,
+            BridgeChain.POLYGON,
+            amount,
+        )
+    else:
+        bridge_result = await asyncio.to_thread(
+            bridge_service.bridge_usdc,
+            private_key,
+            source_chain,
+            BridgeChain.POLYGON,
+            amount,
+        )
+
+    if bridge_result.success:
+        return BridgeExecuteResponse(
+            success=True,
+            source_chain=source_chain.value,
+            dest_chain="polygon",
+            amount=str(bridge_result.amount),
+            tx_hash=bridge_result.burn_tx_hash,
+            message=f"Bridge successful! USDC will arrive on Polygon shortly.",
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=bridge_result.error_message or "Bridge failed"
+        )
+
+
+# ===================
 # Position Endpoints
 # ===================
 

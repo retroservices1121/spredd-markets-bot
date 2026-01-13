@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Wallet, Copy, ExternalLink, RefreshCw } from "lucide-react";
+import { Wallet, Copy, ExternalLink, RefreshCw, ArrowRightLeft } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,6 +13,7 @@ import { toast } from "sonner";
 
 export default function WalletPage() {
   const { initData, hapticFeedback } = useTelegram();
+  const navigate = useNavigate();
 
   const {
     data,
@@ -199,6 +201,37 @@ export default function WalletPage() {
           </Card>
         )}
       </div>
+
+      {/* Bridge Card */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2 }}
+      >
+        <Card className="bg-gradient-to-br from-purple-500/20 to-blue-500/20 border-purple-500/30">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-medium flex items-center gap-2">
+                  <ArrowRightLeft className="w-4 h-4 text-purple-400" />
+                  Bridge USDC
+                </h3>
+                <p className="text-sm text-white/60 mt-1">
+                  Move USDC from other chains to Polygon
+                </p>
+              </div>
+              <Button
+                onClick={() => {
+                  hapticFeedback("light");
+                  navigate("/bridge");
+                }}
+              >
+                Bridge
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
 
       {/* Deposit Instructions */}
       <Card className="border-dashed">
