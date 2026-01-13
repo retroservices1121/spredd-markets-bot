@@ -9,7 +9,7 @@ import ProfilePage from "@/pages/ProfilePage";
 import { useTelegram } from "@/contexts/TelegramContext";
 
 function App() {
-  const { isReady, user } = useTelegram();
+  const { isReady } = useTelegram();
 
   // Show loading while Telegram WebApp initializes
   if (!isReady) {
