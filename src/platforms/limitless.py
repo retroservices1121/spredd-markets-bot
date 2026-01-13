@@ -11,7 +11,6 @@ import time
 import secrets
 
 import httpx
-from eth_account.messages import encode_typed_data
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 
@@ -769,6 +768,9 @@ class LimitlessPlatform(BasePlatform):
         fee_rate_bps: int = 300,
     ) -> dict:
         """Build and sign EIP-712 order for Limitless."""
+        from eth_abi import encode as abi_encode
+        from eth_utils import keccak
+
         wallet = Web3.to_checksum_address(private_key.address)
         exchange = venue.get("exchange", venue.get("address"))
 
@@ -776,6 +778,8 @@ class LimitlessPlatform(BasePlatform):
 
         if not exchange:
             raise PlatformError("Exchange address not found in venue", Platform.LIMITLESS)
+
+        exchange_checksum = Web3.to_checksum_address(exchange)
 
         # Calculate tick size from price (number of decimal places)
         # e.g. price=0.806 has 3 decimals, so tick_size=3, round to nearest 1000
@@ -804,13 +808,24 @@ class LimitlessPlatform(BasePlatform):
             taker_amount = int(Decimal(maker_amount) * price)
             order_side = 1  # SELL
 
+        # Parse tokenId as integer (can be very large uint256)
+        if str(token_id).isdigit():
+            token_id_int = int(token_id)
+        elif str(token_id).startswith("0x"):
+            token_id_int = int(token_id, 16)
+        else:
+            token_id_int = 0
+
+        # Generate salt
+        salt = secrets.randbelow(2 ** 256)
+
         # Build order struct - API requires numbers, not strings for numeric fields
         order = {
-            "salt": secrets.randbelow(2 ** 256),
+            "salt": salt,
             "maker": wallet,
             "signer": wallet,
             "taker": "0x0000000000000000000000000000000000000000",
-            "tokenId": str(token_id),  # tokenId stays as string (large number)
+            "tokenId": str(token_id),  # tokenId stays as string for API (large number)
             "makerAmount": maker_amount,  # Must be number
             "takerAmount": taker_amount,  # Must be number
             "expiration": "0",  # Must be "0" - expiration not currently supported
@@ -820,69 +835,82 @@ class LimitlessPlatform(BasePlatform):
             "signatureType": 0,  # EOA
         }
 
-        # EIP-712 domain - must use "Limitless CTF Exchange" as domain name
-        exchange_checksum = Web3.to_checksum_address(exchange)
+        # EIP-712 Type Hashes (must match the contract exactly)
+        EIP712_DOMAIN_TYPEHASH = keccak(
+            text="EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+        )
+        ORDER_TYPEHASH = keccak(
+            text="Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)"
+        )
 
-        # Build message data for signing (all values must be correct types)
-        message_data = {
-            "salt": int(order["salt"]),
-            "maker": wallet,
-            "signer": wallet,
-            "taker": "0x0000000000000000000000000000000000000000",
-            "tokenId": int(token_id) if str(token_id).isdigit() else int(token_id, 16) if token_id.startswith("0x") else 0,
-            "makerAmount": maker_amount,
-            "takerAmount": taker_amount,
-            "expiration": 0,
-            "nonce": 0,
-            "feeRateBps": fee_rate_bps,
-            "side": order_side,
-            "signatureType": 0,
-        }
+        # Compute domain separator
+        domain_separator = keccak(
+            abi_encode(
+                ["bytes32", "bytes32", "bytes32", "uint256", "address"],
+                [
+                    EIP712_DOMAIN_TYPEHASH,
+                    keccak(text="Limitless CTF Exchange"),
+                    keccak(text="1"),
+                    8453,  # Base chain ID
+                    exchange_checksum,  # Address as checksummed string
+                ]
+            )
+        )
 
-        # Use full_message format for EIP-712 encoding (more explicit)
-        full_message = {
-            "types": {
-                "EIP712Domain": [
-                    {"name": "name", "type": "string"},
-                    {"name": "version", "type": "string"},
-                    {"name": "chainId", "type": "uint256"},
-                    {"name": "verifyingContract", "type": "address"},
-                ],
-                "Order": [
-                    {"name": "salt", "type": "uint256"},
-                    {"name": "maker", "type": "address"},
-                    {"name": "signer", "type": "address"},
-                    {"name": "taker", "type": "address"},
-                    {"name": "tokenId", "type": "uint256"},
-                    {"name": "makerAmount", "type": "uint256"},
-                    {"name": "takerAmount", "type": "uint256"},
-                    {"name": "expiration", "type": "uint256"},
-                    {"name": "nonce", "type": "uint256"},
-                    {"name": "feeRateBps", "type": "uint256"},
-                    {"name": "side", "type": "uint8"},
-                    {"name": "signatureType", "type": "uint8"},
-                ],
-            },
-            "primaryType": "Order",
-            "domain": {
-                "name": "Limitless CTF Exchange",
-                "version": "1",
-                "chainId": 8453,
-                "verifyingContract": exchange_checksum,
-            },
-            "message": message_data,
-        }
+        # Zero address for taker
+        zero_address = "0x0000000000000000000000000000000000000000"
 
-        # Sign order using full_message format
-        signable_message = encode_typed_data(full_message=full_message)
+        # Compute struct hash
+        struct_hash = keccak(
+            abi_encode(
+                ["bytes32", "uint256", "address", "address", "address", "uint256", "uint256", "uint256", "uint256", "uint256", "uint256", "uint8", "uint8"],
+                [
+                    ORDER_TYPEHASH,
+                    salt,
+                    wallet,       # maker
+                    wallet,       # signer
+                    zero_address, # taker
+                    token_id_int,
+                    maker_amount,
+                    taker_amount,
+                    0,  # expiration
+                    0,  # nonce
+                    fee_rate_bps,
+                    order_side,
+                    0,  # signatureType (EOA)
+                ]
+            )
+        )
 
-        signed = private_key.sign_message(signable_message)
+        # Compute final digest: keccak256("\x19\x01" + domainSeparator + structHash)
+        digest = keccak(b"\x19\x01" + domain_separator + struct_hash)
 
-        # Signature must have 0x prefix
-        signature_hex = signed.signature.hex()
-        if not signature_hex.startswith("0x"):
-            signature_hex = "0x" + signature_hex
+        logger.debug(
+            "EIP-712 signing",
+            domain_separator=domain_separator.hex(),
+            struct_hash=struct_hash.hex(),
+            digest=digest.hex(),
+            wallet=wallet,
+            exchange=exchange_checksum,
+            token_id=token_id_int,
+            maker_amount=maker_amount,
+            taker_amount=taker_amount,
+        )
+
+        # Sign the digest directly using Account._sign_hash
+        from eth_account import Account
+        signed = Account._sign_hash(digest, private_key.key)
+
+        # Format signature: r (32 bytes) + s (32 bytes) + v (1 byte)
+        signature_hex = "0x" + signed.signature.hex()
         order["signature"] = signature_hex
+
+        logger.debug(
+            "Order signed",
+            signature=signature_hex[:20] + "...",
+            v=signed.v,
+            recovered_address=Account._recover_hash(digest, signature=signed.signature),
+        )
 
         # Add price field (required by API) - price as decimal
         order["price"] = float(price)
