@@ -740,6 +740,8 @@ def create_api_app() -> FastAPI:
 
     # Serve static webapp files if they exist
     webapp_dist = Path(__file__).parent.parent.parent / "webapp" / "dist"
+    print(f"[API] Webapp dist path: {webapp_dist}")
+    print(f"[API] Webapp dist exists: {webapp_dist.exists()}")
     if webapp_dist.exists():
         # Serve static assets
         app.mount("/assets", StaticFiles(directory=webapp_dist / "assets"), name="assets")
