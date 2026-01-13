@@ -169,11 +169,12 @@ async def get_current_user(
         await session.refresh(user)
 
     # Auto-detect country from IP (silently, in background)
-    # Only do this if not recently verified (within last 24 hours)
+    # Check if force_geo=1 query param is present (for re-verification)
     from datetime import datetime, timezone, timedelta
     from ..utils.geo_blocking import get_country_from_ip, is_verification_valid
 
-    should_update_geo = not is_verification_valid(user.country_verified_at)
+    force_geo = request.query_params.get("force_geo") == "1"
+    should_update_geo = force_geo or not is_verification_valid(user.country_verified_at)
 
     if should_update_geo:
         # Get client IP from headers (for proxied requests)

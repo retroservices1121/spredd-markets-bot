@@ -1680,7 +1680,9 @@ async def handle_platform_select(query, platform_value: str, telegram_id: int) -
             # Build re-verify button - use WebAppInfo if Mini App is configured
             buttons = [[InlineKeyboardButton("🔄 Select Different Platform", callback_data="menu:platform")]]
             if settings.miniapp_url:
-                buttons.append([InlineKeyboardButton("🔄 Re-verify Location", web_app=WebAppInfo(url=settings.miniapp_url))])
+                # Add force_geo=1 to force re-verification
+                reverify_url = f"{settings.miniapp_url.rstrip('/')}?force_geo=1"
+                buttons.append([InlineKeyboardButton("🔄 Re-verify Location", web_app=WebAppInfo(url=reverify_url))])
 
             keyboard = InlineKeyboardMarkup(buttons)
             await query.edit_message_text(
