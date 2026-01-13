@@ -292,7 +292,6 @@ async def search_markets(
     q: str = Query(..., min_length=1),
     platform: Optional[str] = None,
     limit: int = Query(default=20, le=100),
-    user: User = Depends(get_current_user)
 ):
     """Search markets across platforms."""
     from ..platforms.kalshi import KalshiPlatform
@@ -345,7 +344,6 @@ async def search_markets(
 async def get_trending_markets(
     platform: Optional[str] = None,
     limit: int = Query(default=10, le=50),
-    user: User = Depends(get_current_user)
 ):
     """Get trending markets."""
     from ..platforms.kalshi import KalshiPlatform
@@ -392,7 +390,6 @@ async def get_trending_markets(
 async def get_market_details(
     platform: str,
     market_id: str,
-    user: User = Depends(get_current_user)
 ):
     """Get detailed market information."""
     from ..platforms.kalshi import KalshiPlatform
