@@ -1680,8 +1680,8 @@ async def handle_platform_select(query, platform_value: str, telegram_id: int) -
             # Build re-verify button - use WebAppInfo if Mini App is configured
             buttons = [[InlineKeyboardButton("🔄 Select Different Platform", callback_data="menu:platform")]]
             if settings.miniapp_url:
-                # Add force_geo=1 to force re-verification
-                reverify_url = f"{settings.miniapp_url.rstrip('/')}?force_geo=1"
+                # Point to geo check page which shows verification result
+                reverify_url = f"{settings.miniapp_url.rstrip('/')}/api/v1/geo/check"
                 buttons.append([InlineKeyboardButton("🔄 Re-verify Location", web_app=WebAppInfo(url=reverify_url))])
 
             keyboard = InlineKeyboardMarkup(buttons)
@@ -1784,17 +1784,17 @@ Geo verification is not configured. Please contact support.
 
 To comply with regulatory requirements, we need to verify your location before you can access Kalshi markets.
 
-<b>Open the app below to automatically verify your location:</b>
+<b>Tap the button below to verify your location:</b>
 
 ⚠️ <i>Make sure you're not using a VPN for accurate verification.</i>
 
-Your location will be detected automatically when you open the app. This verification is valid for 30 days.
+This verification is valid for 30 days.
 """
 
-    # Use WebAppInfo to open Mini App - this triggers automatic IP detection
-    from telegram import WebAppInfo
+    # Open geo check page which detects IP and shows result
+    verify_url = f"{miniapp_url.rstrip('/')}/api/v1/geo/check"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📱 Open App to Verify", web_app=WebAppInfo(url=miniapp_url))],
+        [InlineKeyboardButton("🌍 Verify My Location", web_app=WebAppInfo(url=verify_url))],
         [InlineKeyboardButton("🔄 Select Different Platform", callback_data="menu:platform")],
     ])
 

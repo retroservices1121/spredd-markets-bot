@@ -1278,6 +1278,203 @@ async def get_referral_stats(
 # Geo Verification Endpoints
 # ===================
 
+@router.get("/geo/check")
+async def check_geo_status(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Standalone geo verification page for Telegram Mini App.
+    Detects IP, verifies user, and shows result.
+    """
+    from fastapi.responses import HTMLResponse
+    from ..utils.geo_blocking import get_country_from_ip, is_country_blocked, get_country_name
+    from .auth import get_user_from_init_data
+    from datetime import datetime, timezone
+
+    # Get initData from query param (Telegram passes it when opening Mini App)
+    init_data = request.query_params.get("initData", "")
+
+    # Also try getting from Telegram WebApp (will be handled by JS on frontend)
+    # For now, return a page that handles auth via JavaScript
+    bot_username = settings.telegram_bot_username
+
+    return HTMLResponse(
+        content=f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Location Verification</title>
+            <script src="https://telegram.org/js/telegram-web-app.js"></script>
+            <style>
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    background: #0d0d0d;
+                    color: white;
+                    padding: 20px;
+                    margin: 0;
+                    min-height: 100vh;
+                    box-sizing: border-box;
+                }}
+                .container {{ max-width: 400px; margin: 0 auto; text-align: center; }}
+                h1 {{ margin-bottom: 10px; }}
+                .subtitle {{ color: #888; margin-bottom: 30px; }}
+                .status-box {{
+                    border-radius: 12px;
+                    padding: 20px;
+                    margin: 20px 0;
+                }}
+                .blocked {{
+                    background: #2d1f1f;
+                    border: 1px solid #ff4757;
+                }}
+                .blocked h2 {{ color: #ff4757; }}
+                .allowed {{
+                    background: #1f2d1f;
+                    border: 1px solid #00ff88;
+                }}
+                .allowed h2 {{ color: #00ff88; }}
+                .status-box h2 {{ margin: 0 0 10px 0; }}
+                .status-box p {{ color: #ccc; margin: 0; }}
+                .note {{ color: #888; margin-top: 15px; }}
+                .btn {{
+                    display: inline-block;
+                    margin-top: 20px;
+                    padding: 14px 28px;
+                    background: #0088cc;
+                    color: white;
+                    text-decoration: none;
+                    border-radius: 8px;
+                    font-weight: bold;
+                    border: none;
+                    cursor: pointer;
+                }}
+                .loading {{ color: #888; }}
+                #error {{ color: #ff4757; display: none; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🌍 Location Verification</h1>
+                <div id="loading" class="loading">
+                    <p>Detecting your location...</p>
+                </div>
+                <div id="result" style="display: none;"></div>
+                <div id="error">
+                    <p>Failed to verify location. Please try again.</p>
+                </div>
+            </div>
+            <script>
+                const botUsername = "{bot_username}";
+
+                async function verifyLocation() {{
+                    try {{
+                        // Get Telegram WebApp initData
+                        if (!window.Telegram || !window.Telegram.WebApp) {{
+                            throw new Error("Not in Telegram");
+                        }}
+
+                        Telegram.WebApp.ready();
+                        const initData = Telegram.WebApp.initData;
+
+                        if (!initData) {{
+                            throw new Error("No auth data");
+                        }}
+
+                        // Call API to verify and get status
+                        const response = await fetch("/api/v1/geo/verify-status?force_geo=1", {{
+                            headers: {{
+                                "X-Telegram-Init-Data": initData
+                            }}
+                        }});
+
+                        if (!response.ok) {{
+                            throw new Error("API error");
+                        }}
+
+                        const data = await response.json();
+                        showResult(data);
+
+                    }} catch (err) {{
+                        console.error(err);
+                        document.getElementById("loading").style.display = "none";
+                        document.getElementById("error").style.display = "block";
+                    }}
+                }}
+
+                function showResult(data) {{
+                    document.getElementById("loading").style.display = "none";
+                    const resultDiv = document.getElementById("result");
+
+                    let html = '<p class="subtitle">Detected: <strong>' + data.country_name + '</strong></p>';
+
+                    if (data.is_blocked) {{
+                        html += '<div class="status-box blocked">';
+                        html += '<h2>🚫 Access Restricted</h2>';
+                        html += '<p>Your location is restricted from accessing Kalshi due to regulatory requirements.</p>';
+                        html += '</div>';
+                        html += '<p class="note">You can still use Polymarket, Opinion, and Limitless.</p>';
+                    }} else {{
+                        html += '<div class="status-box allowed">';
+                        html += '<h2>✅ Access Granted</h2>';
+                        html += '<p>Your location allows access to Kalshi.</p>';
+                        html += '</div>';
+                        html += '<p class="note">You can now trade on all platforms.</p>';
+                    }}
+
+                    html += '<button class="btn" onclick="closeApp()">Close</button>';
+
+                    resultDiv.innerHTML = html;
+                    resultDiv.style.display = "block";
+
+                    // Setup main button
+                    Telegram.WebApp.MainButton.setText("Close");
+                    Telegram.WebApp.MainButton.show();
+                    Telegram.WebApp.MainButton.onClick(closeApp);
+                }}
+
+                function closeApp() {{
+                    if (window.Telegram && window.Telegram.WebApp) {{
+                        Telegram.WebApp.close();
+                    }} else if (botUsername) {{
+                        window.location.href = "https://t.me/" + botUsername;
+                    }}
+                }}
+
+                // Start verification on page load
+                verifyLocation();
+            </script>
+        </body>
+        </html>
+        """
+    )
+
+
+@router.get("/geo/verify-status")
+async def verify_geo_status_api(
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    """
+    API endpoint to verify location and return JSON status.
+    Called by the geo/check page via JavaScript.
+    """
+    from ..utils.geo_blocking import is_country_blocked, get_country_name
+
+    country_code = user.country
+    country_name = get_country_name(country_code) if country_code else "Unknown"
+    is_blocked = is_country_blocked(Platform.KALSHI, country_code) if country_code else True
+
+    return {
+        "country_code": country_code,
+        "country_name": country_name,
+        "is_blocked": is_blocked,
+        "platform": "kalshi",
+    }
+
+
 @router.get("/geo/verify/{token}")
 async def verify_geo_location(
     token: str,
@@ -1285,7 +1482,7 @@ async def verify_geo_location(
 ):
     """
     Verify user's country from their IP address.
-    This endpoint is accessed via a link from Telegram.
+    This endpoint is accessed via a link from Telegram (legacy).
     """
     from fastapi.responses import RedirectResponse, HTMLResponse
     from ..db.database import get_user_by_geo_token, set_user_country_verified
