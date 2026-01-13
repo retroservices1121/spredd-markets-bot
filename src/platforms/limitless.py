@@ -414,15 +414,17 @@ class LimitlessPlatform(BasePlatform):
 
     async def get_markets(
         self,
-        limit: int = 50,
+        limit: int = 25,
         offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
         """Get list of markets from Limitless."""
+        # API limit is 25 max
+        api_limit = min(limit, 25)
         # API uses 1-indexed pages
-        page = (offset // limit) + 1 if limit > 0 else 1
+        page = (offset // api_limit) + 1 if api_limit > 0 else 1
         params = {
-            "limit": limit,
+            "limit": api_limit,
             "page": page,
         }
 
@@ -451,16 +453,23 @@ class LimitlessPlatform(BasePlatform):
         limit: int = 20,
     ) -> list[Market]:
         """Search markets by query."""
+        # API limit is 25 max
+        api_limit = min(limit, 25)
         try:
             data = await self._api_request(
                 "GET",
                 "/markets/search",
-                params={"query": query, "limit": limit}
+                params={"query": query, "limit": api_limit}
             )
         except Exception as e:
             logger.error("Failed to search markets", error=str(e))
-            # Fallback to fetching all and filtering
-            all_markets = await self.get_markets(limit=100)
+            # Fallback to fetching markets with pagination and filtering (API limit is 25)
+            all_markets = []
+            for page_num in range(4):  # Search up to 100 markets
+                page_markets = await self.get_markets(limit=25, offset=page_num * 25)
+                if not page_markets:
+                    break
+                all_markets.extend(page_markets)
             query_lower = query.lower()
             return [
                 m for m in all_markets
@@ -503,14 +512,19 @@ class LimitlessPlatform(BasePlatform):
             except Exception as e:
                 logger.debug("Fallback market lookup failed", market_id=market_id, error=str(e))
 
-        # Try searching - for numeric IDs, fetch all markets to find the match
+        # Try searching - for numeric IDs, fetch markets with pagination to find the match
         if market_id.isdigit():
-            # Fetch recent markets to find one with matching ID
+            # Fetch markets page by page to find one with matching ID (API limit is 25)
             try:
-                all_markets = await self.get_markets(limit=100)
-                for m in all_markets:
-                    if m.market_id == market_id:
-                        return m
+                max_pages = 8  # Search up to 200 markets (8 * 25)
+                for page_num in range(max_pages):
+                    page_markets = await self.get_markets(limit=25, offset=page_num * 25)
+                    if not page_markets:
+                        break  # No more markets
+                    for m in page_markets:
+                        if m.market_id == market_id:
+                            return m
+                    logger.debug(f"Market {market_id} not found on page {page_num + 1}, checking next...")
             except Exception as e:
                 logger.debug("Market list search failed", error=str(e))
 
@@ -526,11 +540,13 @@ class LimitlessPlatform(BasePlatform):
         limit: int = 20,
     ) -> list[Market]:
         """Get markets filtered by category ID."""
+        # API limit is 25 max
+        api_limit = min(limit, 25)
         try:
             data = await self._api_request(
                 "GET",
                 f"/markets/active/{category}",
-                params={"limit": limit, "page": 1}
+                params={"limit": api_limit, "page": 1}
             )
 
             markets = []

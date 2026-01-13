@@ -893,7 +893,12 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         # Fetch current price from platform
         current_price = None
         try:
-            market = await platform.get_market(pos.market_id)
+            # Try event_id (slug) first for Limitless, then fall back to market_id
+            lookup_id = pos.event_id if pos.event_id else pos.market_id
+            market = await platform.get_market(lookup_id)
+            if not market and pos.event_id:
+                # Fallback to numeric ID if slug lookup failed
+                market = await platform.get_market(pos.market_id)
             if market:
                 # Get the price for the outcome the user holds
                 if outcome_str == "YES":
@@ -926,9 +931,10 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         short_title = pos.market_title[:20] + "..." if len(pos.market_title) > 20 else pos.market_title
         outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
 
-        # Check if market is resolved for redemption
+        # Check if market is resolved for redemption - try event_id (slug) first for Limitless
         try:
-            resolution = await platform.get_market_resolution(pos.market_id)
+            resolution_market_id = pos.event_id if pos.event_id else pos.market_id
+            resolution = await platform.get_market_resolution(resolution_market_id)
             if resolution.is_resolved:
                 # Show Redeem button for resolved markets
                 if resolution.winning_outcome and resolution.winning_outcome.upper() == outcome_str:
@@ -1141,10 +1147,13 @@ async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             total_invested += cost_basis
             positions_count += 1
 
-            # Fetch current price from platform
+            # Fetch current price from platform - try event_id (slug) first for Limitless
             current_price = None
             try:
-                market = await platform.get_market(pos.market_id)
+                lookup_id = pos.event_id if pos.event_id else pos.market_id
+                market = await platform.get_market(lookup_id)
+                if not market and pos.event_id:
+                    market = await platform.get_market(pos.market_id)
                 if market:
                     outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
                     if outcome_str == "YES":
@@ -3660,6 +3669,7 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
                     token_id=quote.output_token,
                     token_amount=token_amount,
                     entry_price=float(quote.price_per_token) if quote.price_per_token else 0.0,
+                    event_id=market.event_id if market else None,  # Store slug for Limitless lookups
                 )
             except Exception as pos_error:
                 logger.warning("Failed to create position record", error=str(pos_error))
@@ -3736,10 +3746,13 @@ async def handle_sell_start(query, position_id: str, telegram_id: int) -> None:
     platform = get_platform(position.platform)
     platform_info = PLATFORM_INFO[position.platform]
 
-    # Get current price
+    # Get current price - try event_id (slug) first for Limitless
     current_price = None
     try:
-        market = await platform.get_market(position.market_id)
+        lookup_id = position.event_id if position.event_id else position.market_id
+        market = await platform.get_market(lookup_id)
+        if not market and position.event_id:
+            market = await platform.get_market(position.market_id)
         if market:
             outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
             if outcome_str == "YES":
@@ -3900,8 +3913,11 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
             parse_mode=ParseMode.HTML,
         )
 
+        # Use event_id (slug) for Limitless, otherwise market_id
+        quote_market_id = position.event_id if position.event_id else position.market_id
+
         quote = await platform.get_quote(
-            market_id=position.market_id,
+            market_id=quote_market_id,
             outcome=outcome_enum,
             side="sell",
             amount=sell_amount,
@@ -4051,9 +4067,10 @@ async def handle_redeem(query, position_id: str, telegram_id: int) -> None:
         from src.db.models import Outcome as OutcomeEnum
         outcome_enum = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
 
-        # Execute redemption
+        # Execute redemption - use event_id (slug) for Limitless
+        redeem_market_id = position.event_id if position.event_id else position.market_id
         result = await platform.redeem_position(
-            market_id=position.market_id,
+            market_id=redeem_market_id,
             outcome=outcome_enum,
             token_amount=token_amount,
             private_key=private_key,
@@ -4498,6 +4515,7 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
                     token_id=quote.output_token,
                     token_amount=token_amount,
                     entry_price=float(quote.price_per_token) if quote.price_per_token else 0.0,
+                    event_id=market.event_id if market else None,  # Store slug for Limitless lookups
                 )
             except Exception as pos_error:
                 logger.warning("Failed to create position record", error=str(pos_error))
