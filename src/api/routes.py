@@ -687,13 +687,14 @@ async def execute_order(
             raise HTTPException(status_code=400, detail=f"Invalid outcome: {request.outcome}")
 
         # Convert private key to appropriate type based on platform
+        # decrypt() returns raw bytes
         if platform == "kalshi":
             from solders.keypair import Keypair
-            # Solana private key is base58 encoded
-            signing_key = Keypair.from_base58_string(private_key)
+            # Solana private key is raw bytes (64 bytes)
+            signing_key = Keypair.from_bytes(private_key)
         else:
             from eth_account import Account
-            # EVM private key is hex
+            # EVM private key is raw bytes (32 bytes)
             signing_key = Account.from_key(private_key)
 
         # First get a quote
@@ -740,6 +741,9 @@ async def execute_order(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        print(f"[Execute Error] {type(e).__name__}: {e}")
+        print(f"[Execute Error] Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
