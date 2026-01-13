@@ -198,6 +198,7 @@ class Settings(BaseSettings):
     # ===================
     miniapp_url: Optional[str] = Field(
         default=None,
+        validation_alias="MINIAPP_URL",
         description="URL for Telegram Mini App (e.g., https://your-domain.com/webapp)"
     )
 
