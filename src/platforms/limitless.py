@@ -821,50 +821,60 @@ class LimitlessPlatform(BasePlatform):
         }
 
         # EIP-712 domain - must use "Limitless CTF Exchange" as domain name
-        domain = {
-            "name": "Limitless CTF Exchange",
-            "version": "1",
-            "chainId": 8453,  # Base
-            "verifyingContract": Web3.to_checksum_address(exchange),
+        exchange_checksum = Web3.to_checksum_address(exchange)
+
+        # Build message data for signing (all values must be correct types)
+        message_data = {
+            "salt": int(order["salt"]),
+            "maker": wallet,
+            "signer": wallet,
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tokenId": int(token_id) if str(token_id).isdigit() else int(token_id, 16) if token_id.startswith("0x") else 0,
+            "makerAmount": maker_amount,
+            "takerAmount": taker_amount,
+            "expiration": 0,
+            "nonce": 0,
+            "feeRateBps": fee_rate_bps,
+            "side": order_side,
+            "signatureType": 0,
         }
 
-        # EIP-712 types
-        types = {
-            "Order": [
-                {"name": "salt", "type": "uint256"},
-                {"name": "maker", "type": "address"},
-                {"name": "signer", "type": "address"},
-                {"name": "taker", "type": "address"},
-                {"name": "tokenId", "type": "uint256"},
-                {"name": "makerAmount", "type": "uint256"},
-                {"name": "takerAmount", "type": "uint256"},
-                {"name": "expiration", "type": "uint256"},
-                {"name": "nonce", "type": "uint256"},
-                {"name": "feeRateBps", "type": "uint256"},
-                {"name": "side", "type": "uint8"},
-                {"name": "signatureType", "type": "uint8"},
-            ]
+        # Use full_message format for EIP-712 encoding (more explicit)
+        full_message = {
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "Order": [
+                    {"name": "salt", "type": "uint256"},
+                    {"name": "maker", "type": "address"},
+                    {"name": "signer", "type": "address"},
+                    {"name": "taker", "type": "address"},
+                    {"name": "tokenId", "type": "uint256"},
+                    {"name": "makerAmount", "type": "uint256"},
+                    {"name": "takerAmount", "type": "uint256"},
+                    {"name": "expiration", "type": "uint256"},
+                    {"name": "nonce", "type": "uint256"},
+                    {"name": "feeRateBps", "type": "uint256"},
+                    {"name": "side", "type": "uint8"},
+                    {"name": "signatureType", "type": "uint8"},
+                ],
+            },
+            "primaryType": "Order",
+            "domain": {
+                "name": "Limitless CTF Exchange",
+                "version": "1",
+                "chainId": 8453,
+                "verifyingContract": exchange_checksum,
+            },
+            "message": message_data,
         }
 
-        # Sign order
-        signable_message = encode_typed_data(
-            domain_data=domain,
-            message_types=types,
-            message_data={
-                "salt": int(order["salt"]),
-                "maker": order["maker"],
-                "signer": order["signer"],
-                "taker": order["taker"],
-                "tokenId": int(order["tokenId"]) if order["tokenId"].isdigit() else 0,
-                "makerAmount": int(order["makerAmount"]),
-                "takerAmount": int(order["takerAmount"]),
-                "expiration": int(order["expiration"]),
-                "nonce": int(order["nonce"]),
-                "feeRateBps": int(order["feeRateBps"]),
-                "side": order["side"],
-                "signatureType": order["signatureType"],
-            }
-        )
+        # Sign order using full_message format
+        signable_message = encode_typed_data(full_message=full_message)
 
         signed = private_key.sign_message(signable_message)
 
