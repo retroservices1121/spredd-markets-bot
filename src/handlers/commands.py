@@ -2986,8 +2986,8 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
     MARKETS_PER_PAGE = 10
 
     try:
-        # Fetch more markets to enable pagination (get up to 100)
-        all_markets = await platform.get_markets_by_category(category_id, limit=100)
+        # Fetch markets (Limitless API has max limit of 25)
+        all_markets = await platform.get_markets_by_category(category_id, limit=25)
 
         if not all_markets:
             await query.edit_message_text(
