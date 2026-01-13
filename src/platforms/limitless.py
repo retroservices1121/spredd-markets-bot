@@ -687,6 +687,49 @@ class LimitlessPlatform(BasePlatform):
             },
         )
 
+    async def _get_ctf_address(self, exchange_address: str) -> Optional[str]:
+        """Get CTF (Conditional Token) contract address from exchange contract."""
+        import asyncio
+
+        # Cache for CTF addresses
+        if not hasattr(self, "_ctf_address_cache"):
+            self._ctf_address_cache = {}
+
+        if exchange_address in self._ctf_address_cache:
+            return self._ctf_address_cache[exchange_address]
+
+        # ABI for getCtf() function
+        GET_CTF_ABI = [
+            {
+                "inputs": [],
+                "name": "getCtf",
+                "outputs": [{"name": "", "type": "address"}],
+                "stateMutability": "view",
+                "type": "function"
+            }
+        ]
+
+        def sync_get_ctf():
+            if not self._sync_web3:
+                return None
+
+            try:
+                exchange = self._sync_web3.eth.contract(
+                    address=Web3.to_checksum_address(exchange_address),
+                    abi=GET_CTF_ABI
+                )
+                ctf_address = exchange.functions.getCtf().call()
+                logger.debug("Got CTF address from exchange", exchange=exchange_address, ctf=ctf_address)
+                return ctf_address
+            except Exception as e:
+                logger.error("Failed to get CTF address from exchange", error=str(e))
+                return None
+
+        ctf_address = await asyncio.to_thread(sync_get_ctf)
+        if ctf_address:
+            self._ctf_address_cache[exchange_address] = ctf_address
+        return ctf_address
+
     async def _get_venue(self, market_id: str) -> dict:
         """Get venue (exchange contract) info for a market."""
         if market_id in self._venue_cache:
@@ -753,6 +796,85 @@ class LimitlessPlatform(BasePlatform):
 
             self._approval_cache.setdefault(wallet, set()).add(spender)
             logger.info("Approval confirmed", tx_hash=tx_hash.hex())
+
+        await asyncio.to_thread(sync_approve)
+
+    async def _ensure_ctf_approval(
+        self,
+        private_key: LocalAccount,
+        ctf_address: str,
+        spender: str,
+    ) -> None:
+        """Ensure CTF (Conditional Token) contract is approved for the exchange to transfer tokens."""
+        import asyncio
+
+        wallet = Web3.to_checksum_address(private_key.address)
+        cache_key = f"ctf:{ctf_address}:{spender}"
+        cached = self._approval_cache.get(wallet, set())
+
+        if cache_key in cached:
+            return
+
+        # ERC1155 setApprovalForAll ABI
+        ERC1155_ABI = [
+            {
+                "inputs": [
+                    {"name": "operator", "type": "address"},
+                    {"name": "approved", "type": "bool"}
+                ],
+                "name": "setApprovalForAll",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {"name": "account", "type": "address"},
+                    {"name": "operator", "type": "address"}
+                ],
+                "name": "isApprovedForAll",
+                "outputs": [{"name": "", "type": "bool"}],
+                "stateMutability": "view",
+                "type": "function"
+            }
+        ]
+
+        def sync_approve():
+            if not self._sync_web3:
+                return
+
+            ctf = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(ctf_address),
+                abi=ERC1155_ABI
+            )
+            spender_addr = Web3.to_checksum_address(spender)
+
+            is_approved = ctf.functions.isApprovedForAll(wallet, spender_addr).call()
+            if is_approved:
+                self._approval_cache.setdefault(wallet, set()).add(cache_key)
+                return
+
+            logger.info("Approving CTF tokens for Limitless exchange", ctf=ctf_address, exchange=spender)
+            nonce = self._sync_web3.eth.get_transaction_count(wallet)
+            gas_price = self._sync_web3.eth.gas_price
+
+            tx = ctf.functions.setApprovalForAll(
+                spender_addr,
+                True
+            ).build_transaction({
+                "from": wallet,
+                "nonce": nonce,
+                "gasPrice": int(gas_price * 1.2),
+                "gas": 100000,
+                "chainId": 8453,  # Base
+            })
+
+            signed = self._sync_web3.eth.account.sign_transaction(tx, private_key.key)
+            tx_hash = self._sync_web3.eth.send_raw_transaction(signed.raw_transaction)
+            self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+
+            self._approval_cache.setdefault(wallet, set()).add(cache_key)
+            logger.info("CTF approval confirmed", tx_hash=tx_hash.hex())
 
         await asyncio.to_thread(sync_approve)
 
@@ -972,9 +1094,16 @@ class LimitlessPlatform(BasePlatform):
                     explorer_url=None,
                 )
 
-            # Ensure USDC approval for buys
+            # Ensure approvals
             if quote.side == "buy":
+                # USDC approval for buys
                 await self._ensure_approval(private_key, exchange)
+            else:
+                # CTF token approval for sells
+                # Get CTF contract address from exchange contract's getCtf() function
+                ctf_address = await self._get_ctf_address(exchange)
+                if ctf_address:
+                    await self._ensure_ctf_approval(private_key, ctf_address, exchange)
 
             # Build EIP-712 signed order
             order = self._build_eip712_order(
