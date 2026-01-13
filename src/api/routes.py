@@ -426,18 +426,18 @@ async def get_quote(
     session: AsyncSession = Depends(get_session)
 ):
     """Get a quote for a trade."""
-    from ..platforms.kalshi import KalshiPlatform
-    from ..platforms.polymarket import PolymarketPlatform
+    from ..platforms import platform_registry
 
     try:
         platform = request.platform.lower()
 
-        if platform == "kalshi":
-            plat = KalshiPlatform()
-        elif platform == "polymarket":
-            plat = PolymarketPlatform()
-        else:
+        try:
+            plat = platform_registry.get(Platform(platform))
+        except (ValueError, KeyError):
             raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
+
+        if not plat:
+            raise HTTPException(status_code=400, detail=f"Platform not initialized: {platform}")
 
         quote = await plat.get_quote(
             market_id=request.market_id,
@@ -469,22 +469,28 @@ async def execute_order(
     session: AsyncSession = Depends(get_session)
 ):
     """Execute a trade order."""
-    from ..platforms.kalshi import KalshiPlatform
-    from ..platforms.polymarket import PolymarketPlatform
+    from ..platforms import platform_registry
     from ..utils.encryption import decrypt
 
     try:
         platform = request.platform.lower()
 
-        # Get user's wallet
+        # Get platform and determine chain family
+        try:
+            plat = platform_registry.get(Platform(platform))
+        except (ValueError, KeyError):
+            raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
+
+        if not plat:
+            raise HTTPException(status_code=400, detail=f"Platform not initialized: {platform}")
+
+        # Determine chain family based on platform
         if platform == "kalshi":
             chain_family = ChainFamily.SOLANA
-            plat = KalshiPlatform()
         elif platform == "polymarket":
             chain_family = ChainFamily.EVM
-            plat = PolymarketPlatform()
         else:
-            raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
+            raise HTTPException(status_code=400, detail=f"Unsupported platform for trading: {platform}")
 
         # Get wallet
         result = await session.execute(
