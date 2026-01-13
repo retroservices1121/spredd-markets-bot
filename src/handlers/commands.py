@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, WebAppInfo
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
@@ -218,13 +218,26 @@ Spredd is a non-custodial trading bot that lets you buy and sell positions on pr
 Join our community and follow us for updates!
 """
 
-    keyboard = InlineKeyboardMarkup([
+    # Build keyboard with optional Mini App button
+    keyboard_rows = [
         [InlineKeyboardButton("🚀 Get Started", callback_data="landing:start")],
-        [
-            InlineKeyboardButton("Follow on X", url="https://x.com/spreddterminal"),
-            InlineKeyboardButton("Join Telegram", url="https://t.me/spreddmarketsgroup"),
-        ],
+    ]
+
+    # Add Mini App button if configured
+    if settings.miniapp_url:
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                "📱 Open Mini App",
+                web_app=WebAppInfo(url=settings.miniapp_url)
+            )
+        ])
+
+    keyboard_rows.append([
+        InlineKeyboardButton("Follow on X", url="https://x.com/spreddterminal"),
+        InlineKeyboardButton("Join Telegram", url="https://t.me/spreddmarketsgroup"),
     ])
+
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     await update.message.reply_text(
         welcome_text,
@@ -262,6 +275,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 <b>Help</b>
 /faq - Frequently asked questions
+/support - Contact support
 
 <b>Platform Info</b>
 • <b>Kalshi</b> (Solana)
@@ -271,7 +285,50 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 Need help? @spreddterminal
 """
 
-    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    # Add Mini App button if configured
+    if settings.miniapp_url:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "📱 Open Mini App",
+                web_app=WebAppInfo(url=settings.miniapp_url)
+            )],
+        ])
+        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    else:
+        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+
+
+async def app_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /app command - open Mini App."""
+    if not update.message:
+        return
+
+    if not settings.miniapp_url:
+        await update.message.reply_text(
+            "📱 Mini App is not configured yet.\n\n"
+            "Use the bot commands to trade!",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "📱 Open Spredd Mini App",
+            web_app=WebAppInfo(url=settings.miniapp_url)
+        )],
+    ])
+
+    await update.message.reply_text(
+        "📱 <b>Spredd Mini App</b>\n\n"
+        "Trade prediction markets with a beautiful interface!\n\n"
+        "• Browse & search markets\n"
+        "• View wallet balances\n"
+        "• Track positions & P&L\n"
+        "• Execute trades\n\n"
+        "Tap the button below to open:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
 
 
 async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

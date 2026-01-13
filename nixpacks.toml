@@ -1,12 +1,21 @@
 # ===========================================
 # Nixpacks Build Configuration
 # ===========================================
+# Builds Python backend + Node.js webapp
 
 [phases.setup]
-nixPkgs = ["python311", "gcc", "libffi", "openssl"]
+nixPkgs = ["python311", "gcc", "libffi", "openssl", "nodejs_20"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = [
+    "pip install -r requirements.txt",
+    "cd webapp && npm install"
+]
+
+[phases.build]
+cmds = [
+    "cd webapp && npm run build"
+]
 
 [start]
-cmd = "python -m src.main"
+cmd = "python run_all.py"

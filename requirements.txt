@@ -39,6 +39,10 @@ tenacity>=8.2.0
 # Image Generation
 Pillow>=10.0.0
 
+# Mini App API
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
 # Development (optional)
 # pytest>=8.0
 # pytest-asyncio>=0.23.0

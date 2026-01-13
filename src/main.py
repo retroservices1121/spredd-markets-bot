@@ -28,6 +28,7 @@ from src.services.wallet import wallet_service
 from src.handlers.commands import (
     start_command,
     help_command,
+    app_command,
     faq_command,
     support_command,
     platform_command,
@@ -97,6 +98,7 @@ def setup_handlers(application: Application) -> None:
     # Command handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("app", app_command))
     application.add_handler(CommandHandler("faq", faq_command))
     application.add_handler(CommandHandler("support", support_command))
     application.add_handler(CommandHandler("platform", platform_command))
@@ -214,6 +216,7 @@ async def run_bot() -> None:
         from telegram import BotCommand
         commands = [
             BotCommand("start", "Welcome & get started"),
+            BotCommand("app", "Open Mini App"),
             BotCommand("markets", "Browse trending markets"),
             BotCommand("search", "Search for markets"),
             BotCommand("wallet", "View your wallets & balances"),

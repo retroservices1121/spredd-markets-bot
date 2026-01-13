@@ -194,6 +194,14 @@ class Settings(BaseSettings):
     opinion_multi_sig_addr: Optional[str] = Field(default=None, description="Opinion Labs multi-sig address")
     
     # ===================
+    # Mini App Configuration
+    # ===================
+    miniapp_url: Optional[str] = Field(
+        default=None,
+        description="URL for Telegram Mini App (e.g., https://your-domain.com/webapp)"
+    )
+
+    # ===================
     # Rate Limiting
     # ===================
     max_requests_per_minute: int = Field(default=30, ge=1, le=100)

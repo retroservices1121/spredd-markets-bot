@@ -64,3 +64,12 @@ secrets/
 *.key
 LAUNCH_CAMPAIGN.md
 SUBSCRIPTION_FEATURES.md
+
+# Generated files
+example_pnl_card*.png
+nul
+
+# Webapp
+webapp/node_modules/
+webapp/dist/
+webapp/.vite/
