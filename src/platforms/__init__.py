@@ -45,15 +45,16 @@ PLATFORM_INFO = {
         "collateral": "USDT",
         "features": ["AI Oracles", "BSC Native", "Macro", "Economic Data"],
     },
-    Platform.LIMITLESS: {
-        "name": "Limitless",
-        "emoji": "♾️",
-        "chain": "Base",
-        "chain_family": ChainFamily.EVM,
-        "description": "Fast prediction market on Base",
-        "collateral": "USDC",
-        "features": ["Base L2", "Low Fees", "Fast Settlement", "Politics", "Crypto"],
-    },
+    # TODO: Re-enable after fixing PostgreSQL enum case mismatch
+    # Platform.LIMITLESS: {
+    #     "name": "Limitless",
+    #     "emoji": "♾️",
+    #     "chain": "Base",
+    #     "chain_family": ChainFamily.EVM,
+    #     "description": "Fast prediction market on Base",
+    #     "collateral": "USDC",
+    #     "features": ["Base L2", "Low Fees", "Fast Settlement", "Politics", "Crypto"],
+    # },
 }
 
 
@@ -65,7 +66,8 @@ class PlatformRegistry:
             Platform.KALSHI: kalshi_platform,
             Platform.POLYMARKET: polymarket_platform,
             Platform.OPINION: opinion_platform,
-            Platform.LIMITLESS: limitless_platform,
+            # TODO: Re-enable after fixing PostgreSQL enum case mismatch
+            # Platform.LIMITLESS: limitless_platform,
         }
         self._initialized = False
     

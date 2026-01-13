@@ -21,12 +21,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Fix any existing lowercase 'limitless' values to uppercase 'LIMITLESS'
-    # SQLAlchemy expects uppercase enum names for proper Python enum conversion
-    op.execute("UPDATE users SET active_platform = 'LIMITLESS' WHERE active_platform = 'limitless'")
-    op.execute("UPDATE positions SET platform = 'LIMITLESS' WHERE platform = 'limitless'")
-    op.execute("UPDATE orders SET platform = 'LIMITLESS' WHERE platform = 'limitless'")
-    op.execute("UPDATE market_cache SET platform = 'LIMITLESS' WHERE platform = 'limitless'")
+    # Reset any users with 'limitless' back to 'kalshi' for now
+    # The Limitless platform needs proper enum configuration
+    op.execute("UPDATE users SET active_platform = 'kalshi' WHERE active_platform = 'limitless'")
 
 
 def downgrade() -> None:
