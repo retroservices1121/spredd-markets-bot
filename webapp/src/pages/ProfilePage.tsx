@@ -23,24 +23,32 @@ import { toast } from "sonner";
 
 const FAQ_ITEMS = [
   {
-    q: "How do I deposit funds?",
-    a: "Send USDC to your wallet address. Supported chains: Polygon, Base, Solana, and Monad. Your wallet addresses are shown in the Wallet tab.",
+    q: "Is this non-custodial?",
+    a: "Yes, Spredd is non-custodial. Your private keys are encrypted and stored securely. Only YOU can export your keys using your PIN. We cannot access your private keys or export your wallet.",
   },
   {
-    q: "What are the trading fees?",
-    a: "Spredd charges a small fee on trades (typically 0.5-1%) which varies by platform. Fees are shown before you confirm any trade.",
+    q: "Why do I need a PIN?",
+    a: "Your PIN protects your private key export. It ensures only YOU can export your wallet's private keys. Trading doesn't require PIN entry (for convenience), but exporting keys requires your PIN (for security).",
   },
   {
-    q: "How do referrals work?",
-    a: "Share your referral link and earn 30% of the fees from your referrals' trades. Earnings are claimable in the Referral section.",
+    q: "What are the fees?",
+    a: "Spredd charges 1% on all trades. No deposit/withdrawal fees. Platform fees vary: Kalshi ~2% on winnings, Polymarket ~2% trading fee. Network gas fees are minimal (SOL ~$0.001, Polygon ~$0.01, BSC ~$0.10).",
   },
   {
-    q: "Which platforms are supported?",
-    a: "Currently Kalshi, Polymarket, and Opinion Labs. More platforms coming soon!",
+    q: "How do I deposit?",
+    a: "Go to the Wallet tab to see your addresses. Send USDC to your Solana address for Kalshi, or your EVM address for Polymarket (Polygon), Opinion Labs (BSC), and Monad. Don't forget gas tokens (SOL, MATIC, BNB, MON).",
   },
   {
-    q: "How do I withdraw?",
-    a: "Use the /withdraw command in the Telegram bot to withdraw your funds to any wallet address.",
+    q: "What is USDC Auto-Swap?",
+    a: "Polymarket requires USDC.e (bridged USDC). The bot automatically swaps your native USDC to USDC.e via Uniswap when needed, so you can trade seamlessly.",
+  },
+  {
+    q: "How does Cross-Chain Bridging work?",
+    a: "Have USDC on Base, Arbitrum, or other chains? Use the bridge feature to move it to Polygon for Polymarket. Fast Bridge (~30 sec, small fee) or Standard Bridge (~15 min, free via Circle CCTP).",
+  },
+  {
+    q: "Security tips?",
+    a: "Never share your PIN or private keys. We will NEVER DM you first or ask for your PIN. Always verify addresses before depositing. Start with small amounts to test.",
   },
 ];
 

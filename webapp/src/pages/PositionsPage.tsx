@@ -55,7 +55,7 @@ export default function PositionsPage() {
       >
         <Card
           className={`border-2 ${
-            avgROI >= 0
+            totalPnL >= 0
               ? "border-spredd-green/30 bg-spredd-green/5"
               : "border-spredd-red/30 bg-spredd-red/5"
           }`}

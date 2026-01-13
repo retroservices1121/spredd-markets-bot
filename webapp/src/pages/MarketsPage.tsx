@@ -1,17 +1,25 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, TrendingUp, Flame } from "lucide-react";
+import { Search, TrendingUp, Flame, Tag } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import MarketCard from "@/components/markets/MarketCard";
 import { useTelegram } from "@/contexts/TelegramContext";
-import { searchMarkets, getTrendingMarkets } from "@/lib/api";
+import { searchMarkets, getTrendingMarkets, getCategories, getMarketsByCategory } from "@/lib/api";
 
 export default function MarketsPage() {
   const { initData } = useTelegram();
   const [searchQuery, setSearchQuery] = useState("");
   const [platform, setPlatform] = useState<string>("all");
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+
+  // Fetch categories for Polymarket
+  const { data: categoriesData } = useQuery({
+    queryKey: ["categories"],
+    queryFn: getCategories,
+  });
 
   // Fetch trending markets
   const { data: trendingData, isLoading: trendingLoading } = useQuery({
@@ -20,9 +28,9 @@ export default function MarketsPage() {
       getTrendingMarkets(
         initData,
         platform === "all" ? undefined : platform,
-        20
+        50
       ),
-    enabled: !searchQuery,
+    enabled: !searchQuery && !selectedCategory,
   });
 
   // Fetch search results
@@ -33,13 +41,42 @@ export default function MarketsPage() {
         initData,
         searchQuery,
         platform === "all" ? undefined : platform,
-        30
+        50
       ),
     enabled: searchQuery.length >= 2,
   });
 
-  const markets = searchQuery ? searchData?.markets : trendingData?.markets;
-  const isLoading = searchQuery ? searchLoading : trendingLoading;
+  // Fetch category markets
+  const { data: categoryData, isLoading: categoryLoading } = useQuery({
+    queryKey: ["category-markets", selectedCategory],
+    queryFn: () => getMarketsByCategory(initData, selectedCategory!, 50),
+    enabled: !!selectedCategory && platform === "polymarket",
+  });
+
+  const categories = categoriesData?.categories || [];
+
+  // Determine which markets to show
+  let markets;
+  let isLoading;
+
+  if (searchQuery) {
+    markets = searchData?.markets;
+    isLoading = searchLoading;
+  } else if (selectedCategory && platform === "polymarket") {
+    markets = categoryData?.markets;
+    isLoading = categoryLoading;
+  } else {
+    markets = trendingData?.markets;
+    isLoading = trendingLoading;
+  }
+
+  // Handle platform change - reset category
+  const handlePlatformChange = (newPlatform: string) => {
+    setPlatform(newPlatform);
+    if (newPlatform !== "polymarket") {
+      setSelectedCategory(null);
+    }
+  };
 
   return (
     <div className="p-4 space-y-4">
@@ -55,7 +92,7 @@ export default function MarketsPage() {
       </div>
 
       {/* Platform Tabs */}
-      <Tabs value={platform} onValueChange={setPlatform}>
+      <Tabs value={platform} onValueChange={handlePlatformChange}>
         <TabsList className="w-full">
           <TabsTrigger value="all" className="flex-1">
             All
@@ -69,6 +106,33 @@ export default function MarketsPage() {
         </TabsList>
       </Tabs>
 
+      {/* Category Selector for Polymarket */}
+      {platform === "polymarket" && categories.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant={selectedCategory === null ? "default" : "outline"}
+            size="sm"
+            onClick={() => setSelectedCategory(null)}
+            className="text-xs"
+          >
+            <Flame className="w-3 h-3 mr-1" />
+            All
+          </Button>
+          {categories.map((cat) => (
+            <Button
+              key={cat.id}
+              variant={selectedCategory === cat.id ? "default" : "outline"}
+              size="sm"
+              onClick={() => setSelectedCategory(cat.id)}
+              className="text-xs"
+            >
+              <span className="mr-1">{cat.emoji}</span>
+              {cat.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
       {/* Section Header */}
       <div className="flex items-center gap-2">
         {searchQuery ? (
@@ -76,6 +140,13 @@ export default function MarketsPage() {
             <Search className="w-4 h-4 text-spredd-orange" />
             <span className="text-sm font-medium">
               Results for "{searchQuery}"
+            </span>
+          </>
+        ) : selectedCategory ? (
+          <>
+            <Tag className="w-4 h-4 text-spredd-orange" />
+            <span className="text-sm font-medium">
+              {categories.find((c) => c.id === selectedCategory)?.label || selectedCategory} Markets
             </span>
           </>
         ) : (

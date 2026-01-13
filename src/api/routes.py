@@ -229,7 +229,7 @@ async def get_wallet_balances(
 
     for wallet in wallets:
         if wallet.chain_family == ChainFamily.EVM:
-            # Get EVM balances (Polygon, Base, etc.)
+            # Get EVM balances (Polygon, Base, BSC, Monad)
             evm_balances = []
             try:
                 evm_balances.extend(await wallet_service.get_polygon_balances(wallet.public_key))
@@ -239,6 +239,14 @@ async def get_wallet_balances(
                 evm_balances.extend(await wallet_service.get_base_balances(wallet.public_key))
             except Exception as e:
                 print(f"Error getting Base balances: {e}")
+            try:
+                evm_balances.extend(await wallet_service.get_bsc_balances(wallet.public_key))
+            except Exception as e:
+                print(f"Error getting BSC balances: {e}")
+            try:
+                evm_balances.extend(await wallet_service.get_monad_balances(wallet.public_key))
+            except Exception as e:
+                print(f"Error getting Monad balances: {e}")
             balances.append({
                 "chain_family": "evm",
                 "public_key": wallet.public_key,
@@ -393,6 +401,66 @@ async def get_trending_markets(
     return {"markets": results[:limit]}
 
 
+@router.get("/markets/categories")
+async def get_market_categories():
+    """Get available market categories for Polymarket."""
+    from ..platforms import platform_registry
+
+    try:
+        poly = platform_registry.get(Platform.POLYMARKET)
+        if poly and hasattr(poly, 'get_available_categories'):
+            categories = poly.get_available_categories()
+            return {"categories": categories}
+    except Exception as e:
+        print(f"Error getting categories: {e}")
+
+    # Default categories if platform not available
+    return {
+        "categories": [
+            {"id": "sports", "label": "Sports", "emoji": "🏆"},
+            {"id": "politics", "label": "Politics", "emoji": "🏛️"},
+            {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
+            {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
+            {"id": "business", "label": "Business", "emoji": "💼"},
+            {"id": "science", "label": "Science", "emoji": "🔬"},
+        ]
+    }
+
+
+@router.get("/markets/category/{category}")
+async def get_markets_by_category(
+    category: str,
+    limit: int = Query(default=20, le=100),
+):
+    """Get markets by category (Polymarket only)."""
+    from ..platforms import platform_registry
+
+    try:
+        poly = platform_registry.get(Platform.POLYMARKET)
+        if not poly:
+            raise HTTPException(status_code=400, detail="Polymarket not available")
+
+        markets = await poly.get_markets_by_category(category, limit=limit)
+        results = []
+        for m in markets:
+            results.append({
+                "platform": "polymarket",
+                "id": m.market_id,
+                "title": m.title,
+                "category": m.category,
+                "yes_price": float(m.yes_price) if m.yes_price else None,
+                "no_price": float(m.no_price) if m.no_price else None,
+                "volume": str(m.volume_24h) if m.volume_24h else None,
+                "is_active": m.is_active,
+            })
+        return {"markets": results}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching markets: {e}")
+
+
 @router.get("/markets/{platform}/{market_id}")
 async def get_market_details(
     platform: str,
@@ -439,11 +507,14 @@ async def get_quote(
         if not plat:
             raise HTTPException(status_code=400, detail=f"Platform not initialized: {platform}")
 
+        # Convert amount to Decimal for platform methods
+        amount_decimal = Decimal(str(request.amount))
+
         quote = await plat.get_quote(
             market_id=request.market_id,
             outcome=request.outcome,
             side=request.side,
-            amount=request.amount,
+            amount=amount_decimal,
         )
 
         return QuoteResponse(
@@ -512,12 +583,15 @@ async def execute_order(
             "",  # No PIN required for trading
         )
 
+        # Convert amount to Decimal for platform methods
+        amount_decimal = Decimal(str(request.amount))
+
         # Execute order
         tx_result = await plat.execute_order(
             market_id=request.market_id,
             outcome=request.outcome,
             side=request.side,
-            amount=request.amount,
+            amount=amount_decimal,
             private_key=private_key,
             slippage_bps=request.slippage_bps,
         )
