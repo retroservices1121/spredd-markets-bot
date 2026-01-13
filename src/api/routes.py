@@ -199,7 +199,14 @@ async def set_active_platform(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
 
-    user.active_platform = platform_enum
+    # Use .value to ensure lowercase enum value is stored in PostgreSQL
+    from sqlalchemy import update as sql_update
+    from src.db.models import User as UserModel
+    await session.execute(
+        sql_update(UserModel)
+        .where(UserModel.id == user.id)
+        .values(active_platform=platform_enum.value)
+    )
     await session.commit()
 
     return {"status": "success", "active_platform": platform}
