@@ -204,23 +204,35 @@ class LimitlessPlatform(BasePlatform):
                 raise
 
         except httpx.HTTPStatusError as e:
+            # Log the error response body for debugging
+            error_body = ""
+            try:
+                error_body = e.response.text[:500] if e.response.text else ""
+            except:
+                pass
+            logger.error(
+                "Limitless API error",
+                status=e.response.status_code,
+                endpoint=endpoint,
+                error_body=error_body,
+            )
             raise PlatformError(
-                f"API error: {e.response.status_code}",
+                f"API error: {e.response.status_code} - {error_body[:100]}",
                 Platform.LIMITLESS,
                 str(e.response.status_code),
             )
 
-    async def _get_session(self, private_key: LocalAccount) -> Tuple[str, str]:
+    async def _get_session(self, private_key: LocalAccount) -> Tuple[str, str, int]:
         """Get or create authenticated session for wallet.
 
-        Returns: (session_cookie, owner_id)
+        Returns: (session_cookie, owner_id, fee_rate_bps)
         """
         wallet = private_key.address
 
         # Check cache
         cached = self._session_cache.get(wallet)
         if cached and cached.get("expires_at", 0) > time.time():
-            return cached["session"], cached.get("owner_id", "")
+            return cached["session"], cached.get("owner_id", ""), cached.get("fee_rate_bps", 300)
 
         # Authenticate with Limitless
         checksum_address = Web3.to_checksum_address(wallet)
@@ -269,6 +281,10 @@ class LimitlessPlatform(BasePlatform):
         # Extract owner_id from response
         owner_id = login_data.get("id") or login_data.get("ownerId") or ""
 
+        # Extract feeRateBps from user's rank
+        rank_data = login_data.get("rank", {})
+        fee_rate_bps = rank_data.get("feeRateBps", 300) if rank_data else 300
+
         # Extract session cookie
         session_cookie = None
         for cookie in login_response.cookies.jar:
@@ -283,16 +299,17 @@ class LimitlessPlatform(BasePlatform):
         if not session_cookie:
             raise PlatformError("Failed to get session cookie", Platform.LIMITLESS)
 
-        logger.info("Limitless authentication successful", owner_id=owner_id)
+        logger.info("Limitless authentication successful", owner_id=owner_id, fee_rate_bps=fee_rate_bps)
 
         # Cache session (29 days)
         self._session_cache[wallet] = {
             "session": session_cookie,
             "owner_id": owner_id,
+            "fee_rate_bps": fee_rate_bps,
             "expires_at": time.time() + 29 * 24 * 3600,
         }
 
-        return session_cookie, owner_id
+        return session_cookie, owner_id, fee_rate_bps
 
     # ===================
     # Market Discovery
@@ -746,6 +763,7 @@ class LimitlessPlatform(BasePlatform):
         amount: Decimal,
         price: Decimal,
         venue: dict,
+        fee_rate_bps: int = 300,
     ) -> dict:
         """Build and sign EIP-712 order for Limitless."""
         wallet = Web3.to_checksum_address(private_key.address)
@@ -777,7 +795,7 @@ class LimitlessPlatform(BasePlatform):
             "takerAmount": str(taker_amount),
             "expiration": str(int(time.time()) + 3600),  # 1 hour
             "nonce": str(int(time.time() * 1000)),
-            "feeRateBps": "0",
+            "feeRateBps": str(fee_rate_bps),
             "side": order_side,
             "signatureType": 0,  # EOA
         }
@@ -875,6 +893,24 @@ class LimitlessPlatform(BasePlatform):
                     explorer_url=None,
                 )
 
+            # Get session for authenticated request (need fee_rate_bps for order)
+            session = None
+            owner_id = None
+            fee_rate_bps = 300  # default
+            try:
+                session, owner_id, fee_rate_bps = await self._get_session(private_key)
+                logger.debug("Got session", has_session=bool(session), owner_id=owner_id, fee_rate_bps=fee_rate_bps)
+            except Exception as e:
+                logger.error("Session auth failed", error=str(e))
+                return TradeResult(
+                    success=False,
+                    tx_hash=None,
+                    input_amount=quote.input_amount,
+                    output_amount=Decimal(0),
+                    error_message=f"Authentication failed: {str(e)}",
+                    explorer_url=None,
+                )
+
             # Ensure USDC approval for buys
             if quote.side == "buy":
                 await self._ensure_approval(private_key, exchange)
@@ -888,24 +924,8 @@ class LimitlessPlatform(BasePlatform):
                 amount=quote.input_amount,
                 price=price,
                 venue=venue,
+                fee_rate_bps=fee_rate_bps,
             )
-
-            # Get session for authenticated request
-            session = None
-            owner_id = None
-            try:
-                session, owner_id = await self._get_session(private_key)
-                logger.debug("Got session", has_session=bool(session), owner_id=owner_id)
-            except Exception as e:
-                logger.error("Session auth failed", error=str(e))
-                return TradeResult(
-                    success=False,
-                    tx_hash=None,
-                    input_amount=quote.input_amount,
-                    output_amount=Decimal(0),
-                    error_message=f"Authentication failed: {str(e)}",
-                    explorer_url=None,
-                )
 
             # Submit order
             payload = {
