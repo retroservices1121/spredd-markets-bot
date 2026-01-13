@@ -181,11 +181,11 @@ async def get_user_by_telegram_id(telegram_id: int) -> Optional[User]:
 async def update_user_platform(telegram_id: int, platform: Platform) -> None:
     """Update user's active platform."""
     async with get_session() as session:
-        # Use raw SQL to bypass SQLAlchemy enum conversion issues
+        # Use raw SQL with uppercase enum name to match SQLAlchemy's expectation
         from sqlalchemy import text
         await session.execute(
             text("UPDATE users SET active_platform = :platform, updated_at = now() WHERE telegram_id = :tid"),
-            {"platform": platform.value, "tid": telegram_id}
+            {"platform": platform.name, "tid": telegram_id}
         )
 
 

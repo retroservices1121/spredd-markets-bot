@@ -22,7 +22,9 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     # Add LIMITLESS to the platform enum
     # PostgreSQL requires special handling for adding enum values
+    # Add both lowercase (for PostgreSQL) and uppercase (for SQLAlchemy validation)
     op.execute("ALTER TYPE platform ADD VALUE IF NOT EXISTS 'limitless'")
+    op.execute("ALTER TYPE platform ADD VALUE IF NOT EXISTS 'LIMITLESS'")
 
 
 def downgrade() -> None:
