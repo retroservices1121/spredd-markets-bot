@@ -212,13 +212,6 @@ export default function ProfilePage() {
         <Card>
           <CardContent className="p-0 divide-y divide-border">
             <MenuItem
-              icon={HelpCircle}
-              label="FAQs"
-              description="Common questions"
-              onClick={() => setExpandedFaq(expandedFaq === -1 ? null : -1)}
-              expanded={expandedFaq === -1}
-            />
-            <MenuItem
               icon={MessageCircle}
               label="Help"
               description="Get support"
@@ -234,48 +227,50 @@ export default function ProfilePage() {
         </Card>
       </motion.div>
 
-      {/* Expandable FAQs */}
-      <AnimatePresence>
-        {expandedFaq === -1 && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-          >
-            <Card>
-              <CardContent className="p-4 space-y-3">
-                {FAQ_ITEMS.map((faq, index) => (
-                  <div key={index} className="border-b border-border last:border-0 pb-3 last:pb-0">
-                    <button
-                      className="w-full flex items-center justify-between text-left"
-                      onClick={() => setExpandedFaq(expandedFaq === index ? -1 : index)}
+      {/* FAQs Section - Always visible */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.3 }}
+      >
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center gap-2">
+              <HelpCircle className="w-4 h-4 text-spredd-orange" />
+              FAQs
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {FAQ_ITEMS.map((faq, index) => (
+              <div key={index} className="border-b border-border last:border-0 pb-3 last:pb-0">
+                <button
+                  className="w-full flex items-center justify-between text-left"
+                  onClick={() => setExpandedFaq(expandedFaq === index ? null : index)}
+                >
+                  <span className="text-sm font-medium">{faq.q}</span>
+                  <ChevronDown
+                    className={`w-4 h-4 text-white/40 transition-transform ${
+                      expandedFaq === index ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+                <AnimatePresence>
+                  {expandedFaq === index && (
+                    <motion.p
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="text-sm text-white/60 mt-2"
                     >
-                      <span className="text-sm font-medium">{faq.q}</span>
-                      <ChevronDown
-                        className={`w-4 h-4 text-white/40 transition-transform ${
-                          expandedFaq === index ? "rotate-180" : ""
-                        }`}
-                      />
-                    </button>
-                    <AnimatePresence>
-                      {expandedFaq === index && (
-                        <motion.p
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: "auto" }}
-                          exit={{ opacity: 0, height: 0 }}
-                          className="text-sm text-white/60 mt-2"
-                        >
-                          {faq.a}
-                        </motion.p>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </motion.div>
-        )}
-      </AnimatePresence>
+                      {faq.a}
+                    </motion.p>
+                  )}
+                </AnimatePresence>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </motion.div>
 
       {/* Help Modal */}
       <AnimatePresence>
@@ -313,20 +308,6 @@ export default function ProfilePage() {
                   <div className="text-left">
                     <p className="font-medium">Telegram Community</p>
                     <p className="text-xs text-white/40">Join our support group</p>
-                  </div>
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full justify-start gap-3"
-                  onClick={() => {
-                    setShowHelp(false);
-                    setExpandedFaq(-1);
-                  }}
-                >
-                  <HelpCircle className="w-5 h-5" />
-                  <div className="text-left">
-                    <p className="font-medium">FAQs</p>
-                    <p className="text-xs text-white/40">Common questions answered</p>
                   </div>
                 </Button>
                 <Button

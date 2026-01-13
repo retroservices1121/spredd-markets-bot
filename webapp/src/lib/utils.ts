@@ -98,33 +98,71 @@ export function getChainName(chain: string): string {
     case "base":
       return "Base";
     case "bsc":
-      return "BSC";
+    case "binance":
+    case "bnb":
+      return "BNB Chain";
     case "monad":
       return "Monad";
     case "solana":
       return "Solana";
+    case "arbitrum":
+      return "Arbitrum";
     case "native":
-      return "";
+      return "Native";
     default:
       return chain;
   }
 }
 
-export function getTokenSymbol(token: string, _chain?: string): string {
+export function getTokenSymbol(token: string, chain?: string): string {
+  const tokenLower = token.toLowerCase();
+  const chainLower = chain?.toLowerCase() || "";
+
+  // Handle native tokens
+  if (tokenLower === "native" || tokenLower === "eth" || tokenLower === "matic" || tokenLower === "pol" || tokenLower === "bnb" || tokenLower === "sol") {
+    switch (chainLower) {
+      case "polygon":
+        return "POL";
+      case "base":
+      case "arbitrum":
+        return "ETH";
+      case "bsc":
+        return "BNB";
+      case "solana":
+        return "SOL";
+      case "monad":
+        return "MON";
+      default:
+        return token.toUpperCase();
+    }
+  }
+
   // If token looks like an address, return appropriate symbol
   if (token.startsWith("0x") || token.length > 20) {
-    // Check for known USDC addresses
-    const usdcAddresses = [
-      "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", // Polygon
-      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", // Base
-      "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", // BSC
+    // Known USDC.e (bridged) addresses
+    const usdceAddresses = [
       "0x2791bca1f2de4661ed88a30c99a7a9449aa84174", // USDC.e Polygon
-      "epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v", // Solana
     ];
-    if (usdcAddresses.includes(token.toLowerCase())) {
+
+    // Known native USDC addresses
+    const usdcAddresses = [
+      "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", // Polygon native USDC
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", // Base USDC
+      "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", // BSC USDC
+      "epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v", // Solana USDC
+    ];
+
+    if (usdceAddresses.includes(tokenLower)) {
+      return "USDC.e";
+    }
+    if (usdcAddresses.includes(tokenLower)) {
       return "USDC";
     }
-    return "USDC"; // Default assumption for unknown token addresses
+
+    // Default for unknown addresses based on chain
+    return "USDC";
   }
-  return token;
+
+  // Return token as-is if it's already a symbol
+  return token.toUpperCase();
 }

@@ -16,7 +16,7 @@ import {
   executeOrder,
   type QuoteResponse,
 } from "@/lib/api";
-import { formatPrice, formatUSD, getPlatformName } from "@/lib/utils";
+import { formatPrice, formatUSD, formatNumber, getPlatformName } from "@/lib/utils";
 import { toast } from "sonner";
 
 export default function MarketDetailsPage() {
@@ -165,7 +165,7 @@ export default function MarketDetailsPage() {
           <div className="flex items-center justify-center gap-4 text-sm text-white/40">
             <div className="flex items-center gap-1">
               <TrendingUp className="w-4 h-4" />
-              <span>Vol: ${market.volume_24h || market.volume || "0"}</span>
+              <span>Vol: ${formatNumber(market.volume_24h || market.volume || 0)}</span>
             </div>
           </div>
         </CardContent>

@@ -117,7 +117,7 @@ export default function WalletPage() {
                       }
                     >
                       {wallet.chain_family === "evm"
-                        ? "Polygon + BSC"
+                        ? "Multi-Chain"
                         : "Solana"}
                     </Badge>
                   </div>
@@ -214,6 +214,7 @@ export default function WalletPage() {
             <Badge variant="outline">Polygon</Badge>
             <Badge variant="outline">Base</Badge>
             <Badge variant="outline">Arbitrum</Badge>
+            <Badge variant="outline">BNB Chain</Badge>
             <Badge variant="outline">Monad</Badge>
             <Badge variant="outline">Solana</Badge>
           </div>
