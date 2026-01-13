@@ -487,8 +487,13 @@ class LimitlessPlatform(BasePlatform):
 
         return markets[:limit]
 
-    async def get_market(self, market_id: str) -> Optional[Market]:
-        """Get a specific market by ID (numeric) or slug."""
+    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
+        """Get a specific market by ID (numeric) or slug.
+
+        Args:
+            market_id: The market ID (numeric) or slug
+            search_title: Optional title to search for if direct lookup fails
+        """
         # If market_id is numeric, try to get slug from cache first
         lookup_id = market_id
         if market_id.isdigit():
@@ -527,6 +532,18 @@ class LimitlessPlatform(BasePlatform):
                     logger.debug(f"Market {market_id} not found on page {page_num + 1}, checking next...")
             except Exception as e:
                 logger.debug("Market list search failed", error=str(e))
+
+        # Last resort: search by title if provided
+        if search_title and market_id.isdigit():
+            try:
+                logger.debug(f"Trying title search for market {market_id}: {search_title[:50]}...")
+                search_results = await self.search_markets(search_title[:50], limit=10)
+                for m in search_results:
+                    if m.market_id == market_id:
+                        logger.info(f"Found market {market_id} via title search")
+                        return m
+            except Exception as e:
+                logger.debug("Title search failed", error=str(e))
 
         return None
 

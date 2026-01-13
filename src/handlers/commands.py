@@ -893,12 +893,12 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         # Fetch current price from platform
         current_price = None
         try:
-            # Try event_id (slug) first for Limitless, then fall back to market_id
+            # Try event_id (slug) first for Limitless, then fall back to market_id with title search
             lookup_id = pos.event_id if pos.event_id else pos.market_id
-            market = await platform.get_market(lookup_id)
+            market = await platform.get_market(lookup_id, search_title=pos.market_title)
             if not market and pos.event_id:
-                # Fallback to numeric ID if slug lookup failed
-                market = await platform.get_market(pos.market_id)
+                # Fallback to numeric ID with title search if slug lookup failed
+                market = await platform.get_market(pos.market_id, search_title=pos.market_title)
             if market:
                 # Get the price for the outcome the user holds
                 if outcome_str == "YES":
@@ -1151,9 +1151,9 @@ async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             current_price = None
             try:
                 lookup_id = pos.event_id if pos.event_id else pos.market_id
-                market = await platform.get_market(lookup_id)
+                market = await platform.get_market(lookup_id, search_title=pos.market_title)
                 if not market and pos.event_id:
-                    market = await platform.get_market(pos.market_id)
+                    market = await platform.get_market(pos.market_id, search_title=pos.market_title)
                 if market:
                     outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
                     if outcome_str == "YES":
@@ -3750,9 +3750,9 @@ async def handle_sell_start(query, position_id: str, telegram_id: int) -> None:
     current_price = None
     try:
         lookup_id = position.event_id if position.event_id else position.market_id
-        market = await platform.get_market(lookup_id)
+        market = await platform.get_market(lookup_id, search_title=position.market_title)
         if not market and position.event_id:
-            market = await platform.get_market(position.market_id)
+            market = await platform.get_market(position.market_id, search_title=position.market_title)
         if market:
             outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
             if outcome_str == "YES":
