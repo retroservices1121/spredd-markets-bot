@@ -297,8 +297,11 @@ class LimitlessPlatform(BasePlatform):
                 yes_token = outcomes.get("yes") or outcomes.get("0")
                 no_token = outcomes.get("no") or outcomes.get("1")
 
-        # Market ID - prefer slug for API calls
-        market_id = data.get("slug") or data.get("address") or str(data.get("id", ""))
+        # Market ID - use numeric ID for shorter callbacks, keep slug in event_id for display
+        # Numeric IDs are much shorter and fit within Telegram's 64-byte callback limit
+        numeric_id = data.get("id")
+        slug = data.get("slug") or data.get("address") or ""
+        market_id = str(numeric_id) if numeric_id else slug
 
         # Volume
         volume = data.get("volume") or data.get("volume24h") or data.get("volumeUsd") or 0
@@ -313,7 +316,7 @@ class LimitlessPlatform(BasePlatform):
             platform=Platform.LIMITLESS,
             chain=Chain.BASE,
             market_id=market_id,
-            event_id=str(data.get("id", "")),
+            event_id=slug,  # Store slug in event_id for reference
             title=data.get("title") or data.get("question", ""),
             description=data.get("description"),
             category=category,
@@ -396,18 +399,27 @@ class LimitlessPlatform(BasePlatform):
         return markets[:limit]
 
     async def get_market(self, market_id: str) -> Optional[Market]:
-        """Get a specific market by ID or slug."""
+        """Get a specific market by ID (numeric) or slug."""
+        # Try direct lookup by ID first
         try:
             data = await self._api_request("GET", f"/markets/{market_id}")
             return self._parse_market(data)
         except Exception as e:
-            logger.warning("Failed to get market", market_id=market_id, error=str(e))
+            logger.debug("Direct market lookup failed", market_id=market_id, error=str(e))
 
+        # If market_id is numeric, also try lookup as slug in search results
         # Try searching if direct lookup fails
-        markets = await self.search_markets(market_id, limit=5)
-        for m in markets:
-            if m.market_id == market_id or market_id in m.market_id:
-                return m
+        try:
+            markets = await self.search_markets(market_id, limit=10)
+            for m in markets:
+                # Match by ID, slug, or partial slug match
+                if (m.market_id == market_id or
+                    m.event_id == market_id or
+                    market_id in str(m.market_id) or
+                    market_id in str(m.event_id)):
+                    return m
+        except Exception as e:
+            logger.warning("Market search fallback failed", market_id=market_id, error=str(e))
 
         return None
 
@@ -475,12 +487,24 @@ class LimitlessPlatform(BasePlatform):
         market_id: str,
         outcome: Outcome,
         token_id: str = None,
+        slug: str = None,
     ) -> OrderBook:
         """Get order book from Limitless."""
-        try:
-            data = await self._api_request("GET", f"/markets/{market_id}/orderbook")
-        except Exception as e:
-            logger.error("Failed to fetch orderbook", error=str(e))
+        # Try with provided ID first, then with slug if that fails
+        endpoints_to_try = [market_id]
+        if slug and slug != market_id:
+            endpoints_to_try.append(slug)
+
+        data = None
+        for endpoint_id in endpoints_to_try:
+            try:
+                data = await self._api_request("GET", f"/markets/{endpoint_id}/orderbook")
+                break
+            except Exception as e:
+                logger.debug(f"Orderbook lookup failed for {endpoint_id}", error=str(e))
+
+        if data is None:
+            logger.error("Failed to fetch orderbook", market_id=market_id)
             return OrderBook(market_id=market_id, outcome=outcome, bids=[], asks=[])
 
         bids = []
@@ -533,8 +557,8 @@ class LimitlessPlatform(BasePlatform):
         if not token_id:
             token_id = market.yes_token if outcome == Outcome.YES else market.no_token
 
-        # Get orderbook for pricing
-        orderbook = await self.get_orderbook(market_id, outcome, token_id=token_id)
+        # Get orderbook for pricing (pass slug for fallback lookup)
+        orderbook = await self.get_orderbook(market_id, outcome, token_id=token_id, slug=market.event_id)
 
         if side == "buy":
             price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
