@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { useTelegram } from "@/contexts/TelegramContext";
 import { getWalletBalances } from "@/lib/api";
-import { formatUSD, shortenAddress } from "@/lib/utils";
+import { formatUSD, shortenAddress, getChainName, getTokenSymbol } from "@/lib/utils";
 import { toast } from "sonner";
 
 export default function WalletPage() {
@@ -34,13 +34,17 @@ export default function WalletPage() {
     refetch();
   };
 
-  // Calculate total balance across all wallets
+  // Calculate total balance across all wallets (sum all USDC-like tokens)
   const totalUSDC =
     data?.wallets.reduce((total, wallet) => {
-      const usdcBalance = wallet.balances.find(
-        (b) => b.token === "USDC"
-      );
-      return total + parseFloat(usdcBalance?.amount || "0");
+      return total + wallet.balances.reduce((walletTotal, b) => {
+        const symbol = getTokenSymbol(b.token);
+        // Include USDC, USDC.e, and similar stablecoins
+        if (symbol.includes("USDC") || symbol.includes("USD")) {
+          return walletTotal + parseFloat(b.amount || "0");
+        }
+        return walletTotal;
+      }, 0);
     }, 0) || 0;
 
   return (
@@ -121,44 +125,63 @@ export default function WalletPage() {
                 <CardContent className="space-y-3">
                   {/* Address */}
                   <div className="flex items-center gap-2 bg-spredd-dark rounded-lg p-3">
-                    <code className="text-sm text-white/80 flex-1 font-mono">
-                      {shortenAddress(wallet.public_key, 8)}
+                    <code className="text-sm text-white/80 flex-1 font-mono truncate">
+                      {shortenAddress(wallet.public_key, 6)}
                     </code>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8"
+                      className="h-8 w-8 shrink-0"
                       onClick={() => handleCopyAddress(wallet.public_key)}
                     >
                       <Copy className="w-4 h-4" />
                     </Button>
                   </div>
 
-                  {/* Balances */}
+                  {/* Balances - grouped by chain */}
                   <div className="space-y-2">
-                    {wallet.balances.map((balance) => (
-                      <div
-                        key={`${balance.chain}-${balance.token}`}
-                        className="flex items-center justify-between py-2 border-b border-border last:border-0"
-                      >
-                        <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-spredd-dark flex items-center justify-center text-xs font-bold">
-                            {balance.token.slice(0, 2)}
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium">{balance.token}</p>
-                            <p className="text-xs text-white/40 capitalize">
-                              {balance.chain}
+                    {/* Group balances by chain */}
+                    {(() => {
+                      const chainGroups: Record<string, typeof wallet.balances> = {};
+                      wallet.balances.forEach((b) => {
+                        const chain = getChainName(b.chain) || "Unknown";
+                        if (!chainGroups[chain]) chainGroups[chain] = [];
+                        chainGroups[chain].push(b);
+                      });
+
+                      return Object.entries(chainGroups).map(([chain, balances]) => (
+                        <div key={chain} className="space-y-1">
+                          {chain && (
+                            <p className="text-xs text-white/40 font-medium mt-2">
+                              {chain}
                             </p>
-                          </div>
+                          )}
+                          {balances.map((balance) => {
+                            const symbol = getTokenSymbol(balance.token, balance.chain);
+                            return (
+                              <div
+                                key={`${balance.chain}-${balance.token}`}
+                                className="flex items-center justify-between py-2 border-b border-border last:border-0"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <div className="w-8 h-8 rounded-full bg-spredd-dark flex items-center justify-center text-xs font-bold">
+                                    {symbol.slice(0, 2).toUpperCase()}
+                                  </div>
+                                  <div>
+                                    <p className="text-sm font-medium">{symbol}</p>
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <p className="font-medium">
+                                    {parseFloat(balance.amount).toFixed(4)}
+                                  </p>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
-                        <div className="text-right">
-                          <p className="font-medium">
-                            {parseFloat(balance.amount).toFixed(4)}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
+                      ));
+                    })()}
                   </div>
                 </CardContent>
               </Card>

@@ -10,7 +10,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTelegram } from "@/contexts/TelegramContext";
 import { getPositions, getPnLSummary } from "@/lib/api";
-import { formatUSD, formatPercent, getPlatformName } from "@/lib/utils";
+import { formatUSD, formatPercent, getPlatformName, formatShares } from "@/lib/utils";
 
 export default function PositionsPage() {
   const navigate = useNavigate();
@@ -206,7 +206,7 @@ export default function PositionsPage() {
                     <div>
                       <p className="text-xs text-white/40">Shares</p>
                       <p className="font-medium">
-                        {parseFloat(position.token_amount).toFixed(2)}
+                        {formatShares(position.token_amount)}
                       </p>
                     </div>
                     <div>
@@ -224,8 +224,13 @@ export default function PositionsPage() {
                             : "text-spredd-red"
                         }`}
                       >
-                        {position.pnl !== null
+                        {position.pnl !== null && position.pnl !== undefined
                           ? formatUSD(position.pnl)
+                          : position.current_price !== null
+                          ? formatUSD(
+                              (position.current_price - position.entry_price) *
+                                parseFloat(position.token_amount)
+                            )
                           : "-"}
                       </p>
                     </div>

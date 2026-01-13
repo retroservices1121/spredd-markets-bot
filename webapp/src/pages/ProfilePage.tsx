@@ -1,13 +1,16 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   User,
   Share2,
   Copy,
   ChevronRight,
-  Settings,
+  ChevronDown,
+  MessageCircle,
   HelpCircle,
   ExternalLink,
+  X,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,8 +21,33 @@ import { getCurrentUser, getReferralStats } from "@/lib/api";
 import { formatUSD, getPlatformName } from "@/lib/utils";
 import { toast } from "sonner";
 
+const FAQ_ITEMS = [
+  {
+    q: "How do I deposit funds?",
+    a: "Send USDC to your wallet address. Supported chains: Polygon, Base, Solana, and Monad. Your wallet addresses are shown in the Wallet tab.",
+  },
+  {
+    q: "What are the trading fees?",
+    a: "Spredd charges a small fee on trades (typically 0.5-1%) which varies by platform. Fees are shown before you confirm any trade.",
+  },
+  {
+    q: "How do referrals work?",
+    a: "Share your referral link and earn 30% of the fees from your referrals' trades. Earnings are claimable in the Referral section.",
+  },
+  {
+    q: "Which platforms are supported?",
+    a: "Currently Kalshi, Polymarket, and Opinion Labs. More platforms coming soon!",
+  },
+  {
+    q: "How do I withdraw?",
+    a: "Use the /withdraw command in the Telegram bot to withdraw your funds to any wallet address.",
+  },
+];
+
 export default function ProfilePage() {
   const { user: tgUser, initData, hapticFeedback, close } = useTelegram();
+  const [showHelp, setShowHelp] = useState(false);
+  const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
 
   // Fetch user info
   const { data: userData, isLoading: userLoading } = useQuery({
@@ -184,16 +212,17 @@ export default function ProfilePage() {
         <Card>
           <CardContent className="p-0 divide-y divide-border">
             <MenuItem
-              icon={Settings}
-              label="Settings"
-              description="Slippage, notifications"
-              onClick={() => toast.info("Use the bot for settings")}
+              icon={HelpCircle}
+              label="FAQs"
+              description="Common questions"
+              onClick={() => setExpandedFaq(expandedFaq === -1 ? null : -1)}
+              expanded={expandedFaq === -1}
             />
             <MenuItem
-              icon={HelpCircle}
-              label="Help & FAQ"
+              icon={MessageCircle}
+              label="Help"
               description="Get support"
-              onClick={() => window.open("https://t.me/spreddmarketsgroup", "_blank")}
+              onClick={() => setShowHelp(true)}
             />
             <MenuItem
               icon={ExternalLink}
@@ -204,6 +233,121 @@ export default function ProfilePage() {
           </CardContent>
         </Card>
       </motion.div>
+
+      {/* Expandable FAQs */}
+      <AnimatePresence>
+        {expandedFaq === -1 && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+          >
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                {FAQ_ITEMS.map((faq, index) => (
+                  <div key={index} className="border-b border-border last:border-0 pb-3 last:pb-0">
+                    <button
+                      className="w-full flex items-center justify-between text-left"
+                      onClick={() => setExpandedFaq(expandedFaq === index ? -1 : index)}
+                    >
+                      <span className="text-sm font-medium">{faq.q}</span>
+                      <ChevronDown
+                        className={`w-4 h-4 text-white/40 transition-transform ${
+                          expandedFaq === index ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
+                    <AnimatePresence>
+                      {expandedFaq === index && (
+                        <motion.p
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="text-sm text-white/60 mt-2"
+                        >
+                          {faq.a}
+                        </motion.p>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Help Modal */}
+      <AnimatePresence>
+        {showHelp && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
+            onClick={() => setShowHelp(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-spredd-dark rounded-xl w-full max-w-sm"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between p-4 border-b border-border">
+                <h3 className="font-semibold">Get Help</h3>
+                <Button variant="ghost" size="icon" onClick={() => setShowHelp(false)}>
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+              <div className="p-4 space-y-3">
+                <Button
+                  variant="outline"
+                  className="w-full justify-start gap-3"
+                  onClick={() => {
+                    window.open("https://t.me/spreddmarketsgroup", "_blank");
+                    setShowHelp(false);
+                  }}
+                >
+                  <MessageCircle className="w-5 h-5" />
+                  <div className="text-left">
+                    <p className="font-medium">Telegram Community</p>
+                    <p className="text-xs text-white/40">Join our support group</p>
+                  </div>
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full justify-start gap-3"
+                  onClick={() => {
+                    setShowHelp(false);
+                    setExpandedFaq(-1);
+                  }}
+                >
+                  <HelpCircle className="w-5 h-5" />
+                  <div className="text-left">
+                    <p className="font-medium">FAQs</p>
+                    <p className="text-xs text-white/40">Common questions answered</p>
+                  </div>
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full justify-start gap-3"
+                  onClick={() => {
+                    window.open("https://x.com/spreddterminal", "_blank");
+                    setShowHelp(false);
+                  }}
+                >
+                  <ExternalLink className="w-5 h-5" />
+                  <div className="text-left">
+                    <p className="font-medium">Twitter/X</p>
+                    <p className="text-xs text-white/40">@spreddterminal</p>
+                  </div>
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Close Button (for Mini App) */}
       <Button
@@ -222,9 +366,10 @@ interface MenuItemProps {
   label: string;
   description: string;
   onClick: () => void;
+  expanded?: boolean;
 }
 
-function MenuItem({ icon: Icon, label, description, onClick }: MenuItemProps) {
+function MenuItem({ icon: Icon, label, description, onClick, expanded }: MenuItemProps) {
   return (
     <button
       className="w-full flex items-center gap-3 p-4 hover:bg-white/5 transition-colors text-left"
@@ -237,7 +382,11 @@ function MenuItem({ icon: Icon, label, description, onClick }: MenuItemProps) {
         <p className="font-medium">{label}</p>
         <p className="text-xs text-white/40">{description}</p>
       </div>
-      <ChevronRight className="w-4 h-4 text-white/40" />
+      {expanded !== undefined ? (
+        <ChevronDown className={`w-4 h-4 text-white/40 transition-transform ${expanded ? "rotate-180" : ""}`} />
+      ) : (
+        <ChevronRight className="w-4 h-4 text-white/40" />
+      )}
     </button>
   );
 }

@@ -165,7 +165,7 @@ export default function MarketDetailsPage() {
           <div className="flex items-center justify-center gap-4 text-sm text-white/40">
             <div className="flex items-center gap-1">
               <TrendingUp className="w-4 h-4" />
-              <span>Vol: ${market.volume || "0"}</span>
+              <span>Vol: ${market.volume_24h || market.volume || "0"}</span>
             </div>
           </div>
         </CardContent>
@@ -262,7 +262,7 @@ export default function MarketDetailsPage() {
                 onClick={handleGetQuote}
                 disabled={!amount || quoteMutation.isPending}
               >
-                {quoteMutation.isPending ? "Getting Quote..." : "Get Quote"}
+                {quoteMutation.isPending ? "Getting Quote..." : "Trade"}
               </Button>
             ) : (
               <Button
