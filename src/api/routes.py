@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..db.database import get_session
+from ..db.database import get_session_dependency as get_session
 from ..db.models import (
     Chain,
     ChainFamily,
@@ -294,8 +294,7 @@ async def search_markets(
     limit: int = Query(default=20, le=100),
 ):
     """Search markets across platforms."""
-    from ..platforms.kalshi import KalshiPlatform
-    from ..platforms.polymarket import PolymarketPlatform
+    from ..platforms import platform_registry
 
     results = []
 
@@ -308,10 +307,13 @@ async def search_markets(
 
     for plat in platforms_to_search:
         try:
-            if plat == "kalshi":
-                kalshi = KalshiPlatform()
-                markets = await kalshi.search_markets(q, limit=limit)
-                for m in markets:
+            platform_instance = platform_registry.get_platform(plat)
+            if not platform_instance:
+                continue
+
+            markets = await platform_instance.search_markets(q, limit=limit)
+            for m in markets:
+                if plat == "kalshi":
                     results.append({
                         "platform": "kalshi",
                         "id": m.get("id") or m.get("market_id"),
@@ -321,10 +323,7 @@ async def search_markets(
                         "volume": m.get("volume"),
                         "is_active": m.get("is_active", True),
                     })
-            elif plat == "polymarket":
-                poly = PolymarketPlatform()
-                markets = await poly.search_markets(q, limit=limit)
-                for m in markets:
+                elif plat == "polymarket":
                     results.append({
                         "platform": "polymarket",
                         "id": m.get("condition_id") or m.get("id"),
@@ -346,40 +345,43 @@ async def get_trending_markets(
     limit: int = Query(default=10, le=50),
 ):
     """Get trending markets."""
-    from ..platforms.kalshi import KalshiPlatform
-    from ..platforms.polymarket import PolymarketPlatform
+    from ..platforms import platform_registry
 
     results = []
 
     if not platform or platform.lower() == "kalshi":
         try:
-            kalshi = KalshiPlatform()
-            markets = await kalshi.get_trending_markets(limit=limit)
-            for m in markets:
-                results.append({
-                    "platform": "kalshi",
-                    "id": m.get("id") or m.get("market_id"),
-                    "title": m.get("title") or m.get("question"),
-                    "yes_price": m.get("yes_price"),
-                    "no_price": m.get("no_price"),
-                    "volume": m.get("volume"),
-                })
+            kalshi = platform_registry.get_platform("kalshi")
+            if kalshi:
+                markets = await kalshi.get_trending_markets(limit=limit)
+                for m in markets:
+                    results.append({
+                        "platform": "kalshi",
+                        "id": m.get("id") or m.get("market_id"),
+                        "title": m.get("title") or m.get("question"),
+                        "yes_price": m.get("yes_price"),
+                        "no_price": m.get("no_price"),
+                        "volume": m.get("volume"),
+                        "is_active": m.get("is_active", True),
+                    })
         except Exception as e:
             print(f"Error getting Kalshi trending: {e}")
 
     if not platform or platform.lower() == "polymarket":
         try:
-            poly = PolymarketPlatform()
-            markets = await poly.get_trending_markets(limit=limit)
-            for m in markets:
-                results.append({
-                    "platform": "polymarket",
-                    "id": m.get("condition_id") or m.get("id"),
-                    "title": m.get("question") or m.get("title"),
-                    "yes_price": m.get("yes_price"),
-                    "no_price": m.get("no_price"),
-                    "volume": m.get("volume"),
-                })
+            poly = platform_registry.get_platform("polymarket")
+            if poly:
+                markets = await poly.get_trending_markets(limit=limit)
+                for m in markets:
+                    results.append({
+                        "platform": "polymarket",
+                        "id": m.get("condition_id") or m.get("id"),
+                        "title": m.get("question") or m.get("title"),
+                        "yes_price": m.get("yes_price"),
+                        "no_price": m.get("no_price"),
+                        "volume": m.get("volume"),
+                        "is_active": m.get("active", True),
+                    })
         except Exception as e:
             print(f"Error getting Polymarket trending: {e}")
 
@@ -392,21 +394,18 @@ async def get_market_details(
     market_id: str,
 ):
     """Get detailed market information."""
-    from ..platforms.kalshi import KalshiPlatform
-    from ..platforms.polymarket import PolymarketPlatform
+    from ..platforms import platform_registry
 
     try:
-        if platform.lower() == "kalshi":
-            kalshi = KalshiPlatform()
-            market = await kalshi.get_market(market_id)
-        elif platform.lower() == "polymarket":
-            poly = PolymarketPlatform()
-            market = await poly.get_market(market_id)
-        else:
+        platform_instance = platform_registry.get_platform(platform.lower())
+        if not platform_instance:
             raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
 
+        market = await platform_instance.get_market(market_id)
         return {"market": market}
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Market not found: {e}")
 

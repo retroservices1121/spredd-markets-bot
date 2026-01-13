@@ -96,10 +96,24 @@ async def close_db() -> None:
 
 @asynccontextmanager
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """Get an async database session."""
+    """Get an async database session (context manager for internal use)."""
     if _session_factory is None:
         raise RuntimeError("Database not initialized")
-    
+
+    async with _session_factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def get_session_dependency() -> AsyncGenerator[AsyncSession, None]:
+    """Get an async database session (FastAPI dependency)."""
+    if _session_factory is None:
+        raise RuntimeError("Database not initialized")
+
     async with _session_factory() as session:
         try:
             yield session
