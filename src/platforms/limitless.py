@@ -784,18 +784,18 @@ class LimitlessPlatform(BasePlatform):
             taker_amount = int((amount * price) * Decimal(10 ** 6))
             order_side = 1  # SELL
 
-        # Build order struct
+        # Build order struct - API requires numbers, not strings for numeric fields
         order = {
             "salt": secrets.randbelow(2 ** 256),
             "maker": wallet,
             "signer": wallet,
             "taker": "0x0000000000000000000000000000000000000000",
-            "tokenId": str(token_id),
-            "makerAmount": str(maker_amount),
-            "takerAmount": str(taker_amount),
-            "expiration": str(int(time.time()) + 3600),  # 1 hour
-            "nonce": str(int(time.time() * 1000)),
-            "feeRateBps": str(fee_rate_bps),
+            "tokenId": str(token_id),  # tokenId stays as string (large number)
+            "makerAmount": maker_amount,  # Must be number
+            "takerAmount": taker_amount,  # Must be number
+            "expiration": int(time.time()) + 3600,  # Must be number
+            "nonce": int(time.time() * 1000),  # Must be number
+            "feeRateBps": fee_rate_bps,  # Must be number
             "side": order_side,
             "signatureType": 0,  # EOA
         }
