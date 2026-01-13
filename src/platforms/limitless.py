@@ -185,7 +185,23 @@ class LimitlessPlatform(BasePlatform):
                 raise RateLimitError("Rate limit exceeded", Platform.LIMITLESS)
 
             response.raise_for_status()
-            return response.json()
+
+            # Handle empty responses
+            if not response.content:
+                return {}
+
+            # Try to parse JSON
+            try:
+                return response.json()
+            except Exception as e:
+                # Log the raw response for debugging
+                logger.debug(
+                    "Non-JSON response from Limitless API",
+                    endpoint=endpoint,
+                    status=response.status_code,
+                    content_preview=response.text[:200] if response.text else "empty",
+                )
+                raise
 
         except httpx.HTTPStatusError as e:
             raise PlatformError(
@@ -207,12 +223,16 @@ class LimitlessPlatform(BasePlatform):
         checksum_address = Web3.to_checksum_address(wallet)
 
         # Step 1: Get signing message
+        logger.debug("Requesting signing message", account=checksum_address)
         message_resp = await self._api_request(
             "GET",
             f"/auth/signing-message?account={checksum_address}"
         )
+        logger.debug("Signing message response", response=message_resp)
+
         signing_message = message_resp.get("message") or message_resp.get("signingMessage")
         if not signing_message:
+            logger.warning("Empty signing message response", response=message_resp)
             raise PlatformError("Failed to get signing message", Platform.LIMITLESS)
 
         # Step 2: Sign the message
