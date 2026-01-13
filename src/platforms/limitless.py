@@ -326,7 +326,7 @@ class LimitlessPlatform(BasePlatform):
             return []
 
         markets = []
-        items = data if isinstance(data, list) else data.get("markets", [])
+        items = data if isinstance(data, list) else data.get("data", data.get("markets", []))
 
         for item in items:
             try:
@@ -361,7 +361,7 @@ class LimitlessPlatform(BasePlatform):
             ][:limit]
 
         markets = []
-        items = data if isinstance(data, list) else data.get("markets", data.get("results", []))
+        items = data if isinstance(data, list) else data.get("data", data.get("markets", data.get("results", [])))
 
         for item in items:
             try:
