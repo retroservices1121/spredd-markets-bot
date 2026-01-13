@@ -725,7 +725,7 @@ async def execute_order(
             output_token=f"{request.outcome.upper()} shares",
             expected_output=str(quote.expected_output),
             actual_output=str(tx_result.output_amount) if tx_result.output_amount else None,
-            status="completed" if tx_result.success else "failed",
+            status="confirmed" if tx_result.success else "failed",
             tx_hash=tx_result.tx_hash,
         )
         session.add(order)
