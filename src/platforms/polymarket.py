@@ -950,8 +950,11 @@ class PolymarketPlatform(BasePlatform):
             category_lower = category.lower().replace("-", " ")
 
             # Category aliases for better matching
+            entertainment_tags = ["entertainment", "pop culture", "pop-culture", "celebrities", "celebrity", "movies", "movie", "tv", "television", "music", "awards", "oscars", "grammys", "emmys", "streaming", "youtube", "tiktok", "influencer"]
             category_aliases = {
-                "entertainment": ["entertainment", "pop culture", "pop-culture", "celebrities", "celebrity", "movies", "movie", "tv", "television", "music", "awards", "oscars", "grammys", "emmys"],
+                "entertainment": entertainment_tags,
+                "pop-culture": entertainment_tags,
+                "pop culture": entertainment_tags,
                 "sports": ["sports", "sport", "nfl", "nba", "mlb", "nhl", "soccer", "football", "basketball", "baseball", "hockey", "tennis", "golf", "mma", "ufc", "boxing", "f1", "formula 1"],
                 "politics": ["politics", "political", "election", "elections", "government", "congress", "senate", "president", "presidential", "trump", "biden", "us politics"],
                 "crypto": ["crypto", "cryptocurrency", "bitcoin", "btc", "ethereum", "eth", "defi", "nft", "web3", "blockchain"],
