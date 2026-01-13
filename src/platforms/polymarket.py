@@ -1472,7 +1472,7 @@ class PolymarketPlatform(BasePlatform):
         try:
             # For BUY orders, ensure we have enough USDC.e (auto-swap from native USDC if needed)
             if quote.side == "buy":
-                success, message, swap_tx = await self.ensure_usdc_for_trade(
+                success, message, swap_tx = await self.ensure_usdc_balance(
                     private_key, quote.input_amount
                 )
                 if not success:
