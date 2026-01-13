@@ -20,8 +20,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 async def run_bot():
     """Run the Telegram bot."""
-    from src.main import main as bot_main
-    await bot_main()
+    from src.main import run_bot as bot_run
+    from src.utils.logging import setup_logging
+    from src.config import settings
+
+    # Setup logging (normally done in main())
+    setup_logging(settings.log_level)
+
+    await bot_run()
 
 
 async def run_api():
