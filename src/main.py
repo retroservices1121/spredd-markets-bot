@@ -217,7 +217,7 @@ async def run_bot() -> None:
         from telegram import BotCommand
         commands = [
             BotCommand("start", "Welcome & get started"),
-            BotCommand("app", "Open Mini App"),
+            # BotCommand("app", "Open Mini App"),  # Hidden for launch - will enable later
             BotCommand("markets", "Browse trending markets"),
             BotCommand("search", "Search for markets"),
             BotCommand("wallet", "View your wallets & balances"),

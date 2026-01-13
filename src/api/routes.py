@@ -322,10 +322,11 @@ async def get_wallet_balances(
                 evm_balances.extend(await wallet_service.get_bsc_balances(wallet.public_key))
             except Exception as e:
                 print(f"Error getting BSC balances: {e}")
-            try:
-                evm_balances.extend(await wallet_service.get_monad_balances(wallet.public_key))
-            except Exception as e:
-                print(f"Error getting Monad balances: {e}")
+            # Monad - hidden for launch (will enable later for marketing)
+            # try:
+            #     evm_balances.extend(await wallet_service.get_monad_balances(wallet.public_key))
+            # except Exception as e:
+            #     print(f"Error getting Monad balances: {e}")
             balances.append({
                 "chain_family": "evm",
                 "public_key": wallet.public_key,

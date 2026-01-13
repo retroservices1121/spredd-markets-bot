@@ -223,14 +223,14 @@ Join our community and follow us for updates!
         [InlineKeyboardButton("🚀 Get Started", callback_data="landing:start")],
     ]
 
-    # Add Mini App button if configured
-    if settings.miniapp_url:
-        keyboard_rows.append([
-            InlineKeyboardButton(
-                "📱 Open Mini App",
-                web_app=WebAppInfo(url=settings.miniapp_url)
-            )
-        ])
+    # Mini App button - hidden for launch (will enable later for marketing)
+    # if settings.miniapp_url:
+    #     keyboard_rows.append([
+    #         InlineKeyboardButton(
+    #             "📱 Open Mini App",
+    #             web_app=WebAppInfo(url=settings.miniapp_url)
+    #         )
+    #     ])
 
     keyboard_rows.append([
         InlineKeyboardButton("Follow on X", url="https://x.com/spreddterminal"),
@@ -285,17 +285,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 Need help? @spreddterminal
 """
 
-    # Add Mini App button if configured
-    if settings.miniapp_url:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                "📱 Open Mini App",
-                web_app=WebAppInfo(url=settings.miniapp_url)
-            )],
-        ])
-        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-    else:
-        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    # Mini App button - hidden for launch (will enable later for marketing)
+    # if settings.miniapp_url:
+    #     keyboard = InlineKeyboardMarkup([
+    #         [InlineKeyboardButton(
+    #             "📱 Open Mini App",
+    #             web_app=WebAppInfo(url=settings.miniapp_url)
+    #         )],
+    #     ])
+    #     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    # else:
+    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
 
 async def app_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -303,32 +303,44 @@ async def app_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.message:
         return
 
-    if not settings.miniapp_url:
-        await update.message.reply_text(
-            "📱 Mini App is not configured yet.\n\n"
-            "Use the bot commands to trade!",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            "📱 Open Spredd Mini App",
-            web_app=WebAppInfo(url=settings.miniapp_url)
-        )],
-    ])
-
+    # Mini App hidden for launch - will enable later for marketing
     await update.message.reply_text(
         "📱 <b>Spredd Mini App</b>\n\n"
-        "Trade prediction markets with a beautiful interface!\n\n"
-        "• Browse & search markets\n"
-        "• View wallet balances\n"
-        "• Track positions & P&L\n"
-        "• Execute trades\n\n"
-        "Tap the button below to open:",
+        "🚧 Coming Soon!\n\n"
+        "We're building a beautiful trading interface for you.\n"
+        "Stay tuned for updates!\n\n"
+        "For now, use the bot commands to trade.",
         parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
     )
+    return
+
+    # Original code - uncomment to enable Mini App
+    # if not settings.miniapp_url:
+    #     await update.message.reply_text(
+    #         "📱 Mini App is not configured yet.\n\n"
+    #         "Use the bot commands to trade!",
+    #         parse_mode=ParseMode.HTML,
+    #     )
+    #     return
+    #
+    # keyboard = InlineKeyboardMarkup([
+    #     [InlineKeyboardButton(
+    #         "📱 Open Spredd Mini App",
+    #         web_app=WebAppInfo(url=settings.miniapp_url)
+    #     )],
+    # ])
+    #
+    # await update.message.reply_text(
+    #     "📱 <b>Spredd Mini App</b>\n\n"
+    #     "Trade prediction markets with a beautiful interface!\n\n"
+    #     "• Browse & search markets\n"
+    #     "• View wallet balances\n"
+    #     "• Track positions & P&L\n"
+    #     "• Execute trades\n\n"
+    #     "Tap the button below to open:",
+    #     parse_mode=ParseMode.HTML,
+    #     reply_markup=keyboard,
+    # )
 
 
 async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

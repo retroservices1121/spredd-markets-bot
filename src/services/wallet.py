@@ -728,8 +728,9 @@ class WalletService(LoggerMixin):
             task_labels.append(("evm", "base"))
             tasks.append(self.get_bsc_balances(evm_wallet.public_key))
             task_labels.append(("evm", "bsc"))
-            tasks.append(self.get_monad_balances(evm_wallet.public_key))
-            task_labels.append(("evm", "monad"))
+            # Monad - hidden for launch (will enable later for marketing)
+            # tasks.append(self.get_monad_balances(evm_wallet.public_key))
+            # task_labels.append(("evm", "monad"))
 
         if not tasks:
             return result
