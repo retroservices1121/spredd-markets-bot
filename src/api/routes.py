@@ -712,11 +712,14 @@ async def execute_order(
         )
 
         # Create order record
+        platform_enum = Platform(platform)
+        chain_enum = Chain.SOLANA if platform == "kalshi" else Chain.POLYGON
+
         order = Order(
             id=str(uuid.uuid4()),
             user_id=user.id,
-            platform=Platform(platform),
-            chain=Chain.SOLANA if platform == "kalshi" else Chain.POLYGON,
+            platform=platform_enum,
+            chain=chain_enum,
             market_id=request.market_id,
             outcome=request.outcome,
             side=request.side,
@@ -729,6 +732,92 @@ async def execute_order(
             tx_hash=tx_result.tx_hash,
         )
         session.add(order)
+
+        # Create/update Position for successful trades
+        if tx_result.success:
+            # Get market title
+            try:
+                market = await plat.get_market(request.market_id)
+                market_title = market.title if market else f"Market {request.market_id[:16]}..."
+            except Exception:
+                market_title = f"Market {request.market_id[:16]}..."
+
+            # Get token_id from quote_data
+            token_id = quote.quote_data.get("token_id", "") if quote.quote_data else ""
+
+            # Calculate amounts
+            output_amount = str(tx_result.output_amount) if tx_result.output_amount else str(quote.expected_output)
+            entry_price = float(quote.price_per_token)
+
+            if request.side == "buy":
+                # Check for existing open position to update
+                existing_position = await session.execute(
+                    select(Position).where(
+                        Position.user_id == user.id,
+                        Position.platform == platform_enum,
+                        Position.market_id == request.market_id,
+                        Position.outcome == outcome_enum,
+                        Position.status == PositionStatus.OPEN,
+                    )
+                )
+                existing = existing_position.scalar_one_or_none()
+
+                if existing:
+                    # Update existing position (average in)
+                    old_amount = Decimal(existing.token_amount)
+                    new_amount = Decimal(output_amount)
+                    total_amount = old_amount + new_amount
+
+                    # Calculate weighted average entry price
+                    old_value = old_amount * existing.entry_price
+                    new_value = new_amount * Decimal(str(entry_price))
+                    avg_price = (old_value + new_value) / total_amount if total_amount > 0 else Decimal(str(entry_price))
+
+                    existing.token_amount = str(total_amount)
+                    existing.entry_price = avg_price
+                    existing.current_price = Decimal(str(entry_price))
+                else:
+                    # Create new position
+                    position = Position(
+                        id=str(uuid.uuid4()),
+                        user_id=user.id,
+                        platform=platform_enum,
+                        chain=chain_enum,
+                        market_id=request.market_id,
+                        market_title=market_title,
+                        outcome=outcome_enum,
+                        token_id=token_id,
+                        token_amount=output_amount,
+                        entry_price=Decimal(str(entry_price)),
+                        current_price=Decimal(str(entry_price)),
+                        status=PositionStatus.OPEN,
+                    )
+                    session.add(position)
+            else:
+                # SELL: Find and update/close existing position
+                existing_position = await session.execute(
+                    select(Position).where(
+                        Position.user_id == user.id,
+                        Position.platform == platform_enum,
+                        Position.market_id == request.market_id,
+                        Position.outcome == outcome_enum,
+                        Position.status == PositionStatus.OPEN,
+                    )
+                )
+                existing = existing_position.scalar_one_or_none()
+
+                if existing:
+                    # Reduce position or close it
+                    sell_amount = Decimal(str(request.amount)) / Decimal(str(entry_price)) if entry_price > 0 else Decimal("0")
+                    remaining = Decimal(existing.token_amount) - sell_amount
+
+                    if remaining <= 0:
+                        existing.status = PositionStatus.CLOSED
+                        existing.token_amount = "0"
+                    else:
+                        existing.token_amount = str(remaining)
+                    existing.current_price = Decimal(str(entry_price))
+
         await session.commit()
 
         return OrderResponse(
