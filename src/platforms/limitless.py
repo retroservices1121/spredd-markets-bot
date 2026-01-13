@@ -246,12 +246,18 @@ class LimitlessPlatform(BasePlatform):
         signed = private_key.sign_message(message)
 
         # Step 3: Submit for session
+        # Both message and signature need 0x prefix
+        message_hex = "0x" + signing_message.encode("utf-8").hex()
+        signature_hex = signed.signature.hex()
+        if not signature_hex.startswith("0x"):
+            signature_hex = "0x" + signature_hex
+
         login_response = await self._http_client.post(
             "/auth/login",
             headers={
                 "x-account": checksum_address,
-                "x-signing-message": signing_message.encode("utf-8").hex(),
-                "x-signature": signed.signature.hex(),
+                "x-signing-message": message_hex,
+                "x-signature": signature_hex,
             },
             json={"client": "eoa"}
         )
@@ -876,6 +882,7 @@ class LimitlessPlatform(BasePlatform):
                     input_amount=quote.input_amount,
                     output_amount=Decimal(0),
                     error_message=f"Authentication failed: {str(e)}",
+                    explorer_url=None,
                 )
 
             # Submit order
