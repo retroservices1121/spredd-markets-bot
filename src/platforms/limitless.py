@@ -126,6 +126,8 @@ class LimitlessPlatform(BasePlatform):
         self._venue_cache: dict[str, dict] = {}
         # Approval cache
         self._approval_cache: dict[str, set[str]] = {}
+        # ID to slug cache (numeric ID -> slug for API lookups)
+        self._id_to_slug_cache: dict[str, str] = {}
 
     async def initialize(self) -> None:
         """Initialize Limitless API clients."""
@@ -303,6 +305,10 @@ class LimitlessPlatform(BasePlatform):
         slug = data.get("slug") or data.get("address") or ""
         market_id = str(numeric_id) if numeric_id else slug
 
+        # Cache the ID-to-slug mapping for later lookups
+        if numeric_id and slug:
+            self._id_to_slug_cache[str(numeric_id)] = slug
+
         # Volume
         volume = data.get("volume") or data.get("volume24h") or data.get("volumeUsd") or 0
         liquidity = data.get("liquidity") or data.get("tvl") or 0
@@ -400,26 +406,39 @@ class LimitlessPlatform(BasePlatform):
 
     async def get_market(self, market_id: str) -> Optional[Market]:
         """Get a specific market by ID (numeric) or slug."""
-        # Try direct lookup by ID first
+        # If market_id is numeric, try to get slug from cache first
+        lookup_id = market_id
+        if market_id.isdigit():
+            cached_slug = self._id_to_slug_cache.get(market_id)
+            if cached_slug:
+                lookup_id = cached_slug
+                logger.debug("Using cached slug for market", numeric_id=market_id, slug=cached_slug)
+
+        # Try direct lookup by slug
         try:
-            data = await self._api_request("GET", f"/markets/{market_id}")
+            data = await self._api_request("GET", f"/markets/{lookup_id}")
             return self._parse_market(data)
         except Exception as e:
-            logger.debug("Direct market lookup failed", market_id=market_id, error=str(e))
+            logger.debug("Direct market lookup failed", market_id=lookup_id, error=str(e))
 
-        # If market_id is numeric, also try lookup as slug in search results
-        # Try searching if direct lookup fails
-        try:
-            markets = await self.search_markets(market_id, limit=10)
-            for m in markets:
-                # Match by ID, slug, or partial slug match
-                if (m.market_id == market_id or
-                    m.event_id == market_id or
-                    market_id in str(m.market_id) or
-                    market_id in str(m.event_id)):
-                    return m
-        except Exception as e:
-            logger.warning("Market search fallback failed", market_id=market_id, error=str(e))
+        # If we haven't tried the original market_id yet (different from lookup_id), try it
+        if lookup_id != market_id:
+            try:
+                data = await self._api_request("GET", f"/markets/{market_id}")
+                return self._parse_market(data)
+            except Exception as e:
+                logger.debug("Fallback market lookup failed", market_id=market_id, error=str(e))
+
+        # Try searching - for numeric IDs, fetch all markets to find the match
+        if market_id.isdigit():
+            # Fetch recent markets to find one with matching ID
+            try:
+                all_markets = await self.get_markets(limit=100)
+                for m in all_markets:
+                    if m.market_id == market_id:
+                        return m
+            except Exception as e:
+                logger.debug("Market list search failed", error=str(e))
 
         return None
 
