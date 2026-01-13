@@ -216,7 +216,7 @@ async def get_wallet_balances(
     """Get all wallet balances for the user."""
     from ..services.wallet import WalletService
 
-    wallet_service = WalletService(session)
+    wallet_service = WalletService()
     await wallet_service.initialize()
 
     balances = []
@@ -307,7 +307,7 @@ async def search_markets(
 
     for plat in platforms_to_search:
         try:
-            platform_instance = platform_registry.get_platform(plat)
+            platform_instance = platform_registry.get(Platform(plat))
             if not platform_instance:
                 continue
 
@@ -351,7 +351,7 @@ async def get_trending_markets(
 
     if not platform or platform.lower() == "kalshi":
         try:
-            kalshi = platform_registry.get_platform("kalshi")
+            kalshi = platform_registry.get(Platform.KALSHI)
             if kalshi:
                 markets = await kalshi.get_trending_markets(limit=limit)
                 for m in markets:
@@ -369,7 +369,7 @@ async def get_trending_markets(
 
     if not platform or platform.lower() == "polymarket":
         try:
-            poly = platform_registry.get_platform("polymarket")
+            poly = platform_registry.get(Platform.POLYMARKET)
             if poly:
                 markets = await poly.get_trending_markets(limit=limit)
                 for m in markets:
@@ -397,7 +397,7 @@ async def get_market_details(
     from ..platforms import platform_registry
 
     try:
-        platform_instance = platform_registry.get_platform(platform.lower())
+        platform_instance = platform_registry.get(Platform(platform.lower()))
         if not platform_instance:
             raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
 
@@ -464,9 +464,9 @@ async def execute_order(
     session: AsyncSession = Depends(get_session)
 ):
     """Execute a trade order."""
-    from ..services.wallet import WalletService
     from ..platforms.kalshi import KalshiPlatform
     from ..platforms.polymarket import PolymarketPlatform
+    from ..utils.encryption import decrypt
 
     try:
         platform = request.platform.lower()
@@ -493,9 +493,13 @@ async def execute_order(
         if not wallet:
             raise HTTPException(status_code=400, detail="Wallet not found. Please create a wallet first.")
 
-        # Decrypt private key
-        wallet_service = WalletService(session)
-        private_key = wallet_service.decrypt_private_key(wallet.encrypted_private_key)
+        # Decrypt private key (encrypted without PIN for trading)
+        private_key = decrypt(
+            wallet.encrypted_private_key,
+            settings.encryption_key,
+            user.telegram_id,
+            "",  # No PIN required for trading
+        )
 
         # Execute order
         tx_result = await plat.execute_order(
