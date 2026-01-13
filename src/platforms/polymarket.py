@@ -1021,10 +1021,6 @@ class PolymarketPlatform(BasePlatform):
             {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
             {"id": "business", "label": "Business", "emoji": "💼"},
             {"id": "science", "label": "Science", "emoji": "🔬"},
-            {"id": "pop-culture", "label": "Pop Culture", "emoji": "🌟"},
-            {"id": "football", "label": "Football", "emoji": "🏈"},
-            {"id": "basketball", "label": "Basketball", "emoji": "🏀"},
-            {"id": "soccer", "label": "Soccer", "emoji": "⚽"},
         ]
 
     # ===================
