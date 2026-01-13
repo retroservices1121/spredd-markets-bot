@@ -43,6 +43,7 @@ from src.handlers.commands import (
     pnl_command,
     pnlcard_command,
     referral_command,
+    groupinfo_command,
     callback_handler,
     message_handler,
     # Partner system
@@ -117,6 +118,7 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("pnl", pnl_command))
     application.add_handler(CommandHandler("pnlcard", pnlcard_command))
     application.add_handler(CommandHandler("referral", referral_command))
+    application.add_handler(CommandHandler("groupinfo", groupinfo_command))
     application.add_handler(CommandHandler("partner", partner_command))
 
     # Callback query handler for inline buttons

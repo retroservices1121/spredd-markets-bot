@@ -309,6 +309,60 @@ Need help? @spreddterminal
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
 
+async def groupinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle /groupinfo command - send a pinnable welcome message in groups.
+    Only works in groups/supergroups.
+    """
+    if not update.message or not update.effective_chat:
+        return
+
+    # Only allow in groups
+    if update.effective_chat.type not in ("group", "supergroup"):
+        await update.message.reply_text(
+            "This command only works in groups. Use /start in private chat.",
+        )
+        return
+
+    # Get bot username for the button link
+    bot = await context.bot.get_me()
+    bot_username = bot.username
+    start_link = f"https://t.me/{bot_username}?start=group"
+
+    welcome_text = """
+🎯 <b>Welcome to Spredd Markets!</b>
+
+The easiest way to trade prediction markets directly from Telegram.
+
+<b>Supported Platforms:</b>
+• Kalshi (Solana)
+• Polymarket (Polygon)
+• Opinion (BNB Chain)
+
+<b>Features:</b>
+• Non-custodial trading
+• Real-time market prices
+• Shareable PnL cards
+• Multi-platform support
+
+Tap the button below to start trading!
+"""
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Start Trading", url=start_link)],
+        [
+            InlineKeyboardButton("Follow on X", url="https://x.com/spreddterminal"),
+            InlineKeyboardButton("Join Community", url="https://t.me/spreddmarketsgroup"),
+        ],
+    ])
+
+    await update.message.reply_text(
+        welcome_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
 async def app_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /app command - open Mini App."""
     if not update.message:
