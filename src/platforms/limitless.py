@@ -353,8 +353,22 @@ class LimitlessPlatform(BasePlatform):
         if numeric_id and slug:
             self._id_to_slug_cache[str(numeric_id)] = slug
 
-        # Volume
-        volume = data.get("volume") or data.get("volume24h") or data.get("volumeUsd") or 0
+        # Volume - prefer volumeFormatted (already in USDC), otherwise convert raw
+        volume_formatted = data.get("volumeFormatted")
+        if volume_formatted:
+            try:
+                volume = Decimal(str(volume_formatted))
+            except:
+                volume = Decimal("0")
+        else:
+            # Raw volume is in USDC base units (6 decimals)
+            raw_volume = data.get("volume") or data.get("volume24h") or data.get("volumeUsd") or 0
+            if raw_volume:
+                volume = Decimal(str(raw_volume)) / Decimal("1000000")
+            else:
+                volume = Decimal("0")
+
+        # Liquidity
         liquidity = data.get("liquidity") or data.get("tvl") or 0
 
         # Category
@@ -372,7 +386,7 @@ class LimitlessPlatform(BasePlatform):
             category=category,
             yes_price=yes_price,
             no_price=no_price,
-            volume_24h=Decimal(str(volume)) if volume else None,
+            volume_24h=volume if volume else None,
             liquidity=Decimal(str(liquidity)) if liquidity else None,
             is_active=data.get("status") in ("active", "FUNDED", "ACTIVE") or data.get("isActive", True),
             # Prefer expirationTimestamp (milliseconds) for accurate time, fallback to date strings
