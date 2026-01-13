@@ -794,7 +794,7 @@ class LimitlessPlatform(BasePlatform):
             "makerAmount": maker_amount,  # Must be number
             "takerAmount": taker_amount,  # Must be number
             "expiration": str(int(time.time()) + 3600),  # Must be string
-            "nonce": int(time.time() * 1000),  # Must be number
+            "nonce": 0,  # Must be 0 per API requirement
             "feeRateBps": fee_rate_bps,  # Must be number
             "side": order_side,
             "signatureType": 0,  # EOA
