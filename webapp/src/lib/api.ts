@@ -78,6 +78,37 @@ export async function setActivePlatform(
   });
 }
 
+export interface WalletStatus {
+  has_wallet: boolean;
+  has_evm_wallet: boolean;
+  has_solana_wallet: boolean;
+  wallet_count: number;
+}
+
+export async function getWalletStatus(initData: string): Promise<WalletStatus> {
+  return apiRequest("/user/wallet-status", { initData });
+}
+
+export interface CreateWalletResponse {
+  status: string;
+  message: string;
+  wallets: {
+    evm: string | null;
+    solana: string | null;
+  };
+}
+
+export async function createWallet(
+  initData: string,
+  pin: string
+): Promise<CreateWalletResponse> {
+  return apiRequest("/user/create-wallet", {
+    method: "POST",
+    body: { pin },
+    initData,
+  });
+}
+
 // ===================
 // Wallet API
 // ===================

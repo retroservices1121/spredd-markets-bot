@@ -204,6 +204,84 @@ async def set_active_platform(
     return {"status": "success", "active_platform": platform}
 
 
+@router.get("/user/wallet-status")
+async def get_wallet_status(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """Check if user has wallets set up."""
+    result = await session.execute(
+        select(Wallet).where(Wallet.user_id == user.id)
+    )
+    wallets = result.scalars().all()
+
+    has_evm = any(w.chain_family == ChainFamily.EVM for w in wallets)
+    has_solana = any(w.chain_family == ChainFamily.SOLANA for w in wallets)
+
+    return {
+        "has_wallet": len(wallets) > 0,
+        "has_evm_wallet": has_evm,
+        "has_solana_wallet": has_solana,
+        "wallet_count": len(wallets),
+    }
+
+
+class CreateWalletRequest(BaseModel):
+    """Request to create wallets with PIN."""
+    pin: str = Field(..., min_length=4, max_length=6, pattern="^[0-9]+$")
+
+
+@router.post("/user/create-wallet")
+async def create_user_wallet(
+    request: CreateWalletRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """Create wallets for the user with PIN protection."""
+    from ..services.wallet import WalletService
+
+    # Check if user already has wallets
+    result = await session.execute(
+        select(Wallet).where(Wallet.user_id == user.id)
+    )
+    existing_wallets = result.scalars().all()
+
+    if len(existing_wallets) > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Wallets already exist. Cannot create new wallets."
+        )
+
+    # Validate PIN
+    if not request.pin.isdigit() or len(request.pin) < 4 or len(request.pin) > 6:
+        raise HTTPException(
+            status_code=400,
+            detail="PIN must be 4-6 digits"
+        )
+
+    # Create wallets
+    wallet_service = WalletService()
+    await wallet_service.initialize()
+
+    try:
+        wallets = await wallet_service.get_or_create_wallets(
+            user_id=user.id,
+            telegram_id=user.telegram_id,
+            user_pin=request.pin,
+        )
+
+        return {
+            "status": "success",
+            "message": "Wallets created successfully",
+            "wallets": {
+                "evm": wallets[ChainFamily.EVM].public_key if ChainFamily.EVM in wallets else None,
+                "solana": wallets[ChainFamily.SOLANA].public_key if ChainFamily.SOLANA in wallets else None,
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create wallets: {str(e)}")
+
+
 # ===================
 # Wallet Endpoints
 # ===================

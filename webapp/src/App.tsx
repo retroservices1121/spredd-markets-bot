@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import Layout from "@/components/layout/Layout";
 import MarketsPage from "@/pages/MarketsPage";
@@ -7,13 +9,23 @@ import WalletPage from "@/pages/WalletPage";
 import BridgePage from "@/pages/BridgePage";
 import PositionsPage from "@/pages/PositionsPage";
 import ProfilePage from "@/pages/ProfilePage";
+import WalletSetupPage from "@/pages/WalletSetupPage";
 import { useTelegram } from "@/contexts/TelegramContext";
+import { getWalletStatus } from "@/lib/api";
 
 function App() {
-  const { isReady } = useTelegram();
+  const { isReady, initData } = useTelegram();
+  const [setupComplete, setSetupComplete] = useState(false);
 
-  // Show loading while Telegram WebApp initializes
-  if (!isReady) {
+  // Check wallet status
+  const { data: walletStatus, isLoading: walletStatusLoading, refetch } = useQuery({
+    queryKey: ["wallet-status"],
+    queryFn: () => getWalletStatus(initData),
+    enabled: isReady && !!initData,
+  });
+
+  // Show loading while Telegram WebApp initializes or checking wallet status
+  if (!isReady || walletStatusLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-spredd-black">
         <div className="flex flex-col items-center gap-4">
@@ -21,6 +33,19 @@ function App() {
           <p className="text-white/60 text-sm">Loading Spredd...</p>
         </div>
       </div>
+    );
+  }
+
+  // Show wallet setup if user doesn't have wallets
+  if (walletStatus && !walletStatus.has_wallet && !setupComplete) {
+    return (
+      <>
+        <WalletSetupPage onComplete={() => {
+          setSetupComplete(true);
+          refetch();
+        }} />
+        <Toaster />
+      </>
     );
   }
 
