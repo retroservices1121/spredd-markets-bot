@@ -651,7 +651,7 @@ class LimitlessPlatform(BasePlatform):
             expires_at=None,
             quote_data={
                 "token_id": token_id,
-                "market_slug": market_id,
+                "market_slug": market.event_id or market_id,  # Use actual slug, not numeric ID
                 "price": str(price),
                 "market": market.raw_data,
             },
@@ -768,9 +768,9 @@ class LimitlessPlatform(BasePlatform):
             "signatureType": 0,  # EOA
         }
 
-        # EIP-712 domain
+        # EIP-712 domain - must use "Limitless CTF Exchange" as domain name
         domain = {
-            "name": "Limitless Exchange",
+            "name": "Limitless CTF Exchange",
             "version": "1",
             "chainId": 8453,  # Base
             "verifyingContract": Web3.to_checksum_address(exchange),
@@ -815,7 +815,15 @@ class LimitlessPlatform(BasePlatform):
         )
 
         signed = private_key.sign_message(signable_message)
-        order["signature"] = signed.signature.hex()
+
+        # Signature must have 0x prefix
+        signature_hex = signed.signature.hex()
+        if not signature_hex.startswith("0x"):
+            signature_hex = "0x" + signature_hex
+        order["signature"] = signature_hex
+
+        # Add price field (required by API) - price as decimal
+        order["price"] = float(price)
 
         return order
 
@@ -892,9 +900,18 @@ class LimitlessPlatform(BasePlatform):
                 "marketSlug": market_slug,
             }
 
-            # Add ownerId if we have it
+            # Add ownerId if we have it (must be integer)
             if owner_id:
-                payload["ownerId"] = owner_id
+                payload["ownerId"] = int(owner_id) if isinstance(owner_id, str) else owner_id
+
+            logger.debug(
+                "Submitting order",
+                market_slug=market_slug,
+                owner_id=payload.get("ownerId"),
+                order_side=order.get("side"),
+                order_price=order.get("price"),
+                token_id=order.get("tokenId"),
+            )
 
             result = await self._api_request(
                 "POST",
