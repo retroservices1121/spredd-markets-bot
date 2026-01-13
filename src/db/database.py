@@ -24,6 +24,8 @@ from src.db.models import (
     MarketCache,
     FeeBalance,
     FeeTransaction,
+    Partner,
+    PartnerGroup,
     ChainFamily,
     Platform,
     Chain,
@@ -845,3 +847,319 @@ async def get_positions_for_pnl(
 
         result = await session.execute(query)
         return list(result.scalars().all())
+
+
+# ===================
+# Partner Management
+# ===================
+
+async def create_partner(
+    name: str,
+    code: str,
+    revenue_share_bps: int = 1000,
+    telegram_user_id: Optional[int] = None,
+    telegram_username: Optional[str] = None,
+    contact_info: Optional[str] = None,
+) -> Partner:
+    """Create a new partner for revenue sharing."""
+    async with get_session() as session:
+        partner = Partner(
+            id=generate_id(),
+            name=name,
+            code=code.lower(),
+            revenue_share_bps=revenue_share_bps,
+            telegram_user_id=telegram_user_id,
+            telegram_username=telegram_username,
+            contact_info=contact_info,
+        )
+        session.add(partner)
+        await session.commit()
+        await session.refresh(partner)
+        return partner
+
+
+async def get_partner_by_code(code: str) -> Optional[Partner]:
+    """Get partner by their unique code."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(Partner).where(Partner.code == code.lower())
+        )
+        return result.scalar_one_or_none()
+
+
+async def get_partner_by_id(partner_id: str) -> Optional[Partner]:
+    """Get partner by ID."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(Partner).where(Partner.id == partner_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def get_all_partners(active_only: bool = True) -> list[Partner]:
+    """Get all partners."""
+    async with get_session() as session:
+        query = select(Partner).order_by(Partner.created_at.desc())
+        if active_only:
+            query = query.where(Partner.is_active == True)
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+
+async def update_partner(
+    partner_id: str,
+    name: Optional[str] = None,
+    revenue_share_bps: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    telegram_user_id: Optional[int] = None,
+    telegram_username: Optional[str] = None,
+    contact_info: Optional[str] = None,
+) -> Optional[Partner]:
+    """Update partner details."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(Partner).where(Partner.id == partner_id)
+        )
+        partner = result.scalar_one_or_none()
+        if not partner:
+            return None
+
+        if name is not None:
+            partner.name = name
+        if revenue_share_bps is not None:
+            partner.revenue_share_bps = revenue_share_bps
+        if is_active is not None:
+            partner.is_active = is_active
+        if telegram_user_id is not None:
+            partner.telegram_user_id = telegram_user_id
+        if telegram_username is not None:
+            partner.telegram_username = telegram_username
+        if contact_info is not None:
+            partner.contact_info = contact_info
+
+        await session.commit()
+        await session.refresh(partner)
+        return partner
+
+
+async def create_partner_group(
+    partner_id: str,
+    telegram_chat_id: int,
+    chat_title: Optional[str] = None,
+    chat_type: str = "group",
+) -> PartnerGroup:
+    """Create a new partner group mapping."""
+    async with get_session() as session:
+        group = PartnerGroup(
+            id=generate_id(),
+            partner_id=partner_id,
+            telegram_chat_id=telegram_chat_id,
+            chat_title=chat_title,
+            chat_type=chat_type,
+        )
+        session.add(group)
+        await session.commit()
+        await session.refresh(group)
+        return group
+
+
+async def get_partner_group_by_chat_id(chat_id: int) -> Optional[PartnerGroup]:
+    """Get partner group by Telegram chat ID."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(PartnerGroup).where(PartnerGroup.telegram_chat_id == chat_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def update_partner_group(
+    chat_id: int,
+    chat_title: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    bot_removed: Optional[bool] = None,
+    revenue_share_bps: Optional[int] = None,
+) -> Optional[PartnerGroup]:
+    """Update partner group details."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(PartnerGroup).where(PartnerGroup.telegram_chat_id == chat_id)
+        )
+        group = result.scalar_one_or_none()
+        if not group:
+            return None
+
+        if chat_title is not None:
+            group.chat_title = chat_title
+        if is_active is not None:
+            group.is_active = is_active
+        if bot_removed is not None:
+            group.bot_removed = bot_removed
+        if revenue_share_bps is not None:
+            group.revenue_share_bps = revenue_share_bps
+
+        await session.commit()
+        await session.refresh(group)
+        return group
+
+
+async def clear_partner_group_share(chat_id: int) -> bool:
+    """Clear group-specific revenue share (revert to partner default)."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(PartnerGroup).where(PartnerGroup.telegram_chat_id == chat_id)
+        )
+        group = result.scalar_one_or_none()
+        if not group:
+            return False
+
+        group.revenue_share_bps = None
+        await session.commit()
+        return True
+
+
+async def get_effective_revenue_share(user_id: str) -> tuple[Optional[int], Optional[str], Optional[int]]:
+    """
+    Get the effective revenue share for a user based on their attributed group.
+    Returns (share_bps, partner_id, group_chat_id) or (None, None, None) if not attributed.
+
+    Priority: Group-specific share > Partner default share
+    """
+    async with get_session() as session:
+        # Get user
+        user_result = await session.execute(
+            select(User).where(User.id == user_id)
+        )
+        user = user_result.scalar_one_or_none()
+        if not user or not user.partner_id:
+            return None, None, None
+
+        # Get partner
+        partner_result = await session.execute(
+            select(Partner).where(Partner.id == user.partner_id)
+        )
+        partner = partner_result.scalar_one_or_none()
+        if not partner or not partner.is_active:
+            return None, None, None
+
+        # Check if user has a group attribution with custom share
+        if user.partner_group_id:
+            group_result = await session.execute(
+                select(PartnerGroup).where(PartnerGroup.telegram_chat_id == user.partner_group_id)
+            )
+            group = group_result.scalar_one_or_none()
+            if group and group.revenue_share_bps is not None:
+                # Use group-specific share
+                return group.revenue_share_bps, partner.id, user.partner_group_id
+
+        # Fall back to partner default share
+        return partner.revenue_share_bps, partner.id, user.partner_group_id
+
+
+async def attribute_user_to_partner(
+    user_id: str,
+    partner_id: str,
+    partner_group_id: int,
+) -> Optional[User]:
+    """Attribute a user to a partner (one-time, first interaction)."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(User).where(User.id == user_id)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            return None
+
+        # Only attribute if not already attributed
+        if user.partner_id is None:
+            user.partner_id = partner_id
+            user.partner_group_id = partner_group_id
+
+            # Update partner stats
+            partner_result = await session.execute(
+                select(Partner).where(Partner.id == partner_id)
+            )
+            partner = partner_result.scalar_one_or_none()
+            if partner:
+                partner.total_users += 1
+
+            # Update group stats
+            group_result = await session.execute(
+                select(PartnerGroup).where(PartnerGroup.telegram_chat_id == partner_group_id)
+            )
+            group = group_result.scalar_one_or_none()
+            if group:
+                group.users_attributed += 1
+
+            await session.commit()
+            await session.refresh(user)
+
+        return user
+
+
+async def get_partner_stats(partner_id: str) -> dict:
+    """Get detailed statistics for a partner."""
+    async with get_session() as session:
+        # Get partner
+        partner_result = await session.execute(
+            select(Partner).where(Partner.id == partner_id)
+        )
+        partner = partner_result.scalar_one_or_none()
+        if not partner:
+            return {}
+
+        # Get groups
+        groups_result = await session.execute(
+            select(PartnerGroup).where(PartnerGroup.partner_id == partner_id)
+        )
+        groups = list(groups_result.scalars().all())
+
+        # Get attributed users
+        users_result = await session.execute(
+            select(User).where(User.partner_id == partner_id)
+        )
+        users = list(users_result.scalars().all())
+
+        # Calculate total volume from orders
+        total_volume = Decimal("0")
+        total_fees = Decimal("0")
+
+        for user in users:
+            orders_result = await session.execute(
+                select(Order).where(
+                    Order.user_id == user.id,
+                    Order.status == OrderStatus.CONFIRMED,
+                )
+            )
+            orders = list(orders_result.scalars().all())
+            for order in orders:
+                try:
+                    total_volume += Decimal(order.input_amount) / Decimal("1000000")  # USDC decimals
+                except:
+                    pass
+
+        return {
+            "partner": partner,
+            "groups": groups,
+            "users": users,
+            "total_users": len(users),
+            "total_groups": len(groups),
+            "total_volume_usdc": total_volume,
+            "total_fees_usdc": total_fees,
+            "revenue_share_bps": partner.revenue_share_bps,
+            "owed_usdc": (total_fees * Decimal(partner.revenue_share_bps)) / Decimal("10000"),
+        }
+
+
+async def update_partner_volume(partner_id: str, volume_usdc: Decimal, fee_usdc: Decimal) -> None:
+    """Update partner volume and fee stats after a trade."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(Partner).where(Partner.id == partner_id)
+        )
+        partner = result.scalar_one_or_none()
+        if partner:
+            current_volume = Decimal(partner.total_volume_usdc)
+            current_fees = Decimal(partner.total_fees_usdc)
+            partner.total_volume_usdc = str(current_volume + volume_usdc)
+            partner.total_fees_usdc = str(current_fees + fee_usdc)
+            await session.commit()

@@ -33,6 +33,17 @@ from src.db.database import (
     update_order,
     get_orders_for_pnl,
     get_positions_for_pnl,
+    # Partner functions
+    create_partner,
+    get_partner_by_code,
+    get_partner_by_id,
+    get_all_partners,
+    update_partner,
+    get_partner_stats,
+    create_partner_group,
+    get_partner_group_by_chat_id,
+    update_partner_group,
+    attribute_user_to_partner,
 )
 from src.db.models import Platform, ChainFamily, PositionStatus, OrderStatus
 from src.platforms import (
@@ -5228,6 +5239,446 @@ Trading works without PIN.
             f"❌ Failed to create wallets: {escape_html(str(e))}",
             parse_mode=ParseMode.HTML,
         )
+
+
+# ===================
+# Admin Partner Commands
+# ===================
+
+def is_admin(telegram_id: int) -> bool:
+    """Check if user is an admin."""
+    return telegram_id in settings.admin_ids
+
+
+async def partner_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to manage partners.
+    Usage:
+        /partner - List all partners
+        /partner create <name> <share%> - Create new partner
+        /partner stats <code> - View partner statistics
+        /partner link <code> - Get group invite link for partner
+        /partner deactivate <code> - Deactivate partner
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    args = context.args or []
+
+    # No args - list partners
+    if not args:
+        partners = await get_all_partners(active_only=False)
+        if not partners:
+            await update.message.reply_text(
+                "📊 <b>No partners yet</b>\n\n"
+                "Create one with:\n<code>/partner create Name 10</code>\n"
+                "(Name, 10% revenue share)",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        text = "📊 <b>Partner List</b>\n\n"
+        for p in partners:
+            status = "✅" if p.is_active else "❌"
+            share = p.revenue_share_bps / 100
+            text += f"{status} <b>{escape_html(p.name)}</b>\n"
+            text += f"   Code: <code>{p.code}</code>\n"
+            text += f"   Share: {share:.1f}% | Users: {p.total_users}\n"
+            text += f"   Volume: ${float(Decimal(p.total_volume_usdc)):.2f}\n\n"
+
+        text += "<i>Use /partner stats CODE for details</i>"
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        return
+
+    action = args[0].lower()
+
+    if action == "create":
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Usage: <code>/partner create Name SharePercent</code>\n"
+                "Example: <code>/partner create AlphaGroup 15</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        name = args[1]
+        try:
+            share_percent = float(args[2])
+            share_bps = int(share_percent * 100)
+        except ValueError:
+            await update.message.reply_text("❌ Invalid share percentage.")
+            return
+
+        if share_bps < 0 or share_bps > 5000:  # Max 50%
+            await update.message.reply_text("❌ Share must be between 0-50%.")
+            return
+
+        # Generate unique code
+        import secrets
+        code = secrets.token_hex(4)  # 8 character hex code
+
+        # Check if code exists (unlikely but possible)
+        existing = await get_partner_by_code(code)
+        if existing:
+            code = secrets.token_hex(4)
+
+        try:
+            partner = await create_partner(
+                name=name,
+                code=code,
+                revenue_share_bps=share_bps,
+            )
+
+            # Get bot username for link
+            bot = await context.bot.get_me()
+            bot_username = bot.username
+            group_link = f"https://t.me/{bot_username}?startgroup=partner_{code}"
+
+            text = f"""
+✅ <b>Partner Created!</b>
+
+<b>Name:</b> {escape_html(name)}
+<b>Code:</b> <code>{code}</code>
+<b>Revenue Share:</b> {share_percent:.1f}%
+
+<b>Group Invite Link:</b>
+<code>{group_link}</code>
+
+<i>Share this link with the partner.
+When they add the bot to their group using this link,
+users from that group will be attributed to them.</i>
+"""
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+        except Exception as e:
+            logger.error("Partner creation failed", error=str(e))
+            await update.message.reply_text(f"❌ Failed to create partner: {escape_html(str(e))}")
+
+    elif action == "stats":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: <code>/partner stats CODE</code>", parse_mode=ParseMode.HTML)
+            return
+
+        code = args[1].lower()
+        partner = await get_partner_by_code(code)
+        if not partner:
+            await update.message.reply_text(f"❌ Partner not found: {code}")
+            return
+
+        stats = await get_partner_stats(partner.id)
+        if not stats:
+            await update.message.reply_text("❌ Failed to get partner stats.")
+            return
+
+        groups_text = ""
+        default_share_bps = partner.revenue_share_bps
+        for g in stats["groups"][:5]:
+            status = "✅" if g.is_active and not g.bot_removed else "❌"
+            # Show group-specific share if different from default
+            share_info = ""
+            if g.revenue_share_bps is not None and g.revenue_share_bps != default_share_bps:
+                share_info = f" [{g.revenue_share_bps / 100:.0f}%]"
+            groups_text += f"   {status} {escape_html(g.chat_title or 'Unknown')} ({g.users_attributed} users){share_info}\n"
+            groups_text += f"      ID: <code>{g.telegram_chat_id}</code>\n"
+
+        if not groups_text:
+            groups_text = "   <i>No groups yet</i>\n"
+
+        share_pct = stats["revenue_share_bps"] / 100
+        total_fees = float(Decimal(partner.total_fees_usdc))
+        owed = total_fees * (share_pct / 100)
+        paid = float(Decimal(partner.total_paid_usdc))
+
+        text = f"""
+📊 <b>Partner: {escape_html(partner.name)}</b>
+
+<b>Code:</b> <code>{partner.code}</code>
+<b>Status:</b> {"✅ Active" if partner.is_active else "❌ Inactive"}
+<b>Revenue Share:</b> {share_pct:.1f}%
+
+<b>Stats:</b>
+   Users: {stats["total_users"]}
+   Volume: ${float(stats["total_volume_usdc"]):.2f}
+   Fees Generated: ${total_fees:.2f}
+   Owed: ${owed:.2f}
+   Paid: ${paid:.2f}
+
+<b>Groups ({stats["total_groups"]}):</b>
+{groups_text}
+<b>Created:</b> {partner.created_at.strftime("%Y-%m-%d")}
+"""
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    elif action == "link":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: <code>/partner link CODE</code>", parse_mode=ParseMode.HTML)
+            return
+
+        code = args[1].lower()
+        partner = await get_partner_by_code(code)
+        if not partner:
+            await update.message.reply_text(f"❌ Partner not found: {code}")
+            return
+
+        bot = await context.bot.get_me()
+        bot_username = bot.username
+        group_link = f"https://t.me/{bot_username}?startgroup=partner_{code}"
+
+        text = f"""
+🔗 <b>Partner Link: {escape_html(partner.name)}</b>
+
+<b>Group Invite Link:</b>
+<code>{group_link}</code>
+
+<i>When partners add the bot to their group using this link,
+new users from that group will be attributed to them.</i>
+"""
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    elif action == "deactivate":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: <code>/partner deactivate CODE</code>", parse_mode=ParseMode.HTML)
+            return
+
+        code = args[1].lower()
+        partner = await get_partner_by_code(code)
+        if not partner:
+            await update.message.reply_text(f"❌ Partner not found: {code}")
+            return
+
+        updated = await update_partner(partner.id, is_active=False)
+        if updated:
+            await update.message.reply_text(f"✅ Partner <b>{escape_html(partner.name)}</b> deactivated.", parse_mode=ParseMode.HTML)
+        else:
+            await update.message.reply_text("❌ Failed to deactivate partner.")
+
+    elif action == "activate":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: <code>/partner activate CODE</code>", parse_mode=ParseMode.HTML)
+            return
+
+        code = args[1].lower()
+        partner = await get_partner_by_code(code)
+        if not partner:
+            await update.message.reply_text(f"❌ Partner not found: {code}")
+            return
+
+        updated = await update_partner(partner.id, is_active=True)
+        if updated:
+            await update.message.reply_text(f"✅ Partner <b>{escape_html(partner.name)}</b> activated.", parse_mode=ParseMode.HTML)
+        else:
+            await update.message.reply_text("❌ Failed to activate partner.")
+
+    elif action == "setshare":
+        # Set group-specific revenue share: /partner setshare <group_id> <share%>
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Usage: <code>/partner setshare GROUP_ID Share%</code>\n"
+                "Example: <code>/partner setshare -1001234567890 20</code>\n\n"
+                "<i>Use /partner stats CODE to see group IDs</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        try:
+            group_chat_id = int(args[1])
+        except ValueError:
+            await update.message.reply_text("❌ Invalid group ID. Must be a number.")
+            return
+
+        try:
+            share_percent = float(args[2])
+            share_bps = int(share_percent * 100)
+        except ValueError:
+            await update.message.reply_text("❌ Invalid share percentage.")
+            return
+
+        if share_bps < 0 or share_bps > 5000:  # Max 50%
+            await update.message.reply_text("❌ Share must be between 0-50%.")
+            return
+
+        # Get the group
+        group = await get_partner_group_by_chat_id(group_chat_id)
+        if not group:
+            await update.message.reply_text(f"❌ Partner group not found: {group_chat_id}")
+            return
+
+        # Update the group's revenue share
+        updated = await update_partner_group(group_chat_id, revenue_share_bps=share_bps)
+        if updated:
+            partner = await get_partner_by_id(group.partner_id)
+            partner_name = partner.name if partner else "Unknown"
+            await update.message.reply_text(
+                f"✅ <b>Group share updated!</b>\n\n"
+                f"Group: {escape_html(group.chat_title or str(group_chat_id))}\n"
+                f"Partner: {escape_html(partner_name)}\n"
+                f"New Share: <b>{share_percent:.1f}%</b>",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await update.message.reply_text("❌ Failed to update group share.")
+
+    elif action == "clearshare":
+        # Clear group-specific share (revert to partner default): /partner clearshare <group_id>
+        if len(args) < 2:
+            await update.message.reply_text(
+                "Usage: <code>/partner clearshare GROUP_ID</code>\n"
+                "<i>Reverts group to use partner's default share</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        try:
+            group_chat_id = int(args[1])
+        except ValueError:
+            await update.message.reply_text("❌ Invalid group ID. Must be a number.")
+            return
+
+        group = await get_partner_group_by_chat_id(group_chat_id)
+        if not group:
+            await update.message.reply_text(f"❌ Partner group not found: {group_chat_id}")
+            return
+
+        # Set revenue_share_bps to None to use partner default
+        from src.db.database import clear_partner_group_share
+        await clear_partner_group_share(group_chat_id)
+
+        partner = await get_partner_by_id(group.partner_id)
+        default_share = partner.revenue_share_bps / 100 if partner else 10
+        await update.message.reply_text(
+            f"✅ Group share cleared!\n\n"
+            f"Group: {escape_html(group.chat_title or str(group_chat_id))}\n"
+            f"Now using partner default: <b>{default_share:.1f}%</b>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    else:
+        await update.message.reply_text(
+            "Unknown action. Available:\n"
+            "• <code>/partner</code> - List partners\n"
+            "• <code>/partner create Name Share%</code>\n"
+            "• <code>/partner stats CODE</code>\n"
+            "• <code>/partner link CODE</code>\n"
+            "• <code>/partner deactivate CODE</code>\n"
+            "• <code>/partner activate CODE</code>\n"
+            "• <code>/partner setshare GROUP_ID Share%</code>\n"
+            "• <code>/partner clearshare GROUP_ID</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_group_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle bot being added to a group.
+    Called via my_chat_member handler when bot status changes.
+    """
+    if not update.my_chat_member:
+        return
+
+    chat = update.my_chat_member.chat
+    new_status = update.my_chat_member.new_chat_member.status
+
+    # Bot was added to group (as member or admin)
+    if new_status in ("member", "administrator"):
+        # Check if this was via partner link
+        # The startgroup parameter is passed in context when adding via link
+        partner_code = None
+
+        # Extract partner code from deep link if present
+        if context.args and len(context.args) > 0:
+            param = context.args[0]
+            if param.startswith("partner_"):
+                partner_code = param.replace("partner_", "")
+
+        if partner_code:
+            partner = await get_partner_by_code(partner_code)
+            if partner and partner.is_active:
+                # Check if group already exists
+                existing = await get_partner_group_by_chat_id(chat.id)
+                if not existing:
+                    # Create partner group mapping
+                    await create_partner_group(
+                        partner_id=partner.id,
+                        telegram_chat_id=chat.id,
+                        chat_title=chat.title,
+                        chat_type=chat.type,
+                    )
+                    logger.info(
+                        "Partner group created",
+                        partner_code=partner_code,
+                        chat_id=chat.id,
+                        chat_title=chat.title,
+                    )
+                else:
+                    # Update existing group if it was inactive
+                    if not existing.is_active or existing.bot_removed:
+                        await update_partner_group(
+                            chat.id,
+                            chat_title=chat.title,
+                            is_active=True,
+                            bot_removed=False,
+                        )
+                        logger.info(
+                            "Partner group reactivated",
+                            partner_code=partner_code,
+                            chat_id=chat.id,
+                        )
+
+    # Bot was removed from group
+    elif new_status in ("left", "kicked"):
+        existing = await get_partner_group_by_chat_id(chat.id)
+        if existing:
+            await update_partner_group(chat.id, bot_removed=True, is_active=False)
+            logger.info("Partner group - bot removed", chat_id=chat.id)
+
+
+async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle messages in groups to attribute users to partners.
+    This runs for any message in a partner group.
+    """
+    if not update.effective_user or not update.effective_chat:
+        return
+
+    # Only process group messages
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return
+
+    chat_id = update.effective_chat.id
+    telegram_id = update.effective_user.id
+
+    # Check if this is a partner group
+    partner_group = await get_partner_group_by_chat_id(chat_id)
+    if not partner_group or not partner_group.is_active:
+        return
+
+    # Get or create user
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        # User doesn't exist yet - they'll be attributed when they /start
+        return
+
+    # Attribute user to partner if not already attributed
+    if user.partner_id is None:
+        partner = await get_partner_by_id(partner_group.partner_id)
+        if partner and partner.is_active:
+            await attribute_user_to_partner(
+                user_id=user.id,
+                partner_id=partner.id,
+                partner_group_id=chat_id,
+            )
+            logger.info(
+                "User attributed to partner",
+                user_id=user.id,
+                partner_code=partner.code,
+                group_id=chat_id,
+            )
 
 
 # ===================

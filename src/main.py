@@ -18,6 +18,7 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
+    ChatMemberHandler,
     filters,
 )
 
@@ -44,6 +45,10 @@ from src.handlers.commands import (
     referral_command,
     callback_handler,
     message_handler,
+    # Partner system
+    partner_command,
+    handle_group_add,
+    handle_group_message,
 )
 from src.utils.logging import setup_logging, get_logger
 
@@ -112,18 +117,30 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("pnl", pnl_command))
     application.add_handler(CommandHandler("pnlcard", pnlcard_command))
     application.add_handler(CommandHandler("referral", referral_command))
+    application.add_handler(CommandHandler("partner", partner_command))
 
     # Callback query handler for inline buttons
     application.add_handler(CallbackQueryHandler(callback_handler))
+
+    # Chat member handler for tracking bot being added/removed from groups
+    application.add_handler(ChatMemberHandler(handle_group_add, ChatMemberHandler.MY_CHAT_MEMBER))
     
-    # Message handler for search queries and trading input
+    # Message handler for search queries and trading input (private chats only)
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
             message_handler,
         )
     )
-    
+
+    # Group message handler for partner user attribution
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
+            handle_group_message,
+        )
+    )
+
     # Error handler
     application.add_error_handler(error_handler)
 

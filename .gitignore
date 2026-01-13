@@ -64,6 +64,7 @@ secrets/
 *.key
 LAUNCH_CAMPAIGN.md
 SUBSCRIPTION_FEATURES.md
+PARTNER_SYSTEM.md
 
 # Generated files
 example_pnl_card*.png

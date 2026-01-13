@@ -20,6 +20,8 @@ from src.db.database import (
     get_referral_chain,
     add_referral_earnings,
     get_user_by_telegram_id,
+    update_partner_volume,
+    get_effective_revenue_share,
 )
 from src.db.models import ChainFamily, Platform
 from src.utils.logging import get_logger
@@ -194,6 +196,34 @@ async def process_trade_fee(
         chain_family=chain_family,
     )
 
+    # Track partner revenue if user is attributed to a partner
+    partner_id = None
+    partner_share_bps = None
+    partner_group_id = None
+
+    # Get effective revenue share (checks group-specific first, then partner default)
+    share_bps, p_id, group_id = await get_effective_revenue_share(user.id)
+    if share_bps is not None and p_id is not None:
+        try:
+            await update_partner_volume(
+                partner_id=p_id,
+                volume_usdc=Decimal(trade_amount_usdc),
+                fee_usdc=Decimal(fee),
+            )
+            partner_id = p_id
+            partner_share_bps = share_bps
+            partner_group_id = group_id
+            logger.info(
+                "Partner revenue tracked",
+                partner_id=p_id,
+                group_id=group_id,
+                share_bps=share_bps,
+                volume=trade_amount_usdc,
+                fee=fee,
+            )
+        except Exception as e:
+            logger.error("Failed to track partner revenue", error=str(e), partner_id=p_id)
+
     logger.info(
         "Processed trade fee",
         trader_id=user.id,
@@ -203,12 +233,16 @@ async def process_trade_fee(
         platform=platform.value,
         chain=chain_family.value,
         referral_distributed=distributions["total_distributed"],
+        partner_id=partner_id,
     )
 
     return {
         "fee": fee,
         "net_amount": net_amount,
         "distributions": distributions,
+        "partner_id": partner_id,
+        "partner_share_bps": partner_share_bps,
+        "partner_group_id": partner_group_id,
     }
 
 
