@@ -230,23 +230,39 @@ async def get_wallet_balances(
     for wallet in wallets:
         if wallet.chain_family == ChainFamily.EVM:
             # Get EVM balances (Polygon, Base, etc.)
-            evm_balances = await wallet_service.get_evm_balances(wallet.public_key)
+            evm_balances = []
+            try:
+                evm_balances.extend(await wallet_service.get_polygon_balances(wallet.public_key))
+            except Exception as e:
+                print(f"Error getting Polygon balances: {e}")
+            try:
+                evm_balances.extend(await wallet_service.get_base_balances(wallet.public_key))
+            except Exception as e:
+                print(f"Error getting Base balances: {e}")
             balances.append({
                 "chain_family": "evm",
                 "public_key": wallet.public_key,
                 "balances": [
-                    {"token": b.token, "amount": b.amount, "chain": b.chain}
+                    {"token": b.token, "amount": str(b.amount), "chain": b.chain.value}
                     for b in evm_balances
                 ]
             })
         elif wallet.chain_family == ChainFamily.SOLANA:
             # Get Solana balances
-            sol_balances = await wallet_service.get_solana_balances(wallet.public_key)
+            sol_balances = []
+            try:
+                sol_balances.append(await wallet_service.get_solana_balance(wallet.public_key))
+            except Exception as e:
+                print(f"Error getting SOL balance: {e}")
+            try:
+                sol_balances.append(await wallet_service.get_solana_usdc_balance(wallet.public_key))
+            except Exception as e:
+                print(f"Error getting Solana USDC balance: {e}")
             balances.append({
                 "chain_family": "solana",
                 "public_key": wallet.public_key,
                 "balances": [
-                    {"token": b.token, "amount": b.amount, "chain": b.chain}
+                    {"token": b.token, "amount": str(b.amount), "chain": b.chain.value}
                     for b in sol_balances
                 ]
             })
@@ -313,26 +329,15 @@ async def search_markets(
 
             markets = await platform_instance.search_markets(q, limit=limit)
             for m in markets:
-                if plat == "kalshi":
-                    results.append({
-                        "platform": "kalshi",
-                        "id": m.get("id") or m.get("market_id"),
-                        "title": m.get("title") or m.get("question"),
-                        "yes_price": m.get("yes_price"),
-                        "no_price": m.get("no_price"),
-                        "volume": m.get("volume"),
-                        "is_active": m.get("is_active", True),
-                    })
-                elif plat == "polymarket":
-                    results.append({
-                        "platform": "polymarket",
-                        "id": m.get("condition_id") or m.get("id"),
-                        "title": m.get("question") or m.get("title"),
-                        "yes_price": m.get("yes_price"),
-                        "no_price": m.get("no_price"),
-                        "volume": m.get("volume"),
-                        "is_active": m.get("active", True),
-                    })
+                results.append({
+                    "platform": plat,
+                    "id": m.market_id,
+                    "title": m.title,
+                    "yes_price": float(m.yes_price) if m.yes_price else None,
+                    "no_price": float(m.no_price) if m.no_price else None,
+                    "volume": str(m.volume_24h) if m.volume_24h else None,
+                    "is_active": m.is_active,
+                })
         except Exception as e:
             print(f"Error searching {plat}: {e}")
 
@@ -357,12 +362,12 @@ async def get_trending_markets(
                 for m in markets:
                     results.append({
                         "platform": "kalshi",
-                        "id": m.get("id") or m.get("market_id"),
-                        "title": m.get("title") or m.get("question"),
-                        "yes_price": m.get("yes_price"),
-                        "no_price": m.get("no_price"),
-                        "volume": m.get("volume"),
-                        "is_active": m.get("is_active", True),
+                        "id": m.market_id,
+                        "title": m.title,
+                        "yes_price": float(m.yes_price) if m.yes_price else None,
+                        "no_price": float(m.no_price) if m.no_price else None,
+                        "volume": str(m.volume_24h) if m.volume_24h else None,
+                        "is_active": m.is_active,
                     })
         except Exception as e:
             print(f"Error getting Kalshi trending: {e}")
@@ -375,12 +380,12 @@ async def get_trending_markets(
                 for m in markets:
                     results.append({
                         "platform": "polymarket",
-                        "id": m.get("condition_id") or m.get("id"),
-                        "title": m.get("question") or m.get("title"),
-                        "yes_price": m.get("yes_price"),
-                        "no_price": m.get("no_price"),
-                        "volume": m.get("volume"),
-                        "is_active": m.get("active", True),
+                        "id": m.market_id,
+                        "title": m.title,
+                        "yes_price": float(m.yes_price) if m.yes_price else None,
+                        "no_price": float(m.no_price) if m.no_price else None,
+                        "volume": str(m.volume_24h) if m.volume_24h else None,
+                        "is_active": m.is_active,
                     })
         except Exception as e:
             print(f"Error getting Polymarket trending: {e}")
