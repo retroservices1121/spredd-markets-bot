@@ -1470,6 +1470,23 @@ class PolymarketPlatform(BasePlatform):
             raise PlatformError("Quote data missing", Platform.POLYMARKET)
 
         try:
+            # For BUY orders, ensure we have enough USDC.e (auto-swap from native USDC if needed)
+            if quote.side == "buy":
+                success, message, swap_tx = await self.ensure_usdc_for_trade(
+                    private_key, quote.input_amount
+                )
+                if not success:
+                    return TradeResult(
+                        success=False,
+                        tx_hash=None,
+                        input_amount=quote.input_amount,
+                        output_amount=None,
+                        error_message=message,
+                        explorer_url=None,
+                    )
+                if swap_tx:
+                    logger.info("Auto-swapped USDC to USDC.e", tx_hash=swap_tx)
+
             # Ensure USDC.e and CTF are approved for Polymarket exchange contracts
             # This is now cached for repeat trades
             await self._ensure_exchange_approval(private_key)
