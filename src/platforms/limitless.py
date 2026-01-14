@@ -767,22 +767,16 @@ class LimitlessPlatform(BasePlatform):
         # Get orderbook for pricing (pass slug for fallback lookup)
         orderbook = await self.get_orderbook(market_id, outcome, token_id=token_id, slug=market.event_id)
 
-        # For market-like orders, use aggressive pricing to ensure immediate fill
-        # The actual fill price will be the best available in the orderbook
+        # For FOK market orders, use realistic prices for display/estimation
+        # takerAmount=1 in the signed order triggers market order semantics
         if side == "buy":
-            # Use maximum price (0.99) to ensure we match any ask
-            price = Decimal("0.99")
-            # Expected output based on realistic orderbook price
-            realistic_price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
-            expected_output = amount / realistic_price
+            price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+            expected_output = amount / price
             input_token = USDC_BASE
             output_token = token_id or "outcome_token"
         else:
-            # Use minimum price (0.01) to ensure we match any bid
-            price = Decimal("0.01")
-            # Expected output based on realistic orderbook price
-            realistic_price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
-            expected_output = amount * realistic_price
+            price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+            expected_output = amount * price
             input_token = token_id or "outcome_token"
             output_token = USDC_BASE
 
@@ -1014,46 +1008,38 @@ class LimitlessPlatform(BasePlatform):
         price: Decimal,
         venue: dict,
         fee_rate_bps: int = 300,
+        is_market_order: bool = True,
     ) -> dict:
-        """Build and sign EIP-712 order for Limitless."""
+        """Build and sign EIP-712 order for Limitless.
+
+        Args:
+            is_market_order: If True, use FOK market order semantics with takerAmount=1
+        """
         from eth_abi import encode as abi_encode
         from eth_utils import keccak
 
         wallet = Web3.to_checksum_address(private_key.address)
         exchange = venue.get("exchange", venue.get("address"))
 
-        logger.debug("Building EIP-712 order", venue=venue, exchange=exchange)
+        logger.debug("Building EIP-712 order", venue=venue, exchange=exchange, is_market_order=is_market_order)
 
         if not exchange:
             raise PlatformError("Exchange address not found in venue", Platform.LIMITLESS)
 
         exchange_checksum = Web3.to_checksum_address(exchange)
 
-        # Calculate tick size from price (number of decimal places)
-        # e.g. price=0.806 has 3 decimals, so tick_size=3, round to nearest 1000
-        price_str = str(price)
-        if '.' in price_str:
-            tick_size = len(price_str.split('.')[1])
-        else:
-            tick_size = 0
-        tick_round = 10 ** tick_size if tick_size > 0 else 1
-
         # Calculate amounts (USDC has 6 decimals)
-        # contracts must be rounded so that price * contracts is a whole number
         if side == "buy":
-            # makerAmount = USDC to spend, takerAmount = tokens (contracts) to receive
-            raw_contracts = int((amount / price) * Decimal(10 ** 6))
-            # Round down to tick size
-            taker_amount = (raw_contracts // tick_round) * tick_round
-            # Recalculate maker_amount based on rounded contracts
-            maker_amount = int(Decimal(taker_amount) * price)
+            # makerAmount = USDC to spend
+            maker_amount = int(amount * Decimal(10 ** 6))
+            # For FOK market orders, takerAmount must be 1 to trigger market order semantics
+            taker_amount = 1 if is_market_order else int((amount / price) * Decimal(10 ** 6))
             order_side = 0  # BUY
         else:
-            # makerAmount = tokens to sell, takerAmount = USDC to receive
+            # makerAmount = tokens to sell
             maker_amount = int(amount * Decimal(10 ** 6))
-            # Round maker_amount to tick size
-            maker_amount = (maker_amount // tick_round) * tick_round
-            taker_amount = int(Decimal(maker_amount) * price)
+            # For FOK market orders, takerAmount must be 1 to trigger market order semantics
+            taker_amount = 1 if is_market_order else int(Decimal(maker_amount) * price)
             order_side = 1  # SELL
 
         # Parse tokenId as integer (can be very large uint256)
@@ -1243,10 +1229,10 @@ class LimitlessPlatform(BasePlatform):
                 fee_rate_bps=fee_rate_bps,
             )
 
-            # Submit order
+            # Submit order - use FOK for immediate market execution
             payload = {
                 "order": order,
-                "orderType": "GTC",  # Good Till Cancelled
+                "orderType": "FOK",  # Fill or Kill - immediate execution
                 "marketSlug": market_slug,
             }
 
