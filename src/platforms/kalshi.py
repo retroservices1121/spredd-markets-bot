@@ -225,6 +225,11 @@ class KalshiPlatform(BasePlatform):
     # Market Discovery
     # ===================
     
+    # Cache for all markets (DFlow API doesn't support pagination)
+    _markets_cache: list[Market] = []
+    _markets_cache_time: float = 0
+    CACHE_TTL = 300  # 5 minutes
+
     async def get_markets(
         self,
         limit: int = 20,
@@ -237,12 +242,22 @@ class KalshiPlatform(BasePlatform):
             limit: Maximum number of markets to return
             offset: Number of markets to skip (for pagination)
             active_only: Only return active markets
+
+        Note: DFlow API doesn't support offset/pagination, so we fetch all
+        markets and paginate client-side with caching.
         """
+        import time
+
+        # Check if cache is still valid
+        now = time.time()
+        if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
+            # Return from cache with offset/limit
+            return self._markets_cache[offset:offset + limit]
+
+        # Fetch all markets (API ignores offset param)
         params = {
-            "limit": limit,
+            "limit": 200,  # Fetch all available
         }
-        if offset > 0:
-            params["offset"] = offset
         if active_only:
             params["status"] = "active"
 
@@ -255,7 +270,12 @@ class KalshiPlatform(BasePlatform):
             except Exception as e:
                 logger.warning("Failed to parse market", error=str(e))
 
-        return markets
+        # Update cache
+        self._markets_cache = markets
+        self._markets_cache_time = now
+
+        # Return requested slice
+        return markets[offset:offset + limit]
     
     async def search_markets(
         self,
@@ -317,6 +337,80 @@ class KalshiPlatform(BasePlatform):
                 logger.warning("Failed to parse market", error=str(e))
 
         return markets
+
+    # ===================
+    # Categories (inferred from ticker patterns)
+    # ===================
+
+    # Ticker pattern to category mapping
+    CATEGORY_PATTERNS = {
+        "sports": [
+            "KXSB", "KXNFL", "KXNBA", "KXNHL", "KXMLB",  # US Sports
+            "KXNCAAF", "KXMARMAD",  # College sports
+            "KXPREMIERLEAGUE", "KXLALIGA", "KXUCL",  # Soccer
+            "KXTEAMSINSB", "KXNFLGAME", "KXNFLMVP", "KXNFLAFCCHAMP", "KXNFLNFCCHAMP",
+            "KXNFLCOTY", "KXNFLOPOTY", "KXNFLOROTY", "KXNFLDPOTY",
+            "KXNBAMVP", "KXNBADPOY", "KXNBAEAST", "KXNBAWEST",
+        ],
+        "politics": [
+            "KXPRES", "KXCONTROL", "KXSENATE", "KXGOV", "KXCAB",
+            "KXTRUMP", "KXLEADERS", "KXLEAVE", "KXARREST",
+        ],
+        "economics": [
+            "KXFED", "KXGOVT", "RECSSNBER", "KXGOVSHUT",
+        ],
+        "crypto": [
+            "KXBTC", "KXETH", "KXSOL",
+        ],
+        "world": [
+            "KXKHAMENEI", "KXGREENLAND", "KXGREENTER", "KXVENEZUELA",
+            "KXDJTVO",  # Trump foreign policy
+        ],
+        "entertainment": [
+            "KXOSCAR", "KXGRAM", "KXMEDIA",
+        ],
+    }
+
+    def get_available_categories(self) -> list[dict]:
+        """Get list of available market categories.
+
+        Returns list of dicts with 'id', 'label', and 'emoji' keys.
+        """
+        return [
+            {"id": "sports", "label": "Sports", "emoji": "🏆"},
+            {"id": "politics", "label": "Politics", "emoji": "🏛️"},
+            {"id": "economics", "label": "Economics", "emoji": "📊"},
+            {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
+            {"id": "world", "label": "World", "emoji": "🌍"},
+            {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
+        ]
+
+    async def get_markets_by_category(
+        self,
+        category: str,
+        limit: int = 50,
+    ) -> list[Market]:
+        """Get markets filtered by category.
+
+        Categories are inferred from ticker patterns since DFlow API
+        doesn't have a categories endpoint.
+        """
+        # Get all markets (uses cache if available)
+        all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
+
+        # Get patterns for this category
+        patterns = self.CATEGORY_PATTERNS.get(category.lower(), [])
+        if not patterns:
+            return []
+
+        # Filter markets by ticker pattern
+        filtered = []
+        for market in all_markets:
+            ticker = market.market_id.upper()
+            if any(ticker.startswith(pattern) for pattern in patterns):
+                filtered.append(market)
+
+        return filtered[:limit]
 
     # ===================
     # Order Book

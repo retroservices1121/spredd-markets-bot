@@ -3149,11 +3149,11 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
         await query.edit_message_text("Please /start first!")
         return
 
-    # Only Polymarket and Limitless support categories currently
-    if user.active_platform not in (Platform.POLYMARKET, Platform.LIMITLESS):
+    # Only Polymarket, Limitless, and Kalshi support categories currently
+    if user.active_platform not in (Platform.POLYMARKET, Platform.LIMITLESS, Platform.KALSHI):
         await query.edit_message_text(
             "📂 <b>Categories</b>\n\n"
-            "Categories are currently only available for Polymarket and Limitless.\n\n"
+            "Categories are currently only available for Polymarket, Limitless, and Kalshi.\n\n"
             "Switch to one of these platforms to browse by category.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
