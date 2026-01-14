@@ -1598,8 +1598,13 @@ Select which prediction market you want to trade on:
             await handle_category_view(query, parts[1], update.effective_user.id, page=page)
 
         elif action == "positions":
-            # Format: positions:page
-            page = int(parts[1]) if len(parts) > 1 else 0
+            # Format: positions:page or positions:view or positions:refresh
+            page = 0
+            if len(parts) > 1 and parts[1] not in ("view", "refresh"):
+                try:
+                    page = int(parts[1])
+                except ValueError:
+                    page = 0
             await show_positions(query, update.effective_user.id, page=page, is_callback=True)
 
         elif action == "orders":
