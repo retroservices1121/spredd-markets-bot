@@ -1277,10 +1277,14 @@ class LimitlessPlatform(BasePlatform):
 
             order_id = result.get("orderId") or result.get("id") or result.get("transactionHash", "")
 
-            # Check if order was filled or just placed in orderbook
-            # Limitless returns status: "LIVE" for orderbook, "MATCHED" for filled
+            # Check if order was filled
+            # FOK orders return makerMatches when filled
             order_status = result.get("status", "").upper()
+            maker_matches = result.get("makerMatches", [])
             filled_amount = result.get("filledAmount") or result.get("matchedAmount") or result.get("filled")
+
+            # Calculate actual filled amount from matches
+            total_matched = sum(int(m.get("matchedSize", 0)) for m in maker_matches)
 
             logger.info(
                 "Trade executed",
@@ -1289,29 +1293,19 @@ class LimitlessPlatform(BasePlatform):
                 order_id=order_id,
                 order_status=order_status,
                 filled_amount=filled_amount,
-                full_response=result,
+                maker_matches_count=len(maker_matches),
+                total_matched=total_matched,
             )
 
-            # Determine actual output amount based on fill status
-            actual_output = quote.expected_output
-            is_filled = order_status in ("MATCHED", "FILLED", "COMPLETE", "COMPLETED")
-            is_in_orderbook = order_status == "LIVE" or (not is_filled and not filled_amount)
+            # FOK orders are filled if they have makerMatches
+            is_filled = bool(maker_matches) or order_status in ("MATCHED", "FILLED", "COMPLETE", "COMPLETED")
 
-            # If order went to orderbook unfilled, return with warning
-            if is_in_orderbook:
-                logger.warning(
-                    "Order placed in orderbook (not immediately filled)",
-                    order_id=order_id,
-                    status=order_status,
-                )
-                return TradeResult(
-                    success=True,
-                    tx_hash=order_id,
-                    input_amount=quote.input_amount,
-                    output_amount=Decimal("0"),  # Not filled yet
-                    error_message="Order placed in orderbook - waiting to be filled",
-                    explorer_url=None,
-                )
+            # Determine actual output - use matched size if available
+            if total_matched > 0:
+                # Convert from 6 decimal USDC to actual amount
+                actual_output = Decimal(total_matched) / Decimal(10 ** 6)
+            else:
+                actual_output = quote.expected_output
 
             # Collect platform fee after successful trade
             if self._fee_account and self._fee_bps > 0 and quote.side == "buy":
