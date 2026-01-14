@@ -366,11 +366,13 @@ class OpinionPlatform(BasePlatform):
         side: str,
         amount: Decimal,
         token_id: str = None,
+        order_type: str = "market",
     ) -> Quote:
         """Get a quote for a trade.
 
         Note: token_id is accepted for API compatibility but ignored -
         Opinion determines tokens from market data.
+        Note: order_type is accepted for API compatibility but Opinion only supports market orders.
         """
         market = await self.get_market(market_id)
         if not market:

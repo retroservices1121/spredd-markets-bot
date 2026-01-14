@@ -283,6 +283,7 @@ class BasePlatform(ABC):
         side: str,
         amount: Decimal,
         token_id: str = None,
+        order_type: str = "market",
     ) -> Quote:
         """
         Get a quote for a potential trade.
@@ -293,6 +294,7 @@ class BasePlatform(ABC):
             side: "buy" or "sell"
             amount: Amount in collateral (e.g., USDC)
             token_id: Optional token ID (used by Polymarket for sells)
+            order_type: "market" or "limit" (only Limitless supports limit orders)
 
         Returns:
             Quote with expected output and fees

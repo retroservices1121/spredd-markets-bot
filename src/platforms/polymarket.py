@@ -1090,6 +1090,7 @@ class PolymarketPlatform(BasePlatform):
         side: str,
         amount: Decimal,
         token_id: str = None,
+        order_type: str = "market",
     ) -> Quote:
         """Get a quote for a trade.
 
@@ -1099,6 +1100,7 @@ class PolymarketPlatform(BasePlatform):
             side: "buy" or "sell"
             amount: Amount to trade
             token_id: Optional token ID to use (required for sells to use position's stored token)
+            order_type: "market" or "limit" (Polymarket only supports market orders via this interface)
         """
         market = await self.get_market(market_id)
         if not market:

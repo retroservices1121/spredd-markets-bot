@@ -367,11 +367,13 @@ class KalshiPlatform(BasePlatform):
         side: str,
         amount: Decimal,
         token_id: str = None,
+        order_type: str = "market",
     ) -> Quote:
         """Get a quote for a trade via DFlow.
 
         Note: token_id is accepted for API compatibility but ignored -
         Kalshi determines tokens from market data.
+        Note: order_type is accepted for API compatibility but Kalshi only supports market orders.
         """
         # Get market to find token addresses
         market = await self.get_market(market_id)
