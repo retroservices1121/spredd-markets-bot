@@ -71,7 +71,6 @@ class Quote:
     # Trade details
     outcome: Outcome
     side: str  # "buy" or "sell"
-    order_type: str = "market"  # "market" or "limit"
 
     # Input
     input_token: str
@@ -91,6 +90,9 @@ class Quote:
 
     # Expiry
     expires_at: Optional[str]
+
+    # Order type (must have default since it comes after Optional fields)
+    order_type: str = "market"  # "market" or "limit"
 
     # Platform-specific quote data needed for execution
     quote_data: Optional[dict] = None
