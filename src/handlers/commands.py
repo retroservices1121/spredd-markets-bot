@@ -1541,14 +1541,9 @@ Select which prediction market you want to trade on:
         elif action == "buy":
             await handle_buy_start(query, parts[1], parts[2], parts[3], update.effective_user.id, context)
 
-        elif action == "buy_ordertype":
-            # Format: buy_ordertype:platform:market_id:outcome:order_type
-            await handle_buy_ordertype(query, parts[1], parts[2], parts[3], parts[4], update.effective_user.id, context)
-
         elif action == "confirm_buy":
-            # Format: confirm_buy:platform:market_id:outcome:amount:order_type
-            order_type = parts[5] if len(parts) > 5 and parts[5] else "market"
-            await handle_buy_confirm(query, parts[1], parts[2], parts[3], parts[4], order_type, update.effective_user.id)
+            # Format: confirm_buy:platform:market_id:outcome:amount
+            await handle_buy_confirm(query, parts[1], parts[2], parts[3], parts[4], update.effective_user.id)
 
         elif action == "wallet":
             if parts[1] == "refresh":
@@ -2008,43 +2003,11 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
 
     swap_note = locals().get("swap_note", "")
 
-    # For Limitless, show order type selection first
-    if platform_enum == Platform.LIMITLESS:
-        text = f"""
-💰 <b>Buy {outcome.upper()} Position</b>
-
-Platform: {info['name']}
-Collateral: {info['collateral']}{swap_note}
-
-<b>Select order type:</b>
-
-🚀 <b>Market Order</b> - Fills immediately at best available price (may have slippage)
-
-📋 <b>Limit Order</b> - Places order at exact price, may not fill immediately
-"""
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🚀 Market", callback_data=f"buy_ordertype:{platform_value}:{market_id}:{outcome}:market"),
-                InlineKeyboardButton("📋 Limit", callback_data=f"buy_ordertype:{platform_value}:{market_id}:{outcome}:limit"),
-            ],
-            [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
-        ])
-
-        await query.edit_message_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-        )
-        return
-
-    # For other platforms, go straight to amount entry (market orders only)
     # Store buy context for message handler
     context.user_data["pending_buy"] = {
         "platform": platform_value,
         "market_id": market_id,
         "outcome": outcome,
-        "order_type": "market",
     }
 
     text = f"""
@@ -2062,56 +2025,6 @@ Type /cancel to cancel.
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
-    ])
-
-    await query.edit_message_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
-    )
-
-
-async def handle_buy_ordertype(query, platform_value: str, market_id: str, outcome: str, order_type: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle order type selection for Limitless (market/limit)."""
-    try:
-        platform_enum = Platform(platform_value)
-    except ValueError:
-        await query.edit_message_text("Invalid platform.")
-        return
-
-    info = PLATFORM_INFO[platform_enum]
-
-    user = await get_user_by_telegram_id(telegram_id)
-    if not user:
-        await query.edit_message_text("Please /start first!")
-        return
-
-    # Store buy context with order type
-    context.user_data["pending_buy"] = {
-        "platform": platform_value,
-        "market_id": market_id,
-        "outcome": outcome,
-        "order_type": order_type,
-    }
-
-    order_type_display = "🚀 Market Order" if order_type == "market" else "📋 Limit Order"
-
-    text = f"""
-💰 <b>Buy {outcome.upper()} Position</b>
-
-Platform: {info['name']}
-Order Type: {order_type_display}
-Collateral: {info['collateral']}
-
-Enter the amount in {info['collateral']} you want to spend:
-
-<i>Example: 10 (for 10 {info['collateral']})</i>
-
-Type /cancel to cancel.
-"""
-
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("« Back", callback_data=f"buy:{platform_value}:{market_id}:{outcome}")],
     ])
 
     await query.edit_message_text(
@@ -3833,7 +3746,7 @@ Type /cancel to cancel.
 # Buy Order Processing
 # ===================
 
-async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome: str, amount_str: str, order_type: str, telegram_id: int) -> None:
+async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome: str, amount_str: str, telegram_id: int) -> None:
     """Execute the confirmed buy order."""
     try:
         amount = Decimal(amount_str)
@@ -3851,9 +3764,8 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
     platform_info = PLATFORM_INFO[platform_enum]
     chain_family = get_chain_family_for_platform(platform_enum)
 
-    order_type_display = "🚀 Market" if order_type == "market" else "📋 Limit"
     await query.edit_message_text(
-        f"⏳ Executing {order_type_display} order...\n\nBuying {outcome.upper()} with {amount} {platform_info['collateral']}",
+        f"⏳ Executing order...\n\nBuying {outcome.upper()} with {amount} {platform_info['collateral']}",
         parse_mode=ParseMode.HTML,
     )
 
@@ -3867,7 +3779,6 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
             outcome=outcome_enum,
             side="buy",
             amount=amount,
-            order_type=order_type,
         )
 
         # Get private key directly (no PIN required for trading)
@@ -4429,7 +4340,6 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     platform_value = pending["platform"]
     market_id = pending["market_id"]
     outcome = pending["outcome"]
-    order_type = pending.get("order_type", "market")
 
     try:
         platform_enum = Platform(platform_value)
@@ -4463,7 +4373,6 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             outcome=outcome_enum,
             side="buy",
             amount=amount,
-            order_type=order_type,
         )
 
         # Show quote confirmation
@@ -4477,30 +4386,20 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         # Clear pending and show confirm button
         del context.user_data["pending_buy"]
 
-        # Order type display
-        order_type_display = "🚀 Market Order" if order_type == "market" else "📋 Limit Order"
-        order_type_note = ""
-        if order_type == "market":
-            order_type_note = "\n<i>Market orders fill immediately with up to 2% slippage.</i>"
-        else:
-            order_type_note = "\n<i>Limit orders may not fill immediately if no matching orders.</i>"
-
         text = f"""
 📋 <b>Order Quote</b>
 
 Market: {escape_html(market.title[:50])}...
 Side: BUY {outcome.upper()}
-Type: {order_type_display}
 
 💰 <b>You Pay:</b> {amount} {platform_info['collateral']}
 💸 <b>Fee (1%):</b> {fee_display}
 📦 <b>You Receive:</b> ~{expected_tokens:.2f} {outcome.upper()} tokens
 📊 <b>Price:</b> {format_probability(price)} per token
-{order_type_note}
 """
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Confirm Order", callback_data=f"confirm_buy:{platform_value}:{market_id}:{outcome}:{amount}:{order_type}")],
+            [InlineKeyboardButton("✅ Confirm Order", callback_data=f"confirm_buy:{platform_value}:{market_id}:{outcome}:{amount}")],
             [InlineKeyboardButton("❌ Cancel", callback_data=f"market:{platform_value}:{market_id}")],
         ])
 

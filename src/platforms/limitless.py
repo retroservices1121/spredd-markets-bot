@@ -746,7 +746,6 @@ class LimitlessPlatform(BasePlatform):
         side: str,
         amount: Decimal,
         token_id: str = None,
-        order_type: str = "market",  # "market" or "limit"
     ) -> Quote:
         """Get a quote for a trade.
 
@@ -756,7 +755,6 @@ class LimitlessPlatform(BasePlatform):
             side: "buy" or "sell"
             amount: Amount in USDC (buy) or tokens (sell)
             token_id: Optional token ID override
-            order_type: "market" (immediate fill with slippage) or "limit" (exact price, may not fill)
         """
         market = await self.get_market(market_id)
         if not market:
@@ -774,21 +772,15 @@ class LimitlessPlatform(BasePlatform):
 
         if side == "buy":
             base_price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
-            # For market buy orders, add slippage to price (willing to pay more to fill)
-            if order_type == "market":
-                price = min(base_price * (1 + MARKET_ORDER_SLIPPAGE), Decimal("0.99"))
-            else:
-                price = base_price
+            # Add slippage to price (willing to pay more to fill)
+            price = min(base_price * (1 + MARKET_ORDER_SLIPPAGE), Decimal("0.99"))
             expected_output = amount / price
             input_token = USDC_BASE
             output_token = token_id or "outcome_token"
         else:
             base_price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
-            # For market sell orders, reduce price (willing to accept less to fill)
-            if order_type == "market":
-                price = max(base_price * (1 - MARKET_ORDER_SLIPPAGE), Decimal("0.01"))
-            else:
-                price = base_price
+            # Reduce price (willing to accept less to fill)
+            price = max(base_price * (1 - MARKET_ORDER_SLIPPAGE), Decimal("0.01"))
             expected_output = amount * price
             input_token = token_id or "outcome_token"
             output_token = USDC_BASE
@@ -799,7 +791,6 @@ class LimitlessPlatform(BasePlatform):
             market_id=market_id,
             outcome=outcome,
             side=side,
-            order_type=order_type,
             input_token=input_token,
             input_amount=amount,
             output_token=output_token,
@@ -814,7 +805,6 @@ class LimitlessPlatform(BasePlatform):
                 "market_slug": market.event_id or market_id,  # Use actual slug, not numeric ID
                 "price": str(price),
                 "market": market.raw_data,
-                "order_type": order_type,  # For execute_trade to use
             },
         )
 
@@ -1252,15 +1242,10 @@ class LimitlessPlatform(BasePlatform):
                 fee_rate_bps=fee_rate_bps,
             )
 
-            # Determine order type for API
-            # FOK (Fill or Kill) for market orders - must fill immediately or fail
-            # GTC (Good Till Cancelled) for limit orders - can sit in orderbook
-            api_order_type = "FOK" if quote.order_type == "market" else "GTC"
-
-            # Submit order
+            # Submit order - always use FOK (Fill or Kill) for immediate execution
             payload = {
                 "order": order,
-                "orderType": api_order_type,
+                "orderType": "FOK",
                 "marketSlug": market_slug,
             }
 
@@ -1274,7 +1259,6 @@ class LimitlessPlatform(BasePlatform):
                 owner_id=payload.get("ownerId"),
                 order_side=order.get("side"),
                 order_price=order.get("price"),
-                order_type=api_order_type,
                 token_id=order.get("tokenId"),
             )
 
@@ -1325,38 +1309,21 @@ class LimitlessPlatform(BasePlatform):
             is_filled = order_status in ("MATCHED", "FILLED", "COMPLETE", "COMPLETED")
             is_in_orderbook = order_status == "LIVE" or (not is_filled and not filled_amount)
 
-            # Handle unfilled orders differently based on order type
+            # Handle unfilled orders - FOK orders should fill immediately or fail
             if is_in_orderbook:
-                if quote.order_type == "market":
-                    # Market orders (FOK) should fill immediately - if not, it's a failure
-                    logger.error(
-                        "Market order failed to fill",
-                        order_id=order_id,
-                        status=order_status,
-                    )
-                    return TradeResult(
-                        success=False,
-                        tx_hash=order_id,
-                        input_amount=quote.input_amount,
-                        output_amount=Decimal("0"),
-                        error_message="Market order could not be filled. Try increasing your amount or check market liquidity.",
-                        explorer_url=None,
-                    )
-                else:
-                    # Limit orders (GTC) can go to orderbook - return success with warning
-                    logger.info(
-                        "Limit order placed in orderbook",
-                        order_id=order_id,
-                        status=order_status,
-                    )
-                    return TradeResult(
-                        success=True,
-                        tx_hash=order_id,
-                        input_amount=quote.input_amount,
-                        output_amount=Decimal("0"),  # Not filled yet
-                        error_message="Limit order placed in orderbook - waiting to be filled",
-                        explorer_url=None,
-                    )
+                logger.error(
+                    "Order failed to fill",
+                    order_id=order_id,
+                    status=order_status,
+                )
+                return TradeResult(
+                    success=False,
+                    tx_hash=order_id,
+                    input_amount=quote.input_amount,
+                    output_amount=Decimal("0"),
+                    error_message="Order could not be filled. Try increasing your amount or check market liquidity.",
+                    explorer_url=None,
+                )
 
             # Collect platform fee after successful trade
             if self._fee_account and self._fee_bps > 0 and quote.side == "buy":
