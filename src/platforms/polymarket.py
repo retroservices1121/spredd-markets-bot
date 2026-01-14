@@ -852,10 +852,11 @@ class PolymarketPlatform(BasePlatform):
 
         return markets[:limit]
     
-    async def get_market(self, market_id: str) -> Optional[Market]:
+    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
         """Get a specific market by condition ID, event ID, or slug.
 
         Supports partial matching for truncated condition IDs (Telegram callback limit).
+        Note: search_title is accepted for API compatibility but not used.
         """
         try:
             # Fetch events ordered by volume (same as get_markets) to maximize chance of finding

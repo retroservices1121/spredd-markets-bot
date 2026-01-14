@@ -256,8 +256,11 @@ class OpinionPlatform(BasePlatform):
                    (m.description and query_lower in m.description.lower())
             ][:limit]
     
-    async def get_market(self, market_id: str) -> Optional[Market]:
-        """Get a specific market by ID."""
+    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
+        """Get a specific market by ID.
+
+        Note: search_title is accepted for API compatibility but not used.
+        """
         try:
             data = await self._api_request("GET", f"/api/v1/markets/{market_id}")
             

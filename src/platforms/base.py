@@ -246,8 +246,13 @@ class BasePlatform(ABC):
         pass
     
     @abstractmethod
-    async def get_market(self, market_id: str) -> Optional[Market]:
-        """Get a specific market by ID."""
+    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
+        """Get a specific market by ID.
+
+        Args:
+            market_id: The market identifier
+            search_title: Optional title hint for platforms that need it for lookup
+        """
         pass
     
     @abstractmethod

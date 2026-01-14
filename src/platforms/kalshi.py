@@ -288,8 +288,11 @@ class KalshiPlatform(BasePlatform):
 
         return filtered[:limit]
     
-    async def get_market(self, market_id: str) -> Optional[Market]:
-        """Get a specific market by ticker."""
+    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
+        """Get a specific market by ticker.
+
+        Note: search_title is accepted for API compatibility but not used.
+        """
         try:
             data = await self._metadata_request("GET", f"/api/v1/market/{market_id}")
             return self._parse_market(data.get("market", data))
