@@ -576,22 +576,23 @@ class LimitlessPlatform(BasePlatform):
                 logger.debug("Using cached slug for market", numeric_id=market_id, slug=cached_slug)
 
         # Try direct lookup by slug
+        market = None
         try:
             data = await self._api_request("GET", f"/markets/{lookup_id}")
-            return self._parse_market(data)
+            market = self._parse_market(data)
         except Exception as e:
             logger.debug("Direct market lookup failed", market_id=lookup_id, error=str(e))
 
         # If we haven't tried the original market_id yet (different from lookup_id), try it
-        if lookup_id != market_id:
+        if not market and lookup_id != market_id:
             try:
                 data = await self._api_request("GET", f"/markets/{market_id}")
-                return self._parse_market(data)
+                market = self._parse_market(data)
             except Exception as e:
                 logger.debug("Fallback market lookup failed", market_id=market_id, error=str(e))
 
         # Try searching - for numeric IDs, fetch markets with pagination to find the match
-        if market_id.isdigit():
+        if not market and market_id.isdigit():
             # Fetch markets page by page to find one with matching ID (API limit is 25)
             try:
                 max_pages = 8  # Search up to 200 markets (8 * 25)
@@ -601,24 +602,62 @@ class LimitlessPlatform(BasePlatform):
                         break  # No more markets
                     for m in page_markets:
                         if m.market_id == market_id:
-                            return m
+                            market = m
+                            break
+                    if market:
+                        break
                     logger.debug(f"Market {market_id} not found on page {page_num + 1}, checking next...")
             except Exception as e:
                 logger.debug("Market list search failed", error=str(e))
 
         # Last resort: search by title if provided
-        if search_title and market_id.isdigit():
+        if not market and search_title and market_id.isdigit():
             try:
                 logger.debug(f"Trying title search for market {market_id}: {search_title[:50]}...")
                 search_results = await self.search_markets(search_title[:50], limit=10)
                 for m in search_results:
                     if m.market_id == market_id:
                         logger.info(f"Found market {market_id} via title search")
-                        return m
+                        market = m
+                        break
             except Exception as e:
                 logger.debug("Title search failed", error=str(e))
 
-        return None
+        # If market found but has default prices (0.5), try to get real prices from orderbook
+        if market and market.yes_price == Decimal("0.5") and market.no_price == Decimal("0.5"):
+            try:
+                from src.db.models import Outcome
+                # Get YES orderbook for price
+                orderbook = await self.get_orderbook(market.market_id, Outcome.YES, slug=market.event_id)
+                if orderbook.best_ask or orderbook.best_bid:
+                    # Use mid price or available price
+                    if orderbook.best_ask and orderbook.best_bid:
+                        yes_price = (orderbook.best_ask + orderbook.best_bid) / 2
+                    else:
+                        yes_price = orderbook.best_ask or orderbook.best_bid
+                    # Update market prices
+                    market = Market(
+                        platform=market.platform,
+                        chain=market.chain,
+                        market_id=market.market_id,
+                        event_id=market.event_id,
+                        title=market.title,
+                        description=market.description,
+                        category=market.category,
+                        yes_price=yes_price,
+                        no_price=Decimal("1") - yes_price,
+                        volume_24h=market.volume_24h,
+                        liquidity=market.liquidity,
+                        is_active=market.is_active,
+                        close_time=market.close_time,
+                        yes_token=market.yes_token,
+                        no_token=market.no_token,
+                        raw_data=market.raw_data,
+                    )
+            except Exception as e:
+                logger.debug("Failed to fetch orderbook for prices", error=str(e))
+
+        return market
 
     async def get_trending_markets(self, limit: int = 20) -> list[Market]:
         """Get trending markets by volume."""
