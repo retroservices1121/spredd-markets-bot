@@ -4374,7 +4374,7 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         platform_enum = Platform(platform_value)
     except ValueError:
         await update.message.reply_text("Invalid platform.")
-        del context.user_data["pending_buy"]
+        context.user_data.pop("pending_buy", None)
         return
 
     platform = get_platform(platform_enum)
@@ -4389,7 +4389,7 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         # Get market info
         market = await platform.get_market(market_id)
         if not market:
-            del context.user_data["pending_buy"]
+            context.user_data.pop("pending_buy", None)
             await update.message.reply_text("❌ Market not found.")
             return
 
@@ -4413,7 +4413,7 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         fee_display = format_usdc(fee)
 
         # Clear pending and show confirm button
-        del context.user_data["pending_buy"]
+        context.user_data.pop("pending_buy", None)
 
         text = f"""
 📋 <b>Order Quote</b>
@@ -4440,7 +4440,7 @@ Side: BUY {outcome.upper()}
 
     except Exception as e:
         logger.error("Quote failed", error=str(e))
-        del context.user_data["pending_buy"]
+        context.user_data.pop("pending_buy", None)
         await update.message.reply_text(
             f"❌ Failed to get quote: {escape_html(str(e))}",
             parse_mode=ParseMode.HTML,
@@ -4617,7 +4617,7 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = await get_user_by_telegram_id(update.effective_user.id)
     if not user:
         await update.message.reply_text("Please /start first!")
-        del context.user_data["pending_buy"]
+        context.user_data.pop("pending_buy", None)
         return
 
     platform_value = pending["platform"]
@@ -4626,7 +4626,7 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
     amount_str = pending["amount"]
 
     # Clear pending state
-    del context.user_data["pending_buy"]
+    context.user_data.pop("pending_buy", None)
 
     try:
         platform_enum = Platform(platform_value)
@@ -6028,7 +6028,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Handle /cancel command
     if text.lower() == "/cancel":
         if "pending_buy" in context.user_data:
-            del context.user_data["pending_buy"]
+            context.user_data.pop("pending_buy", None)
             await update.message.reply_text("Order cancelled.")
         elif "pending_withdrawal" in context.user_data:
             del context.user_data["pending_withdrawal"]
