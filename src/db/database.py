@@ -424,10 +424,11 @@ async def create_order(
     expected_output: str,
     event_id: Optional[str] = None,
     price: Optional[float] = None,
+    market_title: Optional[str] = None,
 ) -> Order:
     """Create a new order."""
     from src.db.models import Outcome as OutcomeEnum, OrderSide
-    
+
     async with get_session() as session:
         order = Order(
             id=generate_id(),
@@ -436,6 +437,7 @@ async def create_order(
             chain=chain,
             market_id=market_id,
             event_id=event_id,
+            market_title=market_title,
             outcome=OutcomeEnum(outcome.lower()),
             side=OrderSide(side.lower()),
             input_token=input_token,

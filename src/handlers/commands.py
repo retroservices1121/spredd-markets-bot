@@ -1091,7 +1091,7 @@ async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def show_orders(target, telegram_id: int, page: int = 0, is_callback: bool = False) -> None:
     """Show user orders with pagination."""
-    ORDERS_PER_PAGE = 10
+    ORDERS_PER_PAGE = 5
 
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
@@ -1145,7 +1145,18 @@ async def show_orders(target, telegram_id: int, page: int = 0, is_callback: bool
         status = status_emoji.get(order.status.value, "❓")
         amount = format_usd(Decimal(order.input_amount) / Decimal(10**6))
 
-        text += f"{i}. {status} {side} {outcome} • {amount}\n"
+        # Truncate market title if too long
+        market_title = order.market_title or "Unknown Market"
+        if len(market_title) > 40:
+            market_title = market_title[:37] + "..."
+
+        # Format price
+        price_str = ""
+        if order.price:
+            price_str = f" @ {order.price:.2f}"
+
+        text += f"{i}. {status} {side} {outcome}{price_str} • {amount}\n"
+        text += f"   <i>{market_title}</i>\n"
         if order.tx_hash:
             text += f"   <a href='{get_platform(user.active_platform).get_explorer_url(order.tx_hash)}'>View TX</a>\n"
         text += "\n"
@@ -3792,6 +3803,16 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
             await query.edit_message_text("❌ Wallet not found. Please try again.")
             return
 
+        # Get market title from quote data or fetch market
+        market_title = None
+        if quote.quote_data and "market" in quote.quote_data:
+            market_data = quote.quote_data["market"]
+            market_title = market_data.get("title") or market_data.get("market_title") or market_data.get("question")
+        if not market_title:
+            market = await platform.get_market(market_id)
+            if market:
+                market_title = market.title
+
         # Create order record before executing
         order = await create_order(
             user_id=user.id,
@@ -3805,6 +3826,7 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
             output_token=quote.output_token,
             expected_output=str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0",
             price=float(quote.price_per_token) if quote.price_per_token else None,
+            market_title=market_title,
         )
 
         # Execute trade
@@ -4132,6 +4154,7 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
             output_token=quote.output_token,
             expected_output=str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0",
             price=float(quote.price_per_token) if quote.price_per_token else None,
+            market_title=position.market_title,
         )
 
         # Execute trade
@@ -4657,6 +4680,16 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
             await executing_msg.edit_text("❌ Wallet not found.")
             return
 
+        # Get market title from quote data or fetch market
+        market_title = None
+        if quote.quote_data and "market" in quote.quote_data:
+            market_data = quote.quote_data["market"]
+            market_title = market_data.get("title") or market_data.get("market_title") or market_data.get("question")
+        if not market_title:
+            market = await platform.get_market(market_id)
+            if market:
+                market_title = market.title
+
         # Create order record before executing
         order = await create_order(
             user_id=user.id,
@@ -4670,6 +4703,7 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
             output_token=quote.output_token,
             expected_output=str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0",
             price=float(quote.price_per_token) if quote.price_per_token else None,
+            market_title=market_title,
         )
 
         # Execute trade
@@ -4890,6 +4924,7 @@ async def handle_sell_with_pin(update: Update, context: ContextTypes.DEFAULT_TYP
             output_token=quote.output_token,
             expected_output=str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0",
             price=float(quote.price_per_token) if quote.price_per_token else None,
+            market_title=position.market_title,
         )
 
         # Execute trade

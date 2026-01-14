@@ -114,7 +114,13 @@ class TradingService(LoggerMixin):
         
         if not private_key:
             raise ValueError(f"No wallet found for {chain_family.value}")
-        
+
+        # Get market title from quote data
+        market_title = None
+        if quote.quote_data and "market" in quote.quote_data:
+            market_data = quote.quote_data["market"]
+            market_title = market_data.get("title") or market_data.get("market_title") or market_data.get("question")
+
         # Create order record
         order = await create_order(
             user_id=user.id,
@@ -128,6 +134,7 @@ class TradingService(LoggerMixin):
             output_token=quote.output_token,
             expected_output=str(int(quote.expected_output * Decimal(10**6))),
             price=float(quote.price_per_token),
+            market_title=market_title,
         )
         
         try:

@@ -264,7 +264,8 @@ class Order(Base):
     # Market information
     market_id: Mapped[str] = mapped_column(String(255))
     event_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    
+    market_title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
     # Order details
     outcome: Mapped[Outcome] = mapped_column(SQLEnum(Outcome))
     side: Mapped[OrderSide] = mapped_column(SQLEnum(OrderSide))
