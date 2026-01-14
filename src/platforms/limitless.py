@@ -1274,12 +1274,40 @@ class LimitlessPlatform(BasePlatform):
 
             order_id = result.get("orderId") or result.get("id") or result.get("transactionHash", "")
 
+            # Check if order was filled or just placed in orderbook
+            # Limitless returns status: "LIVE" for orderbook, "MATCHED" for filled
+            order_status = result.get("status", "").upper()
+            filled_amount = result.get("filledAmount") or result.get("matchedAmount") or result.get("filled")
+
             logger.info(
                 "Trade executed",
                 platform="limitless",
                 market_id=market_slug,
                 order_id=order_id,
+                order_status=order_status,
+                filled_amount=filled_amount,
+                full_response=result,
             )
+
+            # Determine actual output amount based on fill status
+            actual_output = quote.expected_output
+            is_filled = order_status in ("MATCHED", "FILLED", "COMPLETE", "COMPLETED")
+
+            # If order went to orderbook unfilled, return with warning
+            if order_status == "LIVE" or (not is_filled and not filled_amount):
+                logger.warning(
+                    "Order placed in orderbook (not immediately filled)",
+                    order_id=order_id,
+                    status=order_status,
+                )
+                return TradeResult(
+                    success=True,
+                    tx_hash=order_id,
+                    input_amount=quote.input_amount,
+                    output_amount=Decimal("0"),  # Not filled yet
+                    error_message="Order placed in orderbook - waiting to be filled",
+                    explorer_url=None,
+                )
 
             # Collect platform fee after successful trade
             if self._fee_account and self._fee_bps > 0 and quote.side == "buy":
@@ -1293,7 +1321,7 @@ class LimitlessPlatform(BasePlatform):
                 success=True,
                 tx_hash=order_id,
                 input_amount=quote.input_amount,
-                output_amount=quote.expected_output,
+                output_amount=actual_output,
                 error_message=None,
                 explorer_url=self.get_explorer_url(order_id) if order_id.startswith("0x") else None,
             )

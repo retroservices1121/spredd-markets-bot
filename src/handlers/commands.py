@@ -3812,47 +3812,67 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
                 executed_at=datetime.now(timezone.utc),
             )
 
-            # Process trading fee and distribute to referrers
-            fee_result = await process_trade_fee(
-                trader_telegram_id=telegram_id,
-                order_id=order.id,
-                trade_amount_usdc=str(amount),
-                platform=platform_enum,
-            )
+            # Check if order was actually filled (not just placed in orderbook)
+            is_orderbook_order = result.error_message and "orderbook" in result.error_message.lower()
+            actual_output = result.output_amount if result.output_amount else Decimal("0")
 
-            # Create position record
-            try:
-                market = await platform.get_market(market_id)
-                market_title = market.title if market else market_id
-                token_amount = str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0"
-
-                await create_position(
-                    user_id=user.id,
+            # Only process fees and create position if order was filled
+            if actual_output > 0 and not is_orderbook_order:
+                # Process trading fee and distribute to referrers
+                fee_result = await process_trade_fee(
+                    trader_telegram_id=telegram_id,
+                    order_id=order.id,
+                    trade_amount_usdc=str(amount),
                     platform=platform_enum,
-                    chain=quote.chain,
-                    market_id=market_id,
-                    market_title=market_title,
-                    outcome=outcome,
-                    token_id=quote.output_token,
-                    token_amount=token_amount,
-                    entry_price=float(quote.price_per_token) if quote.price_per_token else 0.0,
-                    event_id=market.event_id if market else None,  # Store slug for Limitless lookups
                 )
-            except Exception as pos_error:
-                logger.warning("Failed to create position record", error=str(pos_error))
 
-            fee_amount = fee_result.get("fee", "0")
-            fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
-            fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
+                # Create position record
+                try:
+                    market = await platform.get_market(market_id)
+                    market_title = market.title if market else market_id
+                    token_amount = str(int(actual_output * Decimal(10**6)))
 
-            text = f"""
+                    await create_position(
+                        user_id=user.id,
+                        platform=platform_enum,
+                        chain=quote.chain,
+                        market_id=market_id,
+                        market_title=market_title,
+                        outcome=outcome,
+                        token_id=quote.output_token,
+                        token_amount=token_amount,
+                        entry_price=float(quote.price_per_token) if quote.price_per_token else 0.0,
+                        event_id=market.event_id if market else None,  # Store slug for Limitless lookups
+                    )
+                except Exception as pos_error:
+                    logger.warning("Failed to create position record", error=str(pos_error))
+
+                fee_amount = fee_result.get("fee", "0")
+                fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
+                fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
+
+                text = f"""
 ✅ <b>Order Executed!</b>
 
 Bought {outcome.upper()} position
 Amount: {amount} {platform_info['collateral']}{fee_line}
-Received: ~{quote.expected_output:.2f} tokens
+Received: ~{actual_output:.2f} tokens
 
 <a href="{result.explorer_url}">View Transaction</a>
+"""
+            else:
+                # Order was placed in orderbook but not filled
+                text = f"""
+⏳ <b>Limit Order Placed</b>
+
+Your {outcome.upper()} order has been placed in the orderbook.
+Amount: {amount} {platform_info['collateral']}
+Price: {quote.price_per_token:.4f}
+
+The order will fill when a matching seller is found.
+Check your orders on the exchange to monitor status.
+
+Note: No position created until order fills.
 """
         else:
             # Update order as failed
@@ -4658,47 +4678,67 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
                 executed_at=datetime.now(timezone.utc),
             )
 
-            # Process trading fee and distribute to referrers
-            fee_result = await process_trade_fee(
-                trader_telegram_id=update.effective_user.id,
-                order_id=order.id,
-                trade_amount_usdc=str(amount),
-                platform=platform_enum,
-            )
+            # Check if order was actually filled (not just placed in orderbook)
+            is_orderbook_order = result.error_message and "orderbook" in result.error_message.lower()
+            actual_output = result.output_amount if result.output_amount else Decimal("0")
 
-            # Create position record
-            try:
-                market = await platform.get_market(market_id)
-                market_title = market.title if market else market_id
-                token_amount = str(int(quote.expected_output * Decimal(10**6))) if quote.expected_output else "0"
-
-                await create_position(
-                    user_id=user.id,
+            # Only process fees and create position if order was filled
+            if actual_output > 0 and not is_orderbook_order:
+                # Process trading fee and distribute to referrers
+                fee_result = await process_trade_fee(
+                    trader_telegram_id=update.effective_user.id,
+                    order_id=order.id,
+                    trade_amount_usdc=str(amount),
                     platform=platform_enum,
-                    chain=quote.chain,
-                    market_id=market_id,
-                    market_title=market_title,
-                    outcome=outcome,
-                    token_id=quote.output_token,
-                    token_amount=token_amount,
-                    entry_price=float(quote.price_per_token) if quote.price_per_token else 0.0,
-                    event_id=market.event_id if market else None,  # Store slug for Limitless lookups
                 )
-            except Exception as pos_error:
-                logger.warning("Failed to create position record", error=str(pos_error))
 
-            fee_amount = fee_result.get("fee", "0")
-            fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
-            fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
+                # Create position record
+                try:
+                    market = await platform.get_market(market_id)
+                    market_title = market.title if market else market_id
+                    token_amount = str(int(actual_output * Decimal(10**6)))
 
-            text = f"""
+                    await create_position(
+                        user_id=user.id,
+                        platform=platform_enum,
+                        chain=quote.chain,
+                        market_id=market_id,
+                        market_title=market_title,
+                        outcome=outcome,
+                        token_id=quote.output_token,
+                        token_amount=token_amount,
+                        entry_price=float(quote.price_per_token) if quote.price_per_token else 0.0,
+                        event_id=market.event_id if market else None,  # Store slug for Limitless lookups
+                    )
+                except Exception as pos_error:
+                    logger.warning("Failed to create position record", error=str(pos_error))
+
+                fee_amount = fee_result.get("fee", "0")
+                fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
+                fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
+
+                text = f"""
 ✅ <b>Order Executed!</b>
 
 Bought {outcome.upper()} position
 Amount: {amount} {platform_info['collateral']}{fee_line}
-Received: ~{quote.expected_output:.2f} tokens
+Received: ~{actual_output:.2f} tokens
 
 <a href="{result.explorer_url}">View Transaction</a>
+"""
+            else:
+                # Order was placed in orderbook but not filled
+                text = f"""
+⏳ <b>Limit Order Placed</b>
+
+Your {outcome.upper()} order has been placed in the orderbook.
+Amount: {amount} {platform_info['collateral']}
+Price: {quote.price_per_token:.4f}
+
+The order will fill when a matching seller is found.
+Check your orders on the exchange to monitor status.
+
+Note: No position created until order fills.
 """
         else:
             # Update order as failed
