@@ -1538,11 +1538,11 @@ class PolymarketPlatform(BasePlatform):
 
             return TradeResult(
                 success=True,
-                tx_hash=tx_hash,
+                tx_hash=tx_hash,  # This is actually Polymarket order ID, not blockchain tx
                 input_amount=quote.input_amount,
                 output_amount=quote.expected_output,
                 error_message=None,
-                explorer_url=self.get_explorer_url(tx_hash) if tx_hash.startswith("0x") else None,
+                explorer_url=None,  # CLOB orders are off-chain, no blockchain tx to view
             )
             
         except ImportError:
