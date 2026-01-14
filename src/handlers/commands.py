@@ -1553,8 +1553,24 @@ Select which prediction market you want to trade on:
             await handle_buy_start(query, parts[1], parts[2], parts[3], update.effective_user.id, context)
 
         elif action == "confirm_buy":
-            # Format: confirm_buy:platform:market_id:outcome:amount
-            await handle_buy_confirm(query, parts[1], parts[2], parts[3], parts[4], update.effective_user.id)
+            # Read from user_data (stored when quote was shown)
+            pending = context.user_data.get("pending_confirm")
+            if pending:
+                context.user_data.pop("pending_confirm", None)
+                await handle_buy_confirm(
+                    query,
+                    pending["platform"],
+                    pending["market_id"],
+                    pending["outcome"],
+                    pending["amount"],
+                    update.effective_user.id
+                )
+            else:
+                await query.edit_message_text("❌ Order expired. Please try again.")
+
+        elif action == "cancel_buy":
+            context.user_data.pop("pending_confirm", None)
+            await query.edit_message_text("❌ Order cancelled.")
 
         elif action == "wallet":
             if parts[1] == "refresh":
@@ -4412,8 +4428,14 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         fee = calculate_fee(str(amount))
         fee_display = format_usdc(fee)
 
-        # Clear pending and show confirm button
+        # Clear pending_buy and store confirmation data
         context.user_data.pop("pending_buy", None)
+        context.user_data["pending_confirm"] = {
+            "platform": platform_value,
+            "market_id": market_id,
+            "outcome": outcome,
+            "amount": str(amount),
+        }
 
         text = f"""
 📋 <b>Order Quote</b>
@@ -4428,8 +4450,8 @@ Side: BUY {outcome.upper()}
 """
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Confirm Order", callback_data=f"confirm_buy:{platform_value}:{market_id}:{outcome}:{amount}")],
-            [InlineKeyboardButton("❌ Cancel", callback_data=f"market:{platform_value}:{market_id}")],
+            [InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_buy")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy")],
         ])
 
         await update.message.reply_text(
