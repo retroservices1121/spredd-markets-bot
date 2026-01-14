@@ -358,6 +358,35 @@ class LimitlessPlatform(BasePlatform):
     # Market Discovery
     # ===================
 
+    def _is_market_active(self, data: dict) -> bool:
+        """Determine if a market is still active (tradeable).
+
+        A market is NOT active if it's resolved, expired, or closed.
+        """
+        status = str(data.get("status", "")).lower()
+        winning_index = data.get("winning_index") or data.get("winningIndex")
+        is_expired = data.get("expired", False)
+        is_closed = data.get("closed", False)
+
+        # Market is resolved if winning_index exists
+        if winning_index is not None:
+            return False
+
+        # Market is not active if status indicates resolution/closure
+        if status in ("resolved", "expired", "settled", "closed"):
+            return False
+
+        # Market is not active if explicitly expired or closed
+        if is_expired or is_closed:
+            return False
+
+        # Otherwise check positive status indicators
+        if status in ("active", "funded", "live"):
+            return True
+
+        # Fallback to isActive field with default True
+        return data.get("isActive", True)
+
     def _parse_market(self, data: dict) -> Market:
         """Parse Limitless market data into Market object."""
         # Extract prices
@@ -448,7 +477,7 @@ class LimitlessPlatform(BasePlatform):
             no_price=no_price,
             volume_24h=volume if volume else None,
             liquidity=Decimal(str(liquidity)) if liquidity else None,
-            is_active=data.get("status") in ("active", "FUNDED", "ACTIVE") or data.get("isActive", True),
+            is_active=self._is_market_active(data),
             # Prefer expirationTimestamp (milliseconds) for accurate time, fallback to date strings
             close_time=data.get("expirationTimestamp") or data.get("expirationDate") or data.get("endDate"),
             yes_token=yes_token,
@@ -1333,34 +1362,70 @@ class LimitlessPlatform(BasePlatform):
     # ===================
 
     async def get_market_resolution(self, market_id: str) -> MarketResolution:
-        """Check if market has resolved."""
+        """Check if market has resolved.
+
+        Limitless API uses these fields for resolution:
+        - winning_index: 0 = YES won, 1 = NO won, null = not resolved
+        - expired: boolean indicating deadline passed
+        - closed: boolean indicating market closed
+        - status: may be "resolved", "RESOLVED", "expired", etc.
+        - payout_numerators: oracle payout data when resolved
+        """
         try:
             market = await self.get_market(market_id)
             if not market or not market.raw_data:
                 return MarketResolution(is_resolved=False, winning_outcome=None, resolution_time=None)
 
-            status = market.raw_data.get("status", "")
-            resolved = status == "resolved" or market.raw_data.get("resolved", False)
+            raw = market.raw_data
+
+            # Check winning_index first - this is the primary resolution indicator
+            winning_index = raw.get("winning_index") or raw.get("winningIndex")
+
+            # Also check other resolution indicators
+            status = str(raw.get("status", "")).lower()
+            is_expired = raw.get("expired", False)
+            is_closed = raw.get("closed", False)
+            has_payout = raw.get("payout_numerators") or raw.get("payoutNumerators")
+
+            # Market is resolved if winning_index is set OR status indicates resolved
+            resolved = (
+                winning_index is not None or
+                status in ("resolved", "expired", "settled") or
+                raw.get("resolved", False) or
+                (is_expired and has_payout)
+            )
 
             if not resolved:
                 return MarketResolution(is_resolved=False, winning_outcome=None, resolution_time=None)
 
-            resolution = market.raw_data.get("resolution") or market.raw_data.get("winningOutcome")
+            # Determine winning outcome
             winning = None
-            if resolution:
-                if resolution.lower() in ["yes", "0", "true"]:
-                    winning = "yes"
-                elif resolution.lower() in ["no", "1", "false"]:
-                    winning = "no"
+
+            # winning_index: 0 = YES, 1 = NO
+            if winning_index is not None:
+                winning = "yes" if winning_index == 0 else "no"
+            else:
+                # Fallback to other resolution fields
+                resolution = (
+                    raw.get("resolution") or
+                    raw.get("winningOutcome") or
+                    raw.get("winning_outcome")
+                )
+                if resolution is not None:
+                    resolution_str = str(resolution).lower()
+                    if resolution_str in ["yes", "0", "true"]:
+                        winning = "yes"
+                    elif resolution_str in ["no", "1", "false"]:
+                        winning = "no"
 
             return MarketResolution(
                 is_resolved=True,
                 winning_outcome=winning,
-                resolution_time=market.raw_data.get("resolutionTime"),
+                resolution_time=raw.get("resolutionTime") or raw.get("resolution_time"),
             )
 
         except Exception as e:
-            logger.error("Failed to check resolution", error=str(e))
+            logger.error("Failed to check resolution", error=str(e), market_id=market_id)
             return MarketResolution(is_resolved=False, winning_outcome=None, resolution_time=None)
 
     async def redeem_position(
