@@ -67,30 +67,31 @@ class Quote:
     platform: Platform
     chain: Chain
     market_id: str
-    
+
     # Trade details
     outcome: Outcome
     side: str  # "buy" or "sell"
-    
+    order_type: str = "market"  # "market" or "limit"
+
     # Input
     input_token: str
     input_amount: Decimal
-    
+
     # Output
     output_token: str
     expected_output: Decimal
-    
+
     # Pricing
     price_per_token: Decimal
     price_impact: Optional[Decimal]
-    
+
     # Fees
     platform_fee: Optional[Decimal]
     network_fee_estimate: Optional[Decimal]
-    
+
     # Expiry
     expires_at: Optional[str]
-    
+
     # Platform-specific quote data needed for execution
     quote_data: Optional[dict] = None
 
