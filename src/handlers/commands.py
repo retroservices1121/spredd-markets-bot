@@ -3895,6 +3895,7 @@ Please check your wallet balance and try again.
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 Back to Markets", callback_data="markets:refresh")],
             [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+            [InlineKeyboardButton("📊 View Positions", callback_data="positions:refresh")],
         ])
 
         await query.edit_message_text(
@@ -4759,6 +4760,7 @@ Please check your wallet balance and try again.
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 Back to Markets", callback_data="markets:refresh")],
             [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+            [InlineKeyboardButton("📊 View Positions", callback_data="positions:refresh")],
         ])
 
         await executing_msg.edit_text(
