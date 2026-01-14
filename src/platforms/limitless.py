@@ -1242,10 +1242,10 @@ class LimitlessPlatform(BasePlatform):
                 fee_rate_bps=fee_rate_bps,
             )
 
-            # Submit order - always use FOK (Fill or Kill) for immediate execution
+            # Submit order
             payload = {
                 "order": order,
-                "orderType": "FOK",
+                "orderType": "GTC",  # Good Till Cancelled
                 "marketSlug": market_slug,
             }
 
@@ -1309,19 +1309,19 @@ class LimitlessPlatform(BasePlatform):
             is_filled = order_status in ("MATCHED", "FILLED", "COMPLETE", "COMPLETED")
             is_in_orderbook = order_status == "LIVE" or (not is_filled and not filled_amount)
 
-            # Handle unfilled orders - FOK orders should fill immediately or fail
+            # If order went to orderbook unfilled, return with warning
             if is_in_orderbook:
-                logger.error(
-                    "Order failed to fill",
+                logger.warning(
+                    "Order placed in orderbook (not immediately filled)",
                     order_id=order_id,
                     status=order_status,
                 )
                 return TradeResult(
-                    success=False,
+                    success=True,
                     tx_hash=order_id,
                     input_amount=quote.input_amount,
-                    output_amount=Decimal("0"),
-                    error_message="Order could not be filled. Try increasing your amount or check market liquidity.",
+                    output_amount=Decimal("0"),  # Not filled yet
+                    error_message="Order placed in orderbook - waiting to be filled",
                     explorer_url=None,
                 )
 
