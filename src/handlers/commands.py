@@ -906,8 +906,10 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 market = await platform.get_market(pos.market_id, search_title=pos.market_title)
 
             if not market:
-                # Market not found - likely expired/delisted, skip from display
-                logger.info(f"Skipping position {pos.id} - market {pos.market_id} not found (likely expired)")
+                # Market not found - likely expired/delisted
+                # Auto-close these positions to clean up database and speed up future queries
+                await update_position(pos.id, status=PositionStatus.EXPIRED, token_amount="0")
+                logger.info(f"Auto-closed position {pos.id} - market {pos.market_id} not found (likely expired)")
                 continue
 
             # Check market resolution status
