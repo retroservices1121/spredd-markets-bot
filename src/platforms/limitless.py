@@ -1149,8 +1149,9 @@ class LimitlessPlatform(BasePlatform):
             recovered_address=Account._recover_hash(digest, signature=signed.signature),
         )
 
-        # Add price field (required by API) - price as decimal
-        order["price"] = float(price)
+        # Add price field only for GTC orders (FOK market orders don't have price)
+        if not is_market_order:
+            order["price"] = float(price)
 
         return order
 
