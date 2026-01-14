@@ -773,14 +773,14 @@ class LimitlessPlatform(BasePlatform):
         if side == "buy":
             base_price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
             # Add slippage to price (willing to pay more to fill)
-            price = min(base_price * (1 + MARKET_ORDER_SLIPPAGE), Decimal("0.99"))
+            price = min(base_price * (1 + MARKET_ORDER_SLIPPAGE), Decimal("0.99")).quantize(Decimal("0.001"))
             expected_output = amount / price
             input_token = USDC_BASE
             output_token = token_id or "outcome_token"
         else:
             base_price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
             # Reduce price (willing to accept less to fill)
-            price = max(base_price * (1 - MARKET_ORDER_SLIPPAGE), Decimal("0.01"))
+            price = max(base_price * (1 - MARKET_ORDER_SLIPPAGE), Decimal("0.01")).quantize(Decimal("0.001"))
             expected_output = amount * price
             input_token = token_id or "outcome_token"
             output_token = USDC_BASE
