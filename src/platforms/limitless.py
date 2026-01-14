@@ -767,21 +767,22 @@ class LimitlessPlatform(BasePlatform):
         # Get orderbook for pricing (pass slug for fallback lookup)
         orderbook = await self.get_orderbook(market_id, outcome, token_id=token_id, slug=market.event_id)
 
-        # Slippage for market orders (2% to ensure fill)
-        MARKET_ORDER_SLIPPAGE = Decimal("0.02")
-
+        # For market-like orders, use aggressive pricing to ensure immediate fill
+        # The actual fill price will be the best available in the orderbook
         if side == "buy":
-            base_price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
-            # Add slippage to price (willing to pay more to fill)
-            price = min(base_price * (1 + MARKET_ORDER_SLIPPAGE), Decimal("0.99")).quantize(Decimal("0.001"))
-            expected_output = amount / price
+            # Use maximum price (0.99) to ensure we match any ask
+            price = Decimal("0.99")
+            # Expected output based on realistic orderbook price
+            realistic_price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+            expected_output = amount / realistic_price
             input_token = USDC_BASE
             output_token = token_id or "outcome_token"
         else:
-            base_price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
-            # Reduce price (willing to accept less to fill)
-            price = max(base_price * (1 - MARKET_ORDER_SLIPPAGE), Decimal("0.01")).quantize(Decimal("0.001"))
-            expected_output = amount * price
+            # Use minimum price (0.01) to ensure we match any bid
+            price = Decimal("0.01")
+            # Expected output based on realistic orderbook price
+            realistic_price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+            expected_output = amount * realistic_price
             input_token = token_id or "outcome_token"
             output_token = USDC_BASE
 
