@@ -1,55 +1,25 @@
+#!/usr/bin/env python3
 """
-Run the Spredd Mini App API server.
+Run the Spredd Markets API locally.
 
-This runs independently from the Telegram bot.
-You can run both simultaneously:
-  - Bot: python -m src.main
-  - API: python run_api.py
+Usage:
+    python run_api.py
 
-Or use the combined runner (see run_all.py)
+Or with uvicorn directly:
+    uvicorn api.main:app --reload --port 8000
 """
-
-import asyncio
-import os
-import sys
-
 import uvicorn
 
-# Add src to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from src.api import create_api_app
-from src.db.database import init_db
-
-
-async def startup():
-    """Initialize database on startup."""
-    await init_db()
-
-
-def main():
-    """Run the API server."""
-    app = create_api_app()
-
-    # Add startup event
-    @app.on_event("startup")
-    async def on_startup():
-        await startup()
-
-    # Get port from environment or default
-    port = int(os.environ.get("API_PORT", 8000))
-    host = os.environ.get("API_HOST", "0.0.0.0")
-
-    print(f"Starting Spredd Mini App API on {host}:{port}")
-    print(f"API docs available at http://{host}:{port}/docs")
+if __name__ == "__main__":
+    print("🚀 Starting Spredd Markets API...")
+    print("📍 API will be available at http://localhost:8000")
+    print("📖 Docs at http://localhost:8000/docs")
+    print("")
 
     uvicorn.run(
-        app,
-        host=host,
-        port=port,
+        "api.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
         log_level="info",
     )
-
-
-if __name__ == "__main__":
-    main()
