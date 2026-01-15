@@ -188,7 +188,7 @@ class OpinionPlatform(BasePlatform):
     
     async def get_markets(
         self,
-        limit: int = 20,
+        limit: int = 100,
         offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
@@ -201,8 +201,9 @@ class OpinionPlatform(BasePlatform):
         """
         # Opinion API uses /openapi/market endpoint
         # sortBy: 5 = volume (descending)
+        # Note: API may have internal limits, but we request more to be safe
         params = {
-            "limit": limit,
+            "limit": min(limit, 200),  # Request up to 200
             "sortBy": 5,  # Sort by 24h volume
         }
         if active_only:
@@ -234,13 +235,13 @@ class OpinionPlatform(BasePlatform):
     async def search_markets(
         self,
         query: str,
-        limit: int = 10,
+        limit: int = 50,
     ) -> list[Market]:
         """Search markets by query."""
         # Opinion API uses keyword parameter for search
         params = {
             "keyword": query,
-            "limit": limit,
+            "limit": min(limit, 100),
             "status": "activated",
         }
 
@@ -295,11 +296,11 @@ class OpinionPlatform(BasePlatform):
         except PlatformError:
             return None
 
-    async def get_trending_markets(self, limit: int = 10) -> list[Market]:
+    async def get_trending_markets(self, limit: int = 50) -> list[Market]:
         """Get trending markets by volume."""
         # sortBy: 5 = 24h volume descending
         params = {
-            "limit": limit,
+            "limit": min(limit, 100),
             "sortBy": 5,
             "status": "activated",
         }
@@ -373,15 +374,15 @@ class OpinionPlatform(BasePlatform):
     async def get_markets_by_category(
         self,
         category: str,
-        limit: int = 20,
+        limit: int = 50,
     ) -> list[Market]:
         """Get markets filtered by category.
 
         Categories are inferred from market title keywords since Opinion API
         doesn't have a categories field.
         """
-        # Get all markets
-        all_markets = await self.get_markets(limit=100, offset=0, active_only=True)
+        # Get all active markets for filtering
+        all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
 
         # Get keywords for this category
         keywords = self.CATEGORY_KEYWORDS.get(category.lower(), [])
