@@ -49,30 +49,30 @@ async def lifespan(app: FastAPI):
     # Initialize all platforms
     try:
         await polymarket_platform.initialize()
-        print("✅ Polymarket initialized")
+        print("[OK] Polymarket initialized")
     except Exception as e:
-        print(f"⚠️ Polymarket init failed: {e}")
+        print(f"[WARN] Polymarket init failed: {e}")
 
     try:
         await kalshi_platform.initialize()
-        print("✅ Kalshi initialized")
+        print("[OK] Kalshi initialized")
     except Exception as e:
-        print(f"⚠️ Kalshi init failed: {e}")
+        print(f"[WARN] Kalshi init failed: {e}")
 
     try:
         await opinion_platform.initialize()
-        print("✅ Opinion Labs initialized")
+        print("[OK] Opinion Labs initialized")
     except Exception as e:
-        print(f"⚠️ Opinion Labs init failed: {e}")
+        print(f"[WARN] Opinion Labs init failed: {e}")
 
     try:
         await limitless_platform.initialize()
-        print("✅ Limitless initialized")
+        print("[OK] Limitless initialized")
     except Exception as e:
-        print(f"⚠️ Limitless init failed: {e}")
+        print(f"[WARN] Limitless init failed: {e}")
 
     platforms_initialized = True
-    print("🚀 API ready")
+    print("API ready")
 
     yield
 

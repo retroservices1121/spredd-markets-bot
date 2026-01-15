@@ -11,9 +11,9 @@ Or with uvicorn directly:
 import uvicorn
 
 if __name__ == "__main__":
-    print("🚀 Starting Spredd Markets API...")
-    print("📍 API will be available at http://localhost:8000")
-    print("📖 Docs at http://localhost:8000/docs")
+    print("Starting Spredd Markets API...")
+    print("API will be available at http://localhost:8000")
+    print("Docs at http://localhost:8000/docs")
     print("")
 
     uvicorn.run(
