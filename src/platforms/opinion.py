@@ -55,9 +55,10 @@ class OpinionPlatform(BasePlatform):
         headers = {
             "Content-Type": "application/json",
         }
+        # Opinion uses 'apikey' header, not Bearer token
         if settings.opinion_api_key:
-            headers["Authorization"] = f"Bearer {settings.opinion_api_key}"
-        
+            headers["apikey"] = settings.opinion_api_key
+
         self._http_client = httpx.AsyncClient(
             base_url=settings.opinion_api_url,
             timeout=30.0,
@@ -122,49 +123,59 @@ class OpinionPlatform(BasePlatform):
     
     def _parse_market(self, data: dict) -> Market:
         """Parse Opinion market data into Market object."""
-        # Opinion uses different field names
-        market_id = str(data.get("market_id") or data.get("marketId") or data.get("id"))
-        
-        # Extract pricing from tokens
+        # Opinion API uses camelCase field names
+        market_id = str(data.get("marketId") or data.get("market_id") or data.get("id"))
+
+        # Token IDs
+        yes_token = data.get("yesTokenId") or data.get("yes_token_id")
+        no_token = data.get("noTokenId") or data.get("no_token_id")
+
+        # Extract pricing from tokens array if present
         tokens = data.get("tokens", [])
-        yes_token = None
-        no_token = None
         yes_price = None
         no_price = None
-        
+
         for token in tokens:
             outcome = token.get("outcome", "").lower()
             if outcome == "yes" or token.get("index") == 0:
-                yes_token = token.get("token_id") or token.get("tokenId")
+                if not yes_token:
+                    yes_token = token.get("tokenId") or token.get("token_id")
                 yes_price = Decimal(str(token.get("price", 0.5)))
             elif outcome == "no" or token.get("index") == 1:
-                no_token = token.get("token_id") or token.get("tokenId")
+                if not no_token:
+                    no_token = token.get("tokenId") or token.get("token_id")
                 no_price = Decimal(str(token.get("price", 0.5)))
-        
-        # Fallback to top-level prices
+
+        # Fallback to top-level prices (default to 0.5 if not available)
         if yes_price is None:
-            yes_price = Decimal(str(data.get("yes_price") or data.get("yesPrice", 0.5)))
+            yes_price = Decimal(str(data.get("yesPrice") or data.get("yes_price") or "0.5"))
         if no_price is None:
-            no_price = Decimal(str(data.get("no_price") or data.get("noPrice", 0.5)))
-        
-        # Status
-        status = data.get("status", "").lower()
-        is_active = status in ("active", "activated", "open", "")
-        
+            no_price = Decimal(str(data.get("noPrice") or data.get("no_price") or "0.5"))
+
+        # Status - Opinion uses statusEnum or numeric status
+        status_enum = data.get("statusEnum", "").lower()
+        status_num = data.get("status")
+        is_active = status_enum in ("activated", "active", "open") or status_num == 2
+
+        # End time - Opinion uses cutoffAt (Unix timestamp)
+        close_time = data.get("cutoffAt") or data.get("close_time") or data.get("endTime")
+        if close_time and isinstance(close_time, (int, float)):
+            close_time = datetime.fromtimestamp(close_time).isoformat()
+
         return Market(
             platform=Platform.OPINION,
             chain=Chain.BSC,
             market_id=market_id,
-            event_id=data.get("event_id") or data.get("eventId"),
-            title=data.get("market_title") or data.get("title") or data.get("question", ""),
-            description=data.get("description") or data.get("subtitle"),
-            category=data.get("category") or data.get("topic_type"),
+            event_id=data.get("eventId") or data.get("event_id"),
+            title=data.get("marketTitle") or data.get("market_title") or data.get("title") or "",
+            description=data.get("rules") or data.get("description"),
+            category=data.get("category") or data.get("topicType"),
             yes_price=yes_price,
             no_price=no_price,
-            volume_24h=Decimal(str(data.get("volume_24h") or data.get("volume", 0))),
-            liquidity=Decimal(str(data.get("liquidity") or data.get("open_interest", 0))),
+            volume_24h=Decimal(str(data.get("volume24h") or data.get("volume_24h") or data.get("volume") or 0)),
+            liquidity=Decimal(str(data.get("liquidity") or data.get("openInterest") or 0)),
             is_active=is_active,
-            close_time=data.get("end_time") or data.get("close_time") or data.get("endTime"),
+            close_time=close_time,
             yes_token=yes_token,
             no_token=no_token,
             raw_data=data,
@@ -187,19 +198,21 @@ class OpinionPlatform(BasePlatform):
             offset: Number of markets to skip (for pagination)
             active_only: Only return active markets
         """
-        # Convert offset to page number (1-indexed)
-        page = (offset // limit) + 1 if limit > 0 else 1
-
+        # Opinion API uses /openapi/market endpoint
+        # sortBy: 5 = volume (descending)
         params = {
-            "page": page,
             "limit": limit,
+            "sortBy": 5,  # Sort by 24h volume
         }
         if active_only:
-            params["status"] = "ACTIVATED"
+            params["status"] = "activated"
+        if offset > 0:
+            params["offset"] = offset
 
         try:
-            data = await self._api_request("GET", "/api/v1/markets", params=params)
+            data = await self._api_request("GET", "/openapi/market", params=params)
 
+            # Response structure: {"errno": 0, "errmsg": "ok", "result": {"list": [...], "total": N}}
             markets_data = data.get("result", {}).get("list", [])
             if not markets_data and isinstance(data, list):
                 markets_data = data
@@ -223,36 +236,37 @@ class OpinionPlatform(BasePlatform):
         limit: int = 10,
     ) -> list[Market]:
         """Search markets by query."""
+        # Opinion API uses keyword parameter for search
         params = {
-            "q": query,
+            "keyword": query,
             "limit": limit,
-            "status": "ACTIVATED",
+            "status": "activated",
         }
-        
+
         try:
-            data = await self._api_request("GET", "/api/v1/markets/search", params=params)
-            
+            data = await self._api_request("GET", "/openapi/market", params=params)
+
             markets_data = data.get("result", {}).get("list", [])
             if not markets_data and isinstance(data, list):
                 markets_data = data
-            
+
             markets = []
             for item in markets_data:
                 try:
                     markets.append(self._parse_market(item))
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
-            
+
             return markets
-            
+
         except Exception as e:
-            # Fallback: get all markets and filter
+            # Fallback: get all markets and filter client-side
             logger.warning("Search failed, falling back to filter", error=str(e))
             all_markets = await self.get_markets(limit=100)
             query_lower = query.lower()
             return [
-                m for m in all_markets 
-                if query_lower in m.title.lower() or 
+                m for m in all_markets
+                if query_lower in m.title.lower() or
                    (m.description and query_lower in m.description.lower())
             ][:limit]
     
@@ -262,38 +276,49 @@ class OpinionPlatform(BasePlatform):
         Note: search_title is accepted for API compatibility but not used.
         """
         try:
-            data = await self._api_request("GET", f"/api/v1/markets/{market_id}")
-            
+            # Opinion uses /openapi/market/{market_id} or /openapi/market?marketId=X
+            data = await self._api_request("GET", f"/openapi/market/{market_id}")
+
             market_data = data.get("result", {}).get("data", data)
-            return self._parse_market(market_data)
-            
+            if isinstance(market_data, dict) and market_data:
+                return self._parse_market(market_data)
+
+            # Fallback: try with query param
+            data = await self._api_request("GET", "/openapi/market", params={"marketId": market_id})
+            market_data = data.get("result", {}).get("list", [])
+            if market_data:
+                return self._parse_market(market_data[0])
+
+            return None
+
         except PlatformError:
             return None
-    
+
     async def get_trending_markets(self, limit: int = 10) -> list[Market]:
         """Get trending markets by volume."""
+        # sortBy: 5 = 24h volume descending
         params = {
             "limit": limit,
-            "order_by": "volume",
-            "status": "ACTIVATED",
+            "sortBy": 5,
+            "status": "activated",
         }
-        
+
         try:
-            data = await self._api_request("GET", "/api/v1/markets", params=params)
-            
+            data = await self._api_request("GET", "/openapi/market", params=params)
+
             markets_data = data.get("result", {}).get("list", [])
             if not markets_data and isinstance(data, list):
                 markets_data = data
-            
+
             markets = []
             for item in markets_data:
                 try:
                     markets.append(self._parse_market(item))
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
-            
+
             return markets
-            
+
         except Exception as e:
             logger.error("Failed to get trending markets", error=str(e))
             return []
@@ -311,19 +336,20 @@ class OpinionPlatform(BasePlatform):
         market = await self.get_market(market_id)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.OPINION)
-        
+
         token_id = market.yes_token if outcome == Outcome.YES else market.no_token
         if not token_id:
             raise PlatformError(f"Token not found for {outcome.value}", Platform.OPINION)
-        
+
         try:
-            data = await self._api_request("GET", f"/api/v1/orderbook/{token_id}")
-            
+            # Opinion uses /openapi/orderbook/{token_id}
+            data = await self._api_request("GET", f"/openapi/orderbook/{token_id}")
+
             orderbook_data = data.get("result", data)
-            
+
             bids = []
             asks = []
-            
+
             for bid in orderbook_data.get("bids", []):
                 bids.append((
                     Decimal(str(bid.get("price", 0))),
@@ -347,7 +373,7 @@ class OpinionPlatform(BasePlatform):
                 bids=bids,
                 asks=asks,
             )
-            
+
         except Exception as e:
             logger.warning("Failed to get orderbook", error=str(e))
             # Return empty orderbook with market prices
@@ -427,71 +453,98 @@ class OpinionPlatform(BasePlatform):
         self,
         quote: Quote,
         private_key: Any,
+        order_type: str = "market",  # "market" or "limit"
+        limit_price: Optional[Decimal] = None,
     ) -> TradeResult:
         """
         Execute a trade on Opinion Labs.
         Uses the opinion-clob-sdk for order execution.
+
+        Args:
+            quote: Quote object with trade details
+            private_key: EVM LocalAccount with private key
+            order_type: "market" for market order, "limit" for limit order
+            limit_price: Price for limit orders (required if order_type="limit")
         """
         if not isinstance(private_key, LocalAccount):
             raise PlatformError(
                 "Invalid private key type, expected EVM LocalAccount",
                 Platform.OPINION,
             )
-        
+
         if not quote.quote_data:
             raise PlatformError("Quote data missing", Platform.OPINION)
-        
+
         try:
             # Import Opinion SDK
             from opinion_clob_sdk import Client
             from opinion_clob_sdk.chain.py_order_utils.model.order import PlaceOrderDataInput
             from opinion_clob_sdk.chain.py_order_utils.model.sides import OrderSide
-            from opinion_clob_sdk.chain.py_order_utils.model.order_type import MARKET_ORDER
-            
+            from opinion_clob_sdk.chain.py_order_utils.model.order_type import MARKET_ORDER, LIMIT_ORDER
+
             # Initialize SDK client
             client = Client(
                 host=settings.opinion_api_url,
                 apikey=settings.opinion_api_key or "",
-                chain_id=56,
+                chain_id=56,  # BNB Chain mainnet
                 rpc_url=settings.bsc_rpc_url,
                 private_key=private_key.key.hex(),
-                multi_sig_addr=settings.opinion_multi_sig_addr,
+                multi_sig_addr=settings.opinion_multi_sig_addr or "",
             )
-            
+
+            # Enable trading (required once per wallet)
+            try:
+                client.enable_trading()
+            except Exception as e:
+                logger.debug("enable_trading call", note=str(e))
+
             token_id = quote.quote_data["token_id"]
             market_id = int(quote.quote_data["market_id"])
-            
+
             # Create order
             order_side = OrderSide.BUY if quote.side == "buy" else OrderSide.SELL
-            
+            sdk_order_type = LIMIT_ORDER if order_type == "limit" else MARKET_ORDER
+
+            # Price: use limit_price for limit orders, "0" for market orders
+            price = str(limit_price) if order_type == "limit" and limit_price else "0"
+
             order = PlaceOrderDataInput(
                 marketId=market_id,
                 tokenId=token_id,
                 side=order_side,
-                orderType=MARKET_ORDER,
-                price="0",  # Market order ignores price
+                orderType=sdk_order_type,
+                price=price,
                 makerAmountInQuoteToken=float(quote.input_amount) if quote.side == "buy" else None,
                 makerAmountInBaseToken=float(quote.input_amount) if quote.side == "sell" else None,
             )
-            
+
+            logger.info(
+                "Placing Opinion order",
+                market_id=market_id,
+                token_id=token_id,
+                side=quote.side,
+                order_type=order_type,
+                amount=float(quote.input_amount),
+            )
+
             result = client.place_order(order, check_approval=True)
-            
+
             if result.errno != 0:
                 raise PlatformError(
                     f"Order failed: {result.errmsg}",
                     Platform.OPINION,
                 )
-            
-            order_id = result.result.data.order_id if result.result else None
+
+            order_id = result.result.data.order_id if result.result and result.result.data else None
             tx_hash = str(order_id) if order_id else None
-            
+
             logger.info(
                 "Trade executed",
                 platform="opinion",
                 market_id=quote.market_id,
                 order_id=order_id,
             )
-            
+
             return TradeResult(
                 success=True,
                 tx_hash=tx_hash,
@@ -500,7 +553,7 @@ class OpinionPlatform(BasePlatform):
                 error_message=None,
                 explorer_url=self.get_explorer_url(tx_hash) if tx_hash and tx_hash.startswith("0x") else None,
             )
-            
+
         except ImportError:
             logger.error("opinion-clob-sdk not installed")
             return TradeResult(
