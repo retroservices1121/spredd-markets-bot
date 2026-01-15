@@ -56,8 +56,9 @@ class OpinionPlatform(BasePlatform):
             "Content-Type": "application/json",
         }
         # Opinion uses 'apikey' header, not Bearer token
+        # Strip whitespace to handle env vars with trailing spaces
         if settings.opinion_api_key:
-            headers["apikey"] = settings.opinion_api_key
+            headers["apikey"] = settings.opinion_api_key.strip()
 
         self._http_client = httpx.AsyncClient(
             base_url=settings.opinion_api_url,
@@ -85,7 +86,7 @@ class OpinionPlatform(BasePlatform):
             
             return Client(
                 host=settings.opinion_api_url,
-                apikey=settings.opinion_api_key or "",
+                apikey=(settings.opinion_api_key or "").strip(),
                 chain_id=56,  # BNB Chain mainnet
                 rpc_url=settings.bsc_rpc_url,
                 private_key=private_key,
@@ -485,7 +486,7 @@ class OpinionPlatform(BasePlatform):
             # Initialize SDK client
             client = Client(
                 host=settings.opinion_api_url,
-                apikey=settings.opinion_api_key or "",
+                apikey=(settings.opinion_api_key or "").strip(),
                 chain_id=56,  # BNB Chain mainnet
                 rpc_url=settings.bsc_rpc_url,
                 private_key=private_key.key.hex(),
