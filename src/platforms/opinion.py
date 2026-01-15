@@ -323,7 +323,80 @@ class OpinionPlatform(BasePlatform):
         except Exception as e:
             logger.error("Failed to get trending markets", error=str(e))
             return []
-    
+
+    # ===================
+    # Categories
+    # ===================
+
+    # Keywords to match in market titles for each category
+    CATEGORY_KEYWORDS = {
+        "crypto": [
+            "bitcoin", "btc", "ethereum", "eth", "crypto", "solana", "sol",
+            "binance", "token", "defi", "nft", "blockchain", "altcoin",
+        ],
+        "politics": [
+            "trump", "biden", "election", "president", "congress", "senate",
+            "governor", "democrat", "republican", "vote", "political", "government",
+        ],
+        "sports": [
+            "nfl", "nba", "mlb", "nhl", "soccer", "football", "basketball",
+            "baseball", "championship", "super bowl", "playoffs", "world cup",
+        ],
+        "economics": [
+            "fed", "interest rate", "inflation", "gdp", "recession", "tariff",
+            "economy", "stock", "market", "s&p", "nasdaq", "dow",
+        ],
+        "world": [
+            "war", "ukraine", "russia", "china", "israel", "iran", "military",
+            "conflict", "peace", "nato", "un", "sanctions",
+        ],
+        "entertainment": [
+            "movie", "oscar", "grammy", "album", "netflix", "spotify",
+            "celebrity", "music", "film", "tv", "streaming",
+        ],
+    }
+
+    def get_available_categories(self) -> list[dict]:
+        """Get list of available market categories.
+
+        Returns list of dicts with 'id', 'label', and 'emoji' keys.
+        """
+        return [
+            {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
+            {"id": "politics", "label": "Politics", "emoji": "🏛️"},
+            {"id": "sports", "label": "Sports", "emoji": "🏆"},
+            {"id": "economics", "label": "Economics", "emoji": "📊"},
+            {"id": "world", "label": "World", "emoji": "🌍"},
+            {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
+        ]
+
+    async def get_markets_by_category(
+        self,
+        category: str,
+        limit: int = 20,
+    ) -> list[Market]:
+        """Get markets filtered by category.
+
+        Categories are inferred from market title keywords since Opinion API
+        doesn't have a categories field.
+        """
+        # Get all markets
+        all_markets = await self.get_markets(limit=100, offset=0, active_only=True)
+
+        # Get keywords for this category
+        keywords = self.CATEGORY_KEYWORDS.get(category.lower(), [])
+        if not keywords:
+            return []
+
+        # Filter markets by title keywords
+        filtered = []
+        for market in all_markets:
+            title_lower = market.title.lower()
+            if any(keyword in title_lower for keyword in keywords):
+                filtered.append(market)
+
+        return filtered[:limit]
+
     # ===================
     # Order Book
     # ===================
