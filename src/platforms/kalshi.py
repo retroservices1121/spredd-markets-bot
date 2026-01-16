@@ -170,6 +170,35 @@ class KalshiPlatform(BasePlatform):
     # USDC mint address on Solana
     USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
+    # Kalshi public API for market metadata (names, etc.)
+    KALSHI_PUBLIC_API = "https://api.elections.kalshi.com/trade-api/v2"
+
+    async def _fetch_kalshi_event_names(self, event_id: str) -> dict[str, str]:
+        """Fetch market names from Kalshi's public API.
+
+        Returns a dict mapping ticker -> outcome name (e.g., "KXNFLMVP-26-PMAH" -> "Patrick Mahomes")
+        """
+        names: dict[str, str] = {}
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self.KALSHI_PUBLIC_API}/events/{event_id}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for market in data.get("markets", []):
+                        ticker = market.get("ticker")
+                        # yes_sub_title contains the outcome name (e.g., "Patrick Mahomes")
+                        name = market.get("yes_sub_title") or market.get("subtitle")
+                        if ticker and name:
+                            names[ticker] = name
+                    logger.debug(
+                        "Fetched Kalshi event names",
+                        event_id=event_id,
+                        count=len(names),
+                    )
+        except Exception as e:
+            logger.warning("Failed to fetch Kalshi event names", event_id=event_id, error=str(e))
+        return names
+
     def _parse_market(self, data: dict) -> Market:
         """Parse DFlow market data into Market object."""
         # Extract pricing (API returns decimal strings like "0.3600")
@@ -277,57 +306,34 @@ class KalshiPlatform(BasePlatform):
             if m.event_id:
                 event_groups[m.event_id].append(m)
 
-        # Mark multi-outcome markets and extract outcome names
-        logged_sample = False
+        # Mark multi-outcome markets and fetch names from Kalshi public API
         for event_id, group in event_groups.items():
             if len(group) > 1:
-                # Log first multi-outcome market's raw data to debug field names
-                if not logged_sample and group:
-                    raw = group[0].raw_data or {}
-                    logger.info(
-                        "Multi-outcome market sample fields",
-                        event_id=event_id,
-                        count=len(group),
-                        ticker=group[0].market_id,
-                        title=group[0].title,
-                        subtitle=raw.get("subtitle"),
-                        yesSubtitle=raw.get("yesSubtitle"),
-                        noSubtitle=raw.get("noSubtitle"),
-                        description=group[0].description,
-                        available_keys=list(raw.keys())[:20],
-                    )
-                    logged_sample = True
+                # Fetch outcome names from Kalshi's public API
+                kalshi_names = await self._fetch_kalshi_event_names(event_id)
+
                 for m in group:
                     m.is_multi_outcome = True
                     m.related_market_count = len(group)
 
-                    # Try multiple sources for outcome name
-                    outcome_name = None
-                    raw = m.raw_data or {}
+                    # Try to get name from Kalshi API first (most reliable)
+                    outcome_name = kalshi_names.get(m.market_id)
 
-                    # 1. Check yesSubtitle (DFlow often puts outcome name here)
-                    if raw.get("yesSubtitle"):
-                        outcome_name = raw["yesSubtitle"]
-                    # 2. Check subtitle/description
-                    elif m.description and m.description != m.title:
-                        outcome_name = m.description
-                    # 3. Try to extract from ticker suffix (e.g., KXNFLMVP-26-MSTA -> MSTA)
-                    elif m.market_id and "-" in m.market_id:
+                    # Fallback: try DFlow fields
+                    if not outcome_name:
+                        raw = m.raw_data or {}
+                        if raw.get("yesSubtitle"):
+                            outcome_name = raw["yesSubtitle"]
+                        elif m.description and m.description != m.title:
+                            outcome_name = m.description
+
+                    # Last resort: ticker suffix
+                    if not outcome_name and m.market_id and "-" in m.market_id:
                         ticker_parts = m.market_id.split("-")
                         if len(ticker_parts) >= 3:
-                            # Last part is often the outcome identifier
                             outcome_name = ticker_parts[-1]
-                    # 4. Fall back to title parsing
-                    if not outcome_name:
-                        title = m.title
-                        if " - " in title:
-                            outcome_name = title.split(" - ")[-1]
-                        elif "?" in title:
-                            outcome_name = title.replace("Will ", "").replace(" win?", "").replace("?", "")
-                        else:
-                            outcome_name = title
 
-                    m.outcome_name = outcome_name[:40] if outcome_name else None
+                    m.outcome_name = outcome_name[:50] if outcome_name else None
 
         # Update cache
         self._markets_cache = markets
