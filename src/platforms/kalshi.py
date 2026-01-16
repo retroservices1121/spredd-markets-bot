@@ -336,7 +336,30 @@ class KalshiPlatform(BasePlatform):
         """Get a specific market by ticker.
 
         Note: search_title is accepted for API compatibility but not used.
+
+        First tries to find the market in the cache (which has multi-outcome info),
+        then falls back to fetching directly from the API.
         """
+        import time
+
+        # First, try to find in cache (which has multi-outcome detection)
+        now = time.time()
+        if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
+            for m in self._markets_cache:
+                if m.market_id == market_id:
+                    return m
+
+        # If not in cache or cache expired, populate cache first
+        try:
+            await self.get_markets(limit=200, offset=0, active_only=True)
+            # Now search cache again
+            for m in self._markets_cache:
+                if m.market_id == market_id:
+                    return m
+        except Exception:
+            pass
+
+        # Fallback: fetch directly from API (won't have multi-outcome info)
         try:
             data = await self._metadata_request("GET", f"/api/v1/market/{market_id}")
             return self._parse_market(data.get("market", data))
