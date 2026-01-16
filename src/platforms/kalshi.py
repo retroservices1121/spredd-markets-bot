@@ -278,21 +278,56 @@ class KalshiPlatform(BasePlatform):
                 event_groups[m.event_id].append(m)
 
         # Mark multi-outcome markets and extract outcome names
+        logged_sample = False
         for event_id, group in event_groups.items():
             if len(group) > 1:
+                # Log first multi-outcome market's raw data to debug field names
+                if not logged_sample and group:
+                    raw = group[0].raw_data or {}
+                    logger.info(
+                        "Multi-outcome market sample fields",
+                        event_id=event_id,
+                        count=len(group),
+                        ticker=group[0].market_id,
+                        title=group[0].title,
+                        subtitle=raw.get("subtitle"),
+                        yesSubtitle=raw.get("yesSubtitle"),
+                        noSubtitle=raw.get("noSubtitle"),
+                        description=group[0].description,
+                        available_keys=list(raw.keys())[:20],
+                    )
+                    logged_sample = True
                 for m in group:
                     m.is_multi_outcome = True
                     m.related_market_count = len(group)
-                    # Extract outcome name from title (usually the differentiating part)
-                    # Kalshi market titles are often like "Will X do Y?" - extract X
-                    title = m.title
-                    if " - " in title:
-                        m.outcome_name = title.split(" - ")[-1][:30]
-                    elif "?" in title:
-                        # Try to extract the subject from the question
-                        m.outcome_name = title.replace("Will ", "").replace(" win?", "").replace("?", "")[:30]
-                    else:
-                        m.outcome_name = title[:30]
+
+                    # Try multiple sources for outcome name
+                    outcome_name = None
+                    raw = m.raw_data or {}
+
+                    # 1. Check yesSubtitle (DFlow often puts outcome name here)
+                    if raw.get("yesSubtitle"):
+                        outcome_name = raw["yesSubtitle"]
+                    # 2. Check subtitle/description
+                    elif m.description and m.description != m.title:
+                        outcome_name = m.description
+                    # 3. Try to extract from ticker suffix (e.g., KXNFLMVP-26-MSTA -> MSTA)
+                    elif m.market_id and "-" in m.market_id:
+                        ticker_parts = m.market_id.split("-")
+                        if len(ticker_parts) >= 3:
+                            # Last part is often the outcome identifier
+                            outcome_name = ticker_parts[-1]
+                    # 4. Fall back to title parsing
+                    if not outcome_name:
+                        title = m.title
+                        if " - " in title:
+                            outcome_name = title.split(" - ")[-1]
+                        elif "?" in title:
+                            outcome_name = title.replace("Will ", "").replace(" win?", "").replace("?", "")
+                        else:
+                            outcome_name = title
+
+                    m.outcome_name = outcome_name[:40] if outcome_name else None
 
         # Update cache
         self._markets_cache = markets
