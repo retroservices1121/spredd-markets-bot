@@ -270,6 +270,30 @@ class KalshiPlatform(BasePlatform):
             except Exception as e:
                 logger.warning("Failed to parse market", error=str(e))
 
+        # Detect multi-outcome events by grouping by event_id
+        from collections import defaultdict
+        event_groups = defaultdict(list)
+        for m in markets:
+            if m.event_id:
+                event_groups[m.event_id].append(m)
+
+        # Mark multi-outcome markets and extract outcome names
+        for event_id, group in event_groups.items():
+            if len(group) > 1:
+                for m in group:
+                    m.is_multi_outcome = True
+                    m.related_market_count = len(group)
+                    # Extract outcome name from title (usually the differentiating part)
+                    # Kalshi market titles are often like "Will X do Y?" - extract X
+                    title = m.title
+                    if " - " in title:
+                        m.outcome_name = title.split(" - ")[-1][:30]
+                    elif "?" in title:
+                        # Try to extract the subject from the question
+                        m.outcome_name = title.replace("Will ", "").replace(" win?", "").replace("?", "")[:30]
+                    else:
+                        m.outcome_name = title[:30]
+
         # Update cache
         self._markets_cache = markets
         self._markets_cache_time = now
@@ -326,7 +350,7 @@ class KalshiPlatform(BasePlatform):
             "sort": "volume",
             "status": "active",
         }
-        
+
         data = await self._metadata_request("GET", "/api/v1/markets", params=params)
 
         markets = []
@@ -337,6 +361,33 @@ class KalshiPlatform(BasePlatform):
                 logger.warning("Failed to parse market", error=str(e))
 
         return markets
+
+    async def get_related_markets(self, event_id: str) -> list[Market]:
+        """Get all markets related to an event (for multi-outcome events).
+
+        Args:
+            event_id: The event ticker (Kalshi event_ticker)
+
+        Returns:
+            List of markets belonging to the same event, sorted by probability (highest first)
+        """
+        try:
+            # Use cached markets to find related ones
+            all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
+
+            # Filter by event_id
+            related = [m for m in all_markets if m.event_id == event_id]
+
+            if len(related) <= 1:
+                return []  # Not a multi-outcome event
+
+            # Sort by yes_price (probability) descending
+            related.sort(key=lambda m: m.yes_price or Decimal(0), reverse=True)
+            return related
+
+        except Exception as e:
+            logger.warning("Failed to get related markets", event_id=event_id, error=str(e))
+            return []
 
     # ===================
     # Categories (inferred from ticker patterns)

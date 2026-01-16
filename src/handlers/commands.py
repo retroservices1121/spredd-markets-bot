@@ -757,8 +757,14 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             yes_prob = format_probability(market.yes_price)
             exp = format_expiration(market.close_time)
 
-            text += f"<b>{i}.</b> {title}\n"
-            text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
+            # Indicator for multi-outcome markets
+            multi_indicator = f" [{market.related_market_count} options]" if market.is_multi_outcome else ""
+
+            text += f"<b>{i}.</b> {title}{multi_indicator}\n"
+            if market.is_multi_outcome and market.outcome_name:
+                text += f"   {escape_html(market.outcome_name)}: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
+            else:
+                text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
 
             buttons.append([
                 InlineKeyboardButton(
@@ -841,8 +847,14 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             yes_prob = format_probability(market.yes_price)
             exp = format_expiration(market.close_time)
 
-            text += f"<b>{i}.</b> {title}\n"
-            text += f"   YES: {yes_prob} • Exp: {exp}\n\n"
+            # Indicator for multi-outcome markets
+            multi_indicator = f" [{market.related_market_count} options]" if market.is_multi_outcome else ""
+
+            text += f"<b>{i}.</b> {title}{multi_indicator}\n"
+            if market.is_multi_outcome and market.outcome_name:
+                text += f"   {escape_html(market.outcome_name)}: {yes_prob} • Exp: {exp}\n\n"
+            else:
+                text += f"   YES: {yes_prob} • Exp: {exp}\n\n"
 
             buttons.append([
                 InlineKeyboardButton(
@@ -1876,18 +1888,69 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
     except ValueError:
         await query.edit_message_text("Invalid platform.")
         return
-    
+
     platform = get_platform(platform_enum)
     market = await platform.get_market(market_id)
-    
+
     if not market:
         await query.edit_message_text("Market not found.")
         return
-    
+
     info = PLATFORM_INFO[platform_enum]
-    
     expiration_text = format_expiration(market.close_time)
-    text = f"""
+
+    # Check if this is a multi-outcome event
+    related_markets = []
+    if market.is_multi_outcome and market.event_id:
+        related_markets = await platform.get_related_markets(market.event_id)
+
+    if related_markets and len(related_markets) > 1:
+        # Multi-outcome event - show all options
+        text = f"""
+{info['emoji']} <b>{escape_html(market.title)}</b>
+
+📊 <b>Options ({len(related_markets)} choices)</b>
+"""
+        # Add each outcome with its probability
+        for i, rm in enumerate(related_markets, 1):
+            prob = format_probability(rm.yes_price)
+            name = rm.outcome_name or rm.title
+            # Truncate long names
+            if len(name) > 30:
+                name = name[:27] + "..."
+            text += f"{i}. {escape_html(name)}: {prob}\n"
+
+        text += f"""
+📈 <b>Stats</b>
+Volume (24h): {format_usd(market.volume_24h)}
+Liquidity: {format_usd(market.liquidity)}
+Status: {"🟢 Active" if market.is_active else "🔴 Closed"}
+Expires: {expiration_text}
+"""
+        if market.description:
+            text += f"\n📝 {escape_html(market.description[:150])}..."
+
+        # Create buy buttons for each outcome (up to 8 to fit Telegram limits)
+        buttons = []
+        for rm in related_markets[:8]:
+            name = rm.outcome_name or rm.title
+            if len(name) > 20:
+                name = name[:17] + "..."
+            prob = format_probability(rm.yes_price)
+            # Truncate market_id to fit callback_data limit (64 bytes)
+            short_id = rm.market_id[:40]
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{escape_html(name)} ({prob})",
+                    callback_data=f"buy:{platform_value}:{short_id}:yes"
+                )
+            ])
+
+        buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
+        keyboard = InlineKeyboardMarkup(buttons)
+    else:
+        # Binary market - show YES/NO
+        text = f"""
 {info['emoji']} <b>{escape_html(market.title)}</b>
 
 📊 <b>Current Prices</b>
@@ -1900,27 +1963,26 @@ Liquidity: {format_usd(market.liquidity)}
 Status: {"🟢 Active" if market.is_active else "🔴 Closed"}
 Expires: {expiration_text}
 """
-    
-    if market.description:
-        text += f"\n📝 {escape_html(market.description[:200])}..."
-    
-    # Buy buttons
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                f"🟢 Buy YES ({format_probability(market.yes_price)})",
-                callback_data=f"buy:{platform_value}:{market_id}:yes"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                f"🔴 Buy NO ({format_probability(market.no_price)})",
-                callback_data=f"buy:{platform_value}:{market_id}:no"
-            ),
-        ],
-        [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
-    ])
-    
+        if market.description:
+            text += f"\n📝 {escape_html(market.description[:200])}..."
+
+        # Buy buttons for binary market
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    f"🟢 Buy YES ({format_probability(market.yes_price)})",
+                    callback_data=f"buy:{platform_value}:{market_id}:yes"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    f"🔴 Buy NO ({format_probability(market.no_price)})",
+                    callback_data=f"buy:{platform_value}:{market_id}:no"
+                ),
+            ],
+            [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
+        ])
+
     await query.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
@@ -3103,8 +3165,14 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
             yes_prob = format_probability(market.yes_price)
             exp = format_expiration(market.close_time)
 
-            text += f"<b>{display_num}.</b> {title}\n"
-            text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
+            # Indicator for multi-outcome markets
+            multi_indicator = f" [{market.related_market_count} options]" if market.is_multi_outcome else ""
+
+            text += f"<b>{display_num}.</b> {title}{multi_indicator}\n"
+            if market.is_multi_outcome and market.outcome_name:
+                text += f"   {escape_html(market.outcome_name)}: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
+            else:
+                text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
 
             buttons.append([
                 InlineKeyboardButton(
@@ -3242,8 +3310,14 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
             yes_prob = format_probability(market.yes_price)
             exp = format_expiration(market.close_time)
 
-            text += f"<b>{i}.</b> {title}\n"
-            text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
+            # Indicator for multi-outcome markets
+            multi_indicator = f" [{market.related_market_count} options]" if market.is_multi_outcome else ""
+
+            text += f"<b>{i}.</b> {title}{multi_indicator}\n"
+            if market.is_multi_outcome and market.outcome_name:
+                text += f"   {escape_html(market.outcome_name)}: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
+            else:
+                text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
 
             buttons.append([
                 InlineKeyboardButton(

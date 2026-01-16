@@ -613,15 +613,22 @@ class PolymarketPlatform(BasePlatform):
             data: Event data from Gamma API
             market_data: Optional specific market within an event (for multi-market events)
         """
+        # Check for multi-market events
+        event_markets = data.get("markets", [])
+        is_multi_outcome = len(event_markets) > 1
+
         # If market_data is provided, use it (for multi-market events)
         # Otherwise, try to get the first/only market from the event
         if market_data:
             m = market_data
-            title = m.get("question") or m.get("groupItemTitle") or data.get("title", "")
+            # For multi-outcome events, use event title as main title
+            title = data.get("title") or m.get("question") or ""
+            # Extract the short outcome name from groupItemTitle
+            outcome_name = m.get("groupItemTitle") or m.get("question", "").replace("Will ", "").rstrip("?")
         else:
-            markets = data.get("markets", [])
-            m = markets[0] if markets else data
+            m = event_markets[0] if event_markets else data
             title = data.get("title") or m.get("question", "")
+            outcome_name = None
 
         # Extract prices from outcomePrices - may be JSON string or list
         outcome_prices_raw = m.get("outcomePrices", [])
@@ -689,6 +696,9 @@ class PolymarketPlatform(BasePlatform):
             yes_token=yes_token,
             no_token=no_token,
             raw_data={"event": data, "market": m},
+            outcome_name=outcome_name,
+            is_multi_outcome=is_multi_outcome,
+            related_market_count=len(event_markets) if is_multi_outcome else 0,
         )
     
     # ===================
@@ -900,6 +910,52 @@ class PolymarketPlatform(BasePlatform):
     async def get_trending_markets(self, limit: int = 20) -> list[Market]:
         """Get trending markets by volume."""
         return await self.get_markets(limit=limit, active_only=True)
+
+    async def get_related_markets(self, event_id: str) -> list[Market]:
+        """Get all markets related to an event (for multi-outcome events).
+
+        Args:
+            event_id: The event identifier (Polymarket event ID)
+
+        Returns:
+            List of markets belonging to the same event, sorted by probability (highest first)
+        """
+        try:
+            # Fetch the specific event by ID
+            data = await self._gamma_request("GET", f"/events/{event_id}")
+
+            if not data:
+                # Try searching through events if direct fetch fails
+                events = await self._gamma_request("GET", "/events", params={
+                    "limit": 200,
+                    "active": "true",
+                    "closed": "false",
+                })
+                for event in events if isinstance(events, list) else []:
+                    if str(event.get("id")) == event_id or event.get("slug") == event_id:
+                        data = event
+                        break
+
+            if not data:
+                return []
+
+            # Parse all markets from the event
+            event_markets = data.get("markets", [])
+            if len(event_markets) <= 1:
+                return []  # Not a multi-outcome event
+
+            markets = []
+            for market_data in event_markets:
+                if market_data.get("active", True) and not market_data.get("closed", False):
+                    markets.append(self._parse_market(data, market_data))
+
+            # Sort by yes_price (probability) descending
+            markets.sort(key=lambda m: m.yes_price or Decimal(0), reverse=True)
+            return markets
+
+        except Exception as e:
+            logger.warning("Failed to get related markets", event_id=event_id, error=str(e))
+            return []
 
     async def get_markets_by_category(
         self,

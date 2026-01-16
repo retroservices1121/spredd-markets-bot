@@ -17,34 +17,39 @@ class Market:
     """Unified market representation across platforms."""
     platform: Platform
     chain: Chain
-    
+
     # Identification
     market_id: str
     event_id: Optional[str]
-    
+
     # Display info
     title: str
     description: Optional[str]
     category: Optional[str]
-    
+
     # Pricing (0-1 scale, representing probability)
     yes_price: Optional[Decimal]
     no_price: Optional[Decimal]
-    
+
     # Liquidity
     volume_24h: Optional[Decimal]
     liquidity: Optional[Decimal]
-    
+
     # Status
     is_active: bool
     close_time: Optional[str]
-    
+
     # Token addresses for trading
     yes_token: Optional[str]
     no_token: Optional[str]
-    
+
     # Platform-specific data
     raw_data: Optional[dict] = None
+
+    # Multi-outcome support
+    outcome_name: Optional[str] = None  # Short name for this outcome (e.g., "Trump", "Biden")
+    is_multi_outcome: bool = False  # True if part of a multi-outcome event
+    related_market_count: int = 0  # Number of related markets in the same event
     
     @property
     def yes_probability(self) -> Optional[float]:
@@ -259,7 +264,19 @@ class BasePlatform(ABC):
     async def get_trending_markets(self, limit: int = 10) -> list[Market]:
         """Get trending/popular markets."""
         pass
-    
+
+    async def get_related_markets(self, event_id: str) -> list[Market]:
+        """Get all markets related to an event (for multi-outcome events).
+
+        Args:
+            event_id: The event identifier
+
+        Returns:
+            List of markets belonging to the same event, sorted by probability
+        """
+        # Default implementation - platforms should override for multi-outcome support
+        return []
+
     # ===================
     # Order Book
     # ===================
