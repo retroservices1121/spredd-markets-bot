@@ -1451,6 +1451,35 @@ async def get_top_traders(
         return result
 
 
+async def get_user_trading_volume(user_id: str) -> Decimal:
+    """
+    Get total trading volume for a user.
+
+    Args:
+        user_id: The user's ID
+
+    Returns:
+        Total trading volume in USD
+    """
+    async with get_session() as session:
+        volume_query = select(Order).where(
+            Order.user_id == user_id,
+            Order.status == OrderStatus.CONFIRMED,
+        )
+
+        volume_result = await session.execute(volume_query)
+        orders = list(volume_result.scalars().all())
+
+        total_volume = Decimal("0")
+        for order in orders:
+            try:
+                total_volume += Decimal(order.input_amount) / Decimal("1000000")
+            except:
+                pass
+
+        return total_volume
+
+
 async def get_top_referrers(
     since: Optional[datetime] = None,
     limit: int = 10,

@@ -1756,6 +1756,11 @@ Select which prediction market you want to trade on:
                 pending_platform = parts[2] if len(parts) > 2 else None
                 await show_geo_verification(query, update.effective_user.id, pending_platform)
 
+        elif action == "ai_research":
+            # AI Research for market
+            # Format: ai_research:platform:market_id
+            await handle_ai_research(query, parts[1], parts[2], update.effective_user.id)
+
         elif action == "analytics":
             # Admin analytics dashboard
             # Formats: analytics:period, analytics:platforms, analytics:plat:period, analytics:traders, analytics:top:period, analytics:referrers, analytics:ref:period
@@ -2043,6 +2048,12 @@ Expires: {expiration_text}
                 )
             ])
 
+        buttons.append([
+            InlineKeyboardButton(
+                "🤖 AI Research",
+                callback_data=f"ai_research:{platform_value}:{market_id}"
+            ),
+        ])
         buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
         keyboard = InlineKeyboardMarkup(buttons)
     else:
@@ -2081,6 +2092,12 @@ Expires: {expiration_text}
                     callback_data=f"buy:{platform_value}:{market_id}:no"
                 ),
             ],
+            [
+                InlineKeyboardButton(
+                    "🤖 AI Research",
+                    callback_data=f"ai_research:{platform_value}:{market_id}"
+                ),
+            ],
             [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
         ])
 
@@ -2088,6 +2105,126 @@ Expires: {expiration_text}
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
+    )
+
+
+async def handle_ai_research(query, platform_value: str, market_id: str, telegram_id: int) -> None:
+    """Handle AI research request for a market."""
+    from src.services.factsai import factsai_service
+    from src.db.database import get_user_trading_volume, get_wallet
+
+    await query.answer()
+
+    # Check if FactsAI is configured
+    if not factsai_service.is_configured:
+        await query.edit_message_text(
+            "❌ AI Research is not available at this time.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Get user and check access
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Get user's trading volume
+    trading_volume = await get_user_trading_volume(user.id)
+
+    # Get user's EVM wallet for token balance check
+    wallet = await get_wallet(user.id, ChainFamily.EVM)
+    wallet_address = wallet.public_key if wallet else None
+
+    # Check access
+    has_access, access_message = await factsai_service.check_access(
+        wallet_address=wallet_address,
+        trading_volume=trading_volume,
+    )
+
+    if not has_access:
+        await query.edit_message_text(
+            f"🔒 <b>Premium Feature</b>\n\n{access_message}\n\n"
+            f"<i>Get $SPRDD tokens or increase your trading volume to unlock AI Research!</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
+            ]),
+        )
+        return
+
+    # Show loading message
+    await query.edit_message_text(
+        "🤖 <b>AI Research</b>\n\n"
+        "⏳ Analyzing market and gathering insights...\n\n"
+        "<i>This may take a few seconds...</i>",
+        parse_mode=ParseMode.HTML,
+    )
+
+    # Get market info
+    try:
+        platform_enum = Platform(platform_value)
+    except ValueError:
+        await query.edit_message_text("Invalid platform.")
+        return
+
+    platform = get_platform(platform_enum)
+    market = await platform.get_market(market_id)
+
+    if not market:
+        await query.edit_message_text("Market not found.")
+        return
+
+    # Call FactsAI
+    result = await factsai_service.research_market(
+        market_title=market.title,
+        market_description=market.resolution_criteria or "",
+    )
+
+    if result.get("error"):
+        await query.edit_message_text(
+            f"❌ <b>Research Failed</b>\n\n{result['error']}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Retry", callback_data=f"ai_research:{platform_value}:{market_id}")],
+                [InlineKeyboardButton("« Back to Market", callback_data=f"market:{platform_value}:{market_id}")],
+            ]),
+        )
+        return
+
+    # Format the response
+    answer = result.get("answer", "No analysis available.")
+    citations = result.get("citations", [])
+
+    # Truncate answer if too long for Telegram
+    if len(answer) > 3500:
+        answer = answer[:3500] + "..."
+
+    text = f"""🤖 <b>AI Research: {escape_html(market.title[:50])}...</b>
+
+📊 <b>Analysis</b>
+{escape_html(answer)}
+"""
+
+    # Add citations if available
+    if citations:
+        text += "\n\n📚 <b>Sources</b>\n"
+        for i, cite in enumerate(citations[:5], 1):
+            title = cite.get("title", "Source")[:40]
+            url = cite.get("url", "")
+            if url:
+                text += f"{i}. <a href=\"{url}\">{escape_html(title)}</a>\n"
+            else:
+                text += f"{i}. {escape_html(title)}\n"
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Refresh Analysis", callback_data=f"ai_research:{platform_value}:{market_id}")],
+            [InlineKeyboardButton("« Back to Market", callback_data=f"market:{platform_value}:{market_id}")],
+        ]),
     )
 
 

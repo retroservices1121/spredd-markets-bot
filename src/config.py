@@ -204,6 +204,32 @@ class Settings(BaseSettings):
     )
 
     # ===================
+    # FactsAI Configuration (AI Research Partner)
+    # ===================
+    factsai_api_key: Optional[str] = Field(
+        default=None,
+        description="FactsAI API key for AI research features"
+    )
+    factsai_api_url: str = Field(
+        default="https://deep-research-api.degodmode3-33.workers.dev",
+        description="FactsAI API base URL"
+    )
+
+    # $SPRDD Token Configuration for premium features
+    sprdd_token_address: str = Field(
+        default="0xAC0E8f7e3dF7239f5D0f0AE55cf85962d007Cc5F",
+        description="$SPRDD token contract address on Base"
+    )
+    sprdd_min_balance: int = Field(
+        default=5000000,
+        description="Minimum $SPRDD tokens required for AI research access (5 million)"
+    )
+    ai_research_min_volume: int = Field(
+        default=1000,
+        description="Minimum trading volume ($) for AI research access"
+    )
+
+    # ===================
     # Rate Limiting
     # ===================
     max_requests_per_minute: int = Field(default=30, ge=1, le=100)
