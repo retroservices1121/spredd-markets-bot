@@ -49,6 +49,7 @@ from src.handlers.commands import (
     # Admin commands
     partner_command,
     delete_position_command,
+    verify_position_command,
     handle_group_add,
     handle_group_message,
 )
@@ -122,6 +123,7 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("groupinfo", groupinfo_command))
     application.add_handler(CommandHandler("partner", partner_command))
     application.add_handler(CommandHandler("delete_position", delete_position_command))
+    application.add_handler(CommandHandler("verify_position", verify_position_command))
 
     # Callback query handler for inline buttons
     application.add_handler(CallbackQueryHandler(callback_handler))

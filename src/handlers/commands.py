@@ -52,7 +52,7 @@ from src.utils.geo_blocking import (
     needs_reverification,
     get_country_name,
 )
-from src.db.models import Platform, ChainFamily, PositionStatus, OrderStatus
+from src.db.models import Platform, ChainFamily, Chain, PositionStatus, OrderStatus
 from src.platforms import (
     platform_registry,
     get_platform,
@@ -4019,7 +4019,20 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
                 try:
                     market = await platform.get_market(market_id)
                     market_title = market.title if market else market_id
-                    token_amount = str(int(actual_output * Decimal(10**6)))
+
+                    # For Limitless, the exchange fee (3%) is deducted from output tokens
+                    # Adjust stored amount to reflect actual received tokens
+                    adjusted_output = actual_output
+                    if platform_enum == Platform.LIMITLESS:
+                        # fee_rate_bps=300 means 3% fee deducted from output
+                        adjusted_output = actual_output * Decimal("0.97")
+                        logger.info(
+                            "Adjusted token amount for Limitless fee",
+                            raw_output=str(actual_output),
+                            adjusted_output=str(adjusted_output),
+                        )
+
+                    token_amount = str(int(adjusted_output * Decimal(10**6)))
 
                     await create_position(
                         user_id=user.id,
@@ -4250,7 +4263,7 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
         from src.db.models import Outcome as OutcomeEnum
         outcome_enum = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
 
-        # For Kalshi/Solana, get actual on-chain token balance
+        # Get actual on-chain token balance before selling
         actual_balance = None
         if position.platform == Platform.KALSHI:
             # Get the market to find the token mint
@@ -4261,11 +4274,26 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
                     wallet_pubkey = str(private_key.pubkey())
                     actual_balance = await platform.get_token_balance(wallet_pubkey, token_mint)
                     logger.info(
-                        "Checked actual token balance",
+                        "Checked actual token balance (Kalshi)",
                         stored=str(Decimal(position.token_amount) / Decimal(10**6)),
                         actual=str(actual_balance),
                         market_id=position.market_id,
                     )
+        elif position.platform == Platform.LIMITLESS:
+            # Check on-chain CTF token balance for Limitless
+            wallet = await wallet_service.get_wallet(user.id, Chain.BASE)
+            if wallet and hasattr(platform, 'get_token_balance'):
+                wallet_address = wallet["address"]
+                # Use event_id (slug) for market lookup, fall back to market_id
+                lookup_id = position.event_id if position.event_id else position.market_id
+                actual_balance = await platform.get_token_balance(wallet_address, lookup_id, outcome_enum)
+                logger.info(
+                    "Checked actual token balance (Limitless)",
+                    stored=str(Decimal(position.token_amount) / Decimal(10**6)),
+                    actual=str(actual_balance) if actual_balance else "None",
+                    market_id=position.market_id,
+                    lookup_id=lookup_id,
+                )
 
         # Use actual balance if available, otherwise fall back to stored
         stored_amount = Decimal(position.token_amount) / Decimal(10**6)
@@ -4914,7 +4942,18 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
                 try:
                     market = await platform.get_market(market_id)
                     market_title = market.title if market else market_id
-                    token_amount = str(int(actual_output * Decimal(10**6)))
+
+                    # For Limitless, the exchange fee (3%) is deducted from output tokens
+                    adjusted_output = actual_output
+                    if platform_enum == Platform.LIMITLESS:
+                        adjusted_output = actual_output * Decimal("0.97")
+                        logger.info(
+                            "Adjusted token amount for Limitless fee",
+                            raw_output=str(actual_output),
+                            adjusted_output=str(adjusted_output),
+                        )
+
+                    token_amount = str(int(adjusted_output * Decimal(10**6)))
 
                     await create_position(
                         user_id=user.id,
@@ -5771,6 +5810,125 @@ Trading works without PIN.
 def is_admin(telegram_id: int) -> bool:
     """Check if user is an admin."""
     return telegram_id in settings.admin_ids
+
+
+async def verify_position_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to verify on-chain token balance for a position.
+    Usage:
+        /verify_position <position_id> - Check if tokens exist on-chain
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    args = context.args or []
+
+    if not args:
+        await update.message.reply_text(
+            "📊 <b>Verify Position</b>\n\n"
+            "Checks if tokens actually exist on-chain for a position.\n\n"
+            "Usage:\n"
+            "<code>/verify_position &lt;position_id&gt;</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    position_id = args[0]
+    position = await get_position_by_id(position_id)
+
+    if not position:
+        await update.message.reply_text(f"❌ Position {position_id} not found.")
+        return
+
+    # Only works for Limitless positions (they have CTF tokens)
+    if position.platform != Platform.LIMITLESS:
+        await update.message.reply_text(
+            f"❌ Verify only works for Limitless positions.\n"
+            f"This position is on {position.platform.value}."
+        )
+        return
+
+    await update.message.reply_text("⏳ Checking on-chain token balance...")
+
+    try:
+        # Get the user's wallet address
+        user = await get_user_by_telegram_id(telegram_id)
+        if not user:
+            # Try to get wallet from position owner
+            from src.db.database import get_user_by_id
+            user = await get_user_by_id(position.user_id)
+
+        if not user:
+            await update.message.reply_text("❌ Could not find user for this position.")
+            return
+
+        from src.services.wallet import wallet_service
+        wallet = await wallet_service.get_wallet(user.id, Chain.BASE)
+        if not wallet:
+            await update.message.reply_text("❌ No Base wallet found for this user.")
+            return
+
+        wallet_address = wallet["address"]
+
+        # Get platform and check balance
+        platform = platform_registry.get(Platform.LIMITLESS)
+
+        # Use the market ID (could be numeric or slug)
+        market_id = position.market_id
+
+        # Check balance for the outcome
+        outcome = Outcome.YES if position.outcome.lower() == "yes" else Outcome.NO
+        balance = await platform.get_token_balance(wallet_address, market_id, outcome)
+
+        if balance is None:
+            await update.message.reply_text(
+                f"❌ <b>Could not check balance</b>\n\n"
+                f"Position ID: <code>{position_id}</code>\n"
+                f"Market: {escape_html(position.market_title or position.market_id)[:40]}\n"
+                f"Wallet: <code>{wallet_address}</code>\n\n"
+                f"Error: Failed to query on-chain balance",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Compare with recorded position
+        recorded_amount = position.token_amount
+        is_match = abs(balance - recorded_amount) < Decimal("0.001")
+        is_phantom = balance == 0 and recorded_amount > 0
+
+        if is_phantom:
+            status = "🚨 PHANTOM POSITION"
+            recommendation = "This position has no tokens on-chain. Consider deleting it with /delete_position"
+        elif is_match:
+            status = "✅ VERIFIED"
+            recommendation = "On-chain balance matches recorded amount."
+        else:
+            status = "⚠️ MISMATCH"
+            recommendation = f"On-chain has {balance:.6f}, database has {recorded_amount:.6f}"
+
+        await update.message.reply_text(
+            f"📊 <b>Position Verification</b>\n\n"
+            f"Status: {status}\n\n"
+            f"Position ID: <code>{position_id}</code>\n"
+            f"Market: {escape_html(position.market_title or position.market_id)[:40]}\n"
+            f"Outcome: {position.outcome.upper()}\n"
+            f"Wallet: <code>{wallet_address}</code>\n\n"
+            f"📈 <b>Amounts:</b>\n"
+            f"• Database: {recorded_amount:.6f} tokens\n"
+            f"• On-chain: {balance:.6f} tokens\n\n"
+            f"💡 {recommendation}",
+            parse_mode=ParseMode.HTML,
+        )
+
+    except Exception as e:
+        logger.error("Failed to verify position", error=str(e), position_id=position_id)
+        await update.message.reply_text(f"❌ Error verifying position: {str(e)}")
 
 
 async def delete_position_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

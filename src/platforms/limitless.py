@@ -1835,6 +1835,98 @@ class LimitlessPlatform(BasePlatform):
         """Get Base block explorer URL."""
         return f"https://basescan.org/tx/{tx_hash}"
 
+    async def get_token_balance(
+        self,
+        wallet_address: str,
+        market_id: str,
+        outcome: Outcome,
+    ) -> Optional[Decimal]:
+        """
+        Check on-chain balance of CTF tokens for a specific market/outcome.
+        Returns token balance in decimal format, or None if unable to check.
+        """
+        import asyncio
+
+        try:
+            # Get venue to find exchange address
+            venue = await self._get_venue(market_id)
+            exchange_address = venue.get("exchange", venue.get("address"))
+            if not exchange_address:
+                logger.error("Exchange address not found", market_id=market_id)
+                return None
+
+            # Get CTF contract address
+            ctf_address = await self._get_ctf_address(exchange_address)
+            if not ctf_address:
+                logger.error("CTF address not found", exchange=exchange_address)
+                return None
+
+            # Get market to find token ID
+            market = await self.get_market(market_id)
+            if not market:
+                logger.error("Market not found", market_id=market_id)
+                return None
+
+            # Get the token ID for the outcome
+            token_id = market.yes_token if outcome == Outcome.YES else market.no_token
+            if not token_id:
+                logger.error("Token ID not found", market_id=market_id, outcome=outcome.value)
+                return None
+
+            # Convert token ID to int
+            token_id_int = int(token_id)
+
+            logger.debug(
+                "Checking CTF token balance",
+                wallet=wallet_address,
+                ctf=ctf_address,
+                token_id=token_id_int,
+                outcome=outcome.value,
+            )
+
+            def sync_check_balance():
+                if not self._sync_web3:
+                    return None
+
+                ctf_contract = self._sync_web3.eth.contract(
+                    address=Web3.to_checksum_address(ctf_address),
+                    abi=CTF_REDEEM_ABI,  # Has balanceOf(address, uint256)
+                )
+
+                balance = ctf_contract.functions.balanceOf(
+                    Web3.to_checksum_address(wallet_address),
+                    token_id_int,
+                ).call()
+
+                return balance
+
+            balance_raw = await asyncio.to_thread(sync_check_balance)
+            if balance_raw is None:
+                return None
+
+            # Convert from 6 decimals (USDC precision for CTF tokens)
+            balance = Decimal(balance_raw) / Decimal(10 ** 6)
+
+            logger.info(
+                "CTF token balance checked",
+                wallet=wallet_address,
+                market_id=market_id,
+                outcome=outcome.value,
+                balance=str(balance),
+                balance_raw=balance_raw,
+            )
+
+            return balance
+
+        except Exception as e:
+            logger.error(
+                "Failed to check token balance",
+                error=str(e),
+                wallet=wallet_address,
+                market_id=market_id,
+            )
+            return None
+
 
 # Singleton instance
 limitless_platform = LimitlessPlatform()
