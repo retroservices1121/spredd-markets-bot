@@ -1527,8 +1527,11 @@ class PolymarketPlatform(BasePlatform):
                 # Cache the approval
                 self._ctf_approval_cache.setdefault(wallet, set()).add(contract_name)
 
-        # Run blocking checks in thread pool
-        await asyncio.to_thread(sync_check_and_approve)
+        # Run blocking checks in thread pool with RPC fallback
+        def sync_check_with_fallback():
+            return self._call_with_rpc_fallback(sync_check_and_approve)
+
+        await asyncio.to_thread(sync_check_with_fallback)
 
     def _get_clob_client(self, private_key: Any) -> Any:
         """Get or create a cached CLOB client for the given private key.
