@@ -82,6 +82,8 @@ def friendly_error(error: str) -> str:
     error_lower = error.lower()
 
     # Common error patterns and their friendly versions
+    if "insufficient" in error_lower and "conditional token" in error_lower:
+        return "You don't have the tokens needed to sell. The position may not have been purchased successfully."
     if "insufficient" in error_lower and ("balance" in error_lower or "fund" in error_lower):
         return "You don't have enough funds in your wallet. Please deposit more and try again."
     if "allowance" in error_lower:
