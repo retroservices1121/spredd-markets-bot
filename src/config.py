@@ -53,8 +53,12 @@ class Settings(BaseSettings):
     # EVM Configuration (shared for Polygon, BSC & L2s)
     # ===================
     polygon_rpc_url: str = Field(
-        default="https://polygon-rpc.com",
+        default="https://rpc.ankr.com/polygon",
         description="Polygon RPC endpoint"
+    )
+    polygon_rpc_fallbacks: str = Field(
+        default="https://polygon.llamarpc.com,https://polygon-mainnet.public.blastapi.io,https://polygon-rpc.com",
+        description="Comma-separated fallback Polygon RPC endpoints"
     )
     bsc_rpc_url: str = Field(
         default="https://bsc-dataseed.binance.org",
@@ -99,7 +103,15 @@ class Settings(BaseSettings):
         if not self.bridge_source_chains:
             return []
         return [c.strip().lower() for c in self.bridge_source_chains.split(",") if c.strip()]
-    
+
+    @property
+    def polygon_rpc_urls(self) -> list[str]:
+        """Get all Polygon RPC URLs (primary + fallbacks)."""
+        urls = [self.polygon_rpc_url]
+        if self.polygon_rpc_fallbacks:
+            urls.extend([u.strip() for u in self.polygon_rpc_fallbacks.split(",") if u.strip()])
+        return urls
+
     # ===================
     # Kalshi / DFlow Configuration
     # ===================

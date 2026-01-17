@@ -193,6 +193,9 @@ class PolymarketPlatform(BasePlatform):
         self._approval_cache: dict[str, set[str]] = {}  # wallet_address -> set of approved contracts
         self._ctf_approval_cache: dict[str, set[str]] = {}  # wallet_address -> set of approved CTF contracts
         self._clob_client_cache: dict[str, Any] = {}  # wallet_address -> ClobClient
+        # RPC fallback tracking
+        self._current_rpc_index = 0
+        self._rpc_urls = settings.polygon_rpc_urls
 
     async def initialize(self) -> None:
         """Initialize Polymarket API clients."""
@@ -232,6 +235,48 @@ class PolymarketPlatform(BasePlatform):
         if self._gamma_client:
             await self._gamma_client.aclose()
 
+    def _switch_to_next_rpc(self) -> bool:
+        """Switch to the next RPC in the fallback list. Returns True if switched, False if no more RPCs."""
+        if len(self._rpc_urls) <= 1:
+            return False
+
+        self._current_rpc_index = (self._current_rpc_index + 1) % len(self._rpc_urls)
+        new_rpc = self._rpc_urls[self._current_rpc_index]
+
+        logger.info("Switching Polygon RPC", new_rpc=new_rpc[:50], index=self._current_rpc_index)
+
+        # Reinitialize Web3 with new RPC
+        self._web3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(new_rpc))
+        self._sync_web3 = Web3(Web3.HTTPProvider(new_rpc))
+
+        return True
+
+    def _call_with_rpc_fallback(self, func, *args, **kwargs):
+        """Execute a sync Web3 call with RPC fallback on rate limit errors."""
+        attempts = len(self._rpc_urls)
+        last_error = None
+
+        for attempt in range(attempts):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check for rate limit errors
+                if "rate limit" in error_str or "too many requests" in error_str or "-32090" in str(e):
+                    logger.warning(
+                        "RPC rate limited, trying fallback",
+                        rpc=self._rpc_urls[self._current_rpc_index][:50],
+                        error=str(e)[:100]
+                    )
+                    last_error = e
+                    if not self._switch_to_next_rpc():
+                        raise  # No more fallbacks
+                else:
+                    raise  # Not a rate limit error
+
+        # All RPCs failed
+        raise last_error or Exception("All RPCs exhausted")
+
     # ===================
     # USDC Balance & Auto-Swap
     # ===================
@@ -248,20 +293,27 @@ class PolymarketPlatform(BasePlatform):
 
         wallet = Web3.to_checksum_address(wallet_address)
 
-        # Get native USDC balance
-        native_contract = self._sync_web3.eth.contract(
-            address=Web3.to_checksum_address(USDC_NATIVE),
-            abi=ERC20_TRANSFER_ABI
-        )
-        native_balance_raw = native_contract.functions.balanceOf(wallet).call()
-        native_balance = Decimal(native_balance_raw) / Decimal(10 ** 6)
+        def fetch_balances():
+            # Get native USDC balance
+            native_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(USDC_NATIVE),
+                abi=ERC20_TRANSFER_ABI
+            )
+            native_balance_raw = native_contract.functions.balanceOf(wallet).call()
 
-        # Get USDC.e balance
-        bridged_contract = self._sync_web3.eth.contract(
-            address=Web3.to_checksum_address(USDC_BRIDGED),
-            abi=ERC20_TRANSFER_ABI
-        )
-        bridged_balance_raw = bridged_contract.functions.balanceOf(wallet).call()
+            # Get USDC.e balance
+            bridged_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(USDC_BRIDGED),
+                abi=ERC20_TRANSFER_ABI
+            )
+            bridged_balance_raw = bridged_contract.functions.balanceOf(wallet).call()
+
+            return native_balance_raw, bridged_balance_raw
+
+        # Use RPC fallback for rate limit resilience
+        native_balance_raw, bridged_balance_raw = self._call_with_rpc_fallback(fetch_balances)
+
+        native_balance = Decimal(native_balance_raw) / Decimal(10 ** 6)
         bridged_balance = Decimal(bridged_balance_raw) / Decimal(10 ** 6)
 
         return native_balance, bridged_balance
