@@ -4281,9 +4281,9 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
                     )
         elif position.platform == Platform.LIMITLESS:
             # Check on-chain CTF token balance for Limitless
-            wallet = await wallet_service.get_wallet(user.id, Chain.BASE)
-            if wallet and hasattr(platform, 'get_token_balance'):
-                wallet_address = wallet["address"]
+            # private_key is an EVM LocalAccount with .address attribute
+            if hasattr(private_key, 'address') and hasattr(platform, 'get_token_balance'):
+                wallet_address = private_key.address
                 # Use event_id (slug) for market lookup, fall back to market_id
                 lookup_id = position.event_id if position.event_id else position.market_id
                 actual_balance = await platform.get_token_balance(wallet_address, lookup_id, outcome_enum)
@@ -5868,13 +5868,14 @@ async def verify_position_command(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text("❌ Could not find user for this position.")
             return
 
-        from src.services.wallet import wallet_service
-        wallet = await wallet_service.get_wallet(user.id, Chain.BASE)
+        # Get wallet from database
+        from src.db.database import get_wallet
+        wallet = await get_wallet(user.id, ChainFamily.EVM)
         if not wallet:
-            await update.message.reply_text("❌ No Base wallet found for this user.")
+            await update.message.reply_text("❌ No EVM wallet found for this user.")
             return
 
-        wallet_address = wallet["address"]
+        wallet_address = wallet.public_key
 
         # Get platform and check balance
         platform = platform_registry.get(Platform.LIMITLESS)
