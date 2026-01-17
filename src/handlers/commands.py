@@ -1758,7 +1758,7 @@ Select which prediction market you want to trade on:
 
         elif action == "analytics":
             # Admin analytics dashboard
-            # Formats: analytics:period, analytics:platforms, analytics:plat:period, analytics:traders, analytics:top:period
+            # Formats: analytics:period, analytics:platforms, analytics:plat:period, analytics:traders, analytics:top:period, analytics:referrers, analytics:ref:period
             if parts[1] == "platforms":
                 await handle_analytics_platforms(query, update.effective_user.id)
             elif parts[1] == "plat":
@@ -1771,6 +1771,12 @@ Select which prediction market you want to trade on:
                 # Top traders with time period
                 period = parts[2] if len(parts) > 2 else "all"
                 await handle_analytics_traders(query, update.effective_user.id, period)
+            elif parts[1] == "referrers":
+                await handle_analytics_referrers(query, update.effective_user.id)
+            elif parts[1] == "ref":
+                # Top referrers with time period
+                period = parts[2] if len(parts) > 2 else "all"
+                await handle_analytics_referrers(query, update.effective_user.id, period)
             else:
                 # Time period selection (daily, weekly, monthly, all)
                 await handle_analytics_callback(query, parts[1], update.effective_user.id)
@@ -6602,7 +6608,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ===================
 
 from datetime import timedelta
-from src.db.database import get_analytics_stats, get_analytics_by_platform, get_top_traders
+from src.db.database import get_analytics_stats, get_analytics_by_platform, get_top_traders, get_top_referrers
 
 PLATFORM_NAMES = {
     "kalshi": "Kalshi",
@@ -6638,7 +6644,10 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         ],
         [
             InlineKeyboardButton("🔍 By Platform", callback_data="analytics:platforms"),
+        ],
+        [
             InlineKeyboardButton("🏆 Top Traders", callback_data="analytics:traders"),
+            InlineKeyboardButton("👥 Top Referrers", callback_data="analytics:referrers"),
         ],
     ])
 
@@ -6707,7 +6716,10 @@ async def handle_analytics_callback(query, period: str, telegram_id: int) -> Non
             ],
             [
                 InlineKeyboardButton("🔍 By Platform", callback_data="analytics:platforms"),
+            ],
+            [
                 InlineKeyboardButton("🏆 Top Traders", callback_data="analytics:traders"),
+                InlineKeyboardButton("👥 Top Referrers", callback_data="analytics:referrers"),
             ],
         ])
 
@@ -6802,6 +6814,89 @@ async def handle_analytics_traders(query, telegram_id: int, period: str = "all")
         logger.error("Analytics traders query failed", error=str(e))
         await query.edit_message_text(
             f"❌ Failed to load top traders: {str(e)[:100]}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_analytics_referrers(query, telegram_id: int, period: str = "all") -> None:
+    """Handle top referrers view."""
+    from datetime import datetime, timezone
+
+    if not is_admin(telegram_id):
+        await query.answer("❌ Admin only", show_alert=True)
+        return
+
+    await query.answer()
+
+    now = datetime.now(timezone.utc)
+    since = None
+    period_name = "All Time"
+
+    if period == "daily":
+        since = now - timedelta(days=1)
+        period_name = "Last 24 Hours"
+    elif period == "weekly":
+        since = now - timedelta(weeks=1)
+        period_name = "Last 7 Days"
+    elif period == "monthly":
+        since = now - timedelta(days=30)
+        period_name = "Last 30 Days"
+
+    try:
+        referrers = await get_top_referrers(since=since, limit=10)
+
+        text = f"👥 <b>Top Referrers - {period_name}</b>\n\n"
+
+        if not referrers:
+            text += "<i>No referral earnings in this period</i>"
+        else:
+            for i, ref in enumerate(referrers, 1):
+                # Display name: username or first_name or telegram_id
+                name = ref["username"] or ref["first_name"] or f"User {ref['telegram_id']}"
+                if ref["username"]:
+                    name = f"@{name}"
+
+                medal = ""
+                if i == 1:
+                    medal = "🥇 "
+                elif i == 2:
+                    medal = "🥈 "
+                elif i == 3:
+                    medal = "🥉 "
+
+                text += f"""{medal}<b>{i}. {name}</b>
+├ Earned: <code>${ref['total_earned']:,.2f}</code>
+├ Direct Referrals: <code>{ref['direct_referrals']:,}</code>
+├ Tier 1: <code>${ref['tier1_earned']:,.2f}</code>
+├ Tier 2: <code>${ref['tier2_earned']:,.2f}</code>
+└ Tier 3: <code>${ref['tier3_earned']:,.2f}</code>
+
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📅 Today", callback_data="analytics:ref:daily"),
+                InlineKeyboardButton("📆 Week", callback_data="analytics:ref:weekly"),
+            ],
+            [
+                InlineKeyboardButton("📊 Month", callback_data="analytics:ref:monthly"),
+                InlineKeyboardButton("📈 All", callback_data="analytics:ref:all"),
+            ],
+            [
+                InlineKeyboardButton("⬅️ Back", callback_data="analytics:all"),
+            ],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Analytics referrers query failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Failed to load top referrers: {str(e)[:100]}",
             parse_mode=ParseMode.HTML,
         )
 

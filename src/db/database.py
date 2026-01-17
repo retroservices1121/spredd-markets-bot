@@ -1449,3 +1449,94 @@ async def get_top_traders(
                 })
 
         return result
+
+
+async def get_top_referrers(
+    since: Optional[datetime] = None,
+    limit: int = 10,
+) -> list:
+    """
+    Get top referrers by earnings.
+
+    Args:
+        since: Optional start date for filtering
+        limit: Number of top referrers to return
+
+    Returns:
+        List of dicts with user info and referral stats
+    """
+    async with get_session() as session:
+        # Get all referral transactions
+        referral_query = select(FeeTransaction).where(
+            FeeTransaction.tx_type.in_(["referral_tier1", "referral_tier2", "referral_tier3"])
+        )
+        if since:
+            referral_query = referral_query.where(FeeTransaction.created_at >= since)
+
+        referral_result = await session.execute(referral_query)
+        transactions = list(referral_result.scalars().all())
+
+        # Aggregate by user (the recipient of referral earnings)
+        user_stats = {}
+        for tx in transactions:
+            user_id = tx.user_id
+            if user_id not in user_stats:
+                user_stats[user_id] = {
+                    "user_id": user_id,
+                    "total_earned": Decimal("0"),
+                    "tier1_earned": Decimal("0"),
+                    "tier2_earned": Decimal("0"),
+                    "tier3_earned": Decimal("0"),
+                    "referral_count": 0,
+                }
+            try:
+                amount = Decimal(tx.amount_usdc)
+                user_stats[user_id]["total_earned"] += amount
+                user_stats[user_id]["referral_count"] += 1
+
+                if tx.tx_type == "referral_tier1":
+                    user_stats[user_id]["tier1_earned"] += amount
+                elif tx.tx_type == "referral_tier2":
+                    user_stats[user_id]["tier2_earned"] += amount
+                elif tx.tx_type == "referral_tier3":
+                    user_stats[user_id]["tier3_earned"] += amount
+            except:
+                pass
+
+        # Sort by total earned and take top N
+        sorted_referrers = sorted(
+            user_stats.values(),
+            key=lambda x: x["total_earned"],
+            reverse=True
+        )[:limit]
+
+        # Get user details and referral counts
+        result = []
+        for referrer in sorted_referrers:
+            user_result = await session.execute(
+                select(User).where(User.id == referrer["user_id"])
+            )
+            user = user_result.scalar_one_or_none()
+
+            # Count direct referrals (users who have this user as referred_by_id)
+            direct_count_result = await session.execute(
+                select(sql_func.count(User.id)).where(User.referred_by_id == referrer["user_id"])
+            )
+            direct_referrals = direct_count_result.scalar() or 0
+
+            if user:
+                result.append({
+                    "user_id": user.id,
+                    "telegram_id": user.telegram_id,
+                    "username": user.username,
+                    "first_name": user.first_name,
+                    "referral_code": user.referral_code,
+                    "total_earned": referrer["total_earned"],
+                    "tier1_earned": referrer["tier1_earned"],
+                    "tier2_earned": referrer["tier2_earned"],
+                    "tier3_earned": referrer["tier3_earned"],
+                    "payout_count": referrer["referral_count"],
+                    "direct_referrals": direct_referrals,
+                })
+
+        return result
