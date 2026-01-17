@@ -407,6 +407,15 @@ async def delete_position_by_token_id(token_id: str) -> int:
         return result.rowcount
 
 
+async def delete_position_by_id(position_id: str) -> bool:
+    """Delete a position by its ID. Returns True if deleted."""
+    async with get_session() as session:
+        result = await session.execute(
+            delete(Position).where(Position.id == position_id)
+        )
+        return result.rowcount > 0
+
+
 # ===================
 # Order Operations
 # ===================

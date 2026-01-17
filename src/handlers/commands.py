@@ -5773,6 +5773,89 @@ def is_admin(telegram_id: int) -> bool:
     return telegram_id in settings.admin_ids
 
 
+async def delete_position_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to delete positions.
+    Usage:
+        /delete_position <position_id> - Delete a specific position
+        /delete_position list <telegram_id> - List positions for a user
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    args = context.args or []
+
+    if not args:
+        await update.message.reply_text(
+            "📊 <b>Delete Position</b>\n\n"
+            "Usage:\n"
+            "<code>/delete_position &lt;position_id&gt;</code> - Delete by ID\n"
+            "<code>/delete_position list &lt;telegram_id&gt;</code> - List user's positions",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    action = args[0].lower()
+
+    if action == "list" and len(args) >= 2:
+        # List positions for a user
+        try:
+            target_telegram_id = int(args[1])
+            target_user = await get_user_by_telegram_id(target_telegram_id)
+            if not target_user:
+                await update.message.reply_text(f"❌ User with Telegram ID {target_telegram_id} not found.")
+                return
+
+            positions = await get_user_positions(target_user.id)
+            if not positions:
+                await update.message.reply_text(f"No positions found for user {target_telegram_id}.")
+                return
+
+            text = f"📊 <b>Positions for {target_telegram_id}</b>\n\n"
+            for pos in positions:
+                text += f"ID: <code>{pos.id}</code>\n"
+                text += f"   {pos.platform.value} - {pos.outcome.upper()}\n"
+                text += f"   Market: {escape_html(pos.market_title or pos.market_id)[:40]}...\n"
+                text += f"   Amount: {pos.token_amount} @ {pos.entry_price}\n\n"
+
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        except ValueError:
+            await update.message.reply_text("❌ Invalid Telegram ID. Must be a number.")
+        return
+
+    # Delete by position ID
+    position_id = args[0]
+
+    # First get the position to show what we're deleting
+    position = await get_position_by_id(position_id)
+    if not position:
+        await update.message.reply_text(f"❌ Position {position_id} not found.")
+        return
+
+    # Import and call delete function
+    from src.db.database import delete_position_by_id
+    deleted = await delete_position_by_id(position_id)
+
+    if deleted:
+        await update.message.reply_text(
+            f"✅ <b>Position Deleted</b>\n\n"
+            f"ID: <code>{position_id}</code>\n"
+            f"Platform: {position.platform.value}\n"
+            f"Market: {escape_html(position.market_title or position.market_id)[:50]}\n"
+            f"Outcome: {position.outcome.upper()}\n"
+            f"Amount: {position.token_amount}",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.message.reply_text(f"❌ Failed to delete position {position_id}.")
+
+
 async def partner_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Admin command to manage partners.
