@@ -465,11 +465,17 @@ class LimitlessPlatform(BasePlatform):
         if data.get("category"):
             category = data["category"].get("name") if isinstance(data["category"], dict) else data["category"]
 
+        # NegRisk grouping for multi-outcome markets
+        # negRiskMarketId groups related markets together
+        neg_risk_id = data.get("negRiskMarketId") or data.get("neg_risk_market_id")
+        # Use negRiskMarketId as event_id for grouping, fall back to slug
+        event_id = neg_risk_id or slug
+
         return Market(
             platform=Platform.LIMITLESS,
             chain=Chain.BASE,
             market_id=market_id,
-            event_id=slug,  # Store slug in event_id for reference
+            event_id=event_id,  # Use negRiskMarketId for grouping multi-outcome markets
             title=data.get("title") or data.get("question", ""),
             description=data.get("description"),
             category=category,
@@ -517,6 +523,43 @@ class LimitlessPlatform(BasePlatform):
                     markets.append(market)
             except Exception as e:
                 logger.warning("Failed to parse market", error=str(e))
+
+        # Detect multi-outcome markets (NegRisk groups)
+        # Group markets by event_id (which is negRiskMarketId for grouped markets)
+        from collections import defaultdict
+        event_groups = defaultdict(list)
+        for m in markets:
+            if m.event_id:
+                event_groups[m.event_id].append(m)
+
+        # Mark multi-outcome markets and extract outcome names
+        for event_id, group in event_groups.items():
+            if len(group) > 1:
+                for m in group:
+                    m.is_multi_outcome = True
+                    m.related_market_count = len(group)
+
+                    # Extract outcome name from title
+                    # Common patterns: "Will X win?", "X to win", "Team X", etc.
+                    title = m.title
+                    outcome_name = None
+
+                    # Try to extract meaningful name from title
+                    if " - " in title:
+                        outcome_name = title.split(" - ")[-1]
+                    elif ":" in title:
+                        outcome_name = title.split(":")[-1].strip()
+                    elif title.lower().startswith("will "):
+                        # "Will X win?" -> "X"
+                        outcome_name = title[5:].replace(" win?", "").replace("?", "").strip()
+                    elif " to " in title.lower():
+                        # "X to win Y" -> "X"
+                        outcome_name = title.split(" to ")[0].strip()
+                    else:
+                        # Use full title as outcome name
+                        outcome_name = title
+
+                    m.outcome_name = outcome_name[:50] if outcome_name else None
 
         return markets[:limit]
 
@@ -566,6 +609,8 @@ class LimitlessPlatform(BasePlatform):
         Args:
             market_id: The market ID (numeric) or slug
             search_title: Optional title to search for if direct lookup fails
+
+        Note: Prefers fetching via get_markets() to get multi-outcome info.
         """
         # If market_id is numeric, try to get slug from cache first
         lookup_id = market_id
@@ -575,13 +620,25 @@ class LimitlessPlatform(BasePlatform):
                 lookup_id = cached_slug
                 logger.debug("Using cached slug for market", numeric_id=market_id, slug=cached_slug)
 
-        # Try direct lookup by slug
+        # First, try to find via get_markets (has multi-outcome detection)
         market = None
         try:
-            data = await self._api_request("GET", f"/markets/{lookup_id}")
-            market = self._parse_market(data)
+            # Fetch markets to find one with matching ID (has multi-outcome info)
+            all_markets = await self.get_markets(limit=200, offset=0, active_only=False)
+            for m in all_markets:
+                if m.market_id == market_id or m.event_id == market_id or m.event_id == lookup_id:
+                    market = m
+                    break
         except Exception as e:
-            logger.debug("Direct market lookup failed", market_id=lookup_id, error=str(e))
+            logger.debug("Market list search failed", error=str(e))
+
+        # Fallback: try direct lookup by slug (won't have multi-outcome info)
+        if not market:
+            try:
+                data = await self._api_request("GET", f"/markets/{lookup_id}")
+                market = self._parse_market(data)
+            except Exception as e:
+                logger.debug("Direct market lookup failed", market_id=lookup_id, error=str(e))
 
         # If we haven't tried the original market_id yet (different from lookup_id), try it
         if not market and lookup_id != market_id:
@@ -590,25 +647,6 @@ class LimitlessPlatform(BasePlatform):
                 market = self._parse_market(data)
             except Exception as e:
                 logger.debug("Fallback market lookup failed", market_id=market_id, error=str(e))
-
-        # Try searching - for numeric IDs, fetch markets with pagination to find the match
-        if not market and market_id.isdigit():
-            # Fetch markets page by page to find one with matching ID (API limit is 25)
-            try:
-                max_pages = 8  # Search up to 200 markets (8 * 25)
-                for page_num in range(max_pages):
-                    page_markets = await self.get_markets(limit=25, offset=page_num * 25)
-                    if not page_markets:
-                        break  # No more markets
-                    for m in page_markets:
-                        if m.market_id == market_id:
-                            market = m
-                            break
-                    if market:
-                        break
-                    logger.debug(f"Market {market_id} not found on page {page_num + 1}, checking next...")
-            except Exception as e:
-                logger.debug("Market list search failed", error=str(e))
 
         # Last resort: search by title if provided
         if not market and search_title and market_id.isdigit():
@@ -635,7 +673,7 @@ class LimitlessPlatform(BasePlatform):
                         yes_price = (orderbook.best_ask + orderbook.best_bid) / 2
                     else:
                         yes_price = orderbook.best_ask or orderbook.best_bid
-                    # Update market prices
+                    # Update market prices (preserve multi-outcome fields)
                     market = Market(
                         platform=market.platform,
                         chain=market.chain,
@@ -653,6 +691,9 @@ class LimitlessPlatform(BasePlatform):
                         yes_token=market.yes_token,
                         no_token=market.no_token,
                         raw_data=market.raw_data,
+                        outcome_name=market.outcome_name,
+                        is_multi_outcome=market.is_multi_outcome,
+                        related_market_count=market.related_market_count,
                     )
             except Exception as e:
                 logger.debug("Failed to fetch orderbook for prices", error=str(e))
@@ -662,6 +703,29 @@ class LimitlessPlatform(BasePlatform):
     async def get_trending_markets(self, limit: int = 20) -> list[Market]:
         """Get trending markets by volume."""
         return await self.get_markets(limit=limit, active_only=True)
+
+    async def get_related_markets(self, event_id: str) -> list[Market]:
+        """Get all markets related to an event (for multi-outcome NegRisk markets).
+
+        Args:
+            event_id: The negRiskMarketId or event identifier
+
+        Returns:
+            List of markets belonging to the same NegRisk group, sorted by probability
+        """
+        if not event_id:
+            return []
+
+        # Fetch markets and filter by event_id
+        # Need to fetch enough to find all related markets
+        all_markets = await self.get_markets(limit=200, offset=0, active_only=False)
+
+        related = [m for m in all_markets if m.event_id == event_id]
+
+        # Sort by YES price descending (highest probability first)
+        related.sort(key=lambda m: m.yes_price or Decimal("0"), reverse=True)
+
+        return related
 
     async def get_markets_by_category(
         self,
