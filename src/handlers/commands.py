@@ -798,12 +798,17 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Fetch more to account for deduplication of multi-outcome events
         markets = await platform.get_markets(limit=(per_page * 3) + 1, offset=0, active_only=True)
 
-        # Deduplicate multi-outcome events by event_id
+        # Deduplicate multi-outcome events by event_id or title
         seen_events = set()
         unique_markets = []
         for market in markets:
-            # Use event_id for multi-outcome, otherwise market_id
-            dedup_key = market.event_id if market.is_multi_outcome and market.event_id else market.market_id
+            # Use event_id for multi-outcome, fallback to title for dedup
+            if market.is_multi_outcome:
+                # Use event_id if available, otherwise use title as dedup key
+                dedup_key = market.event_id if market.event_id else market.title
+            else:
+                dedup_key = market.market_id
+
             if dedup_key not in seen_events:
                 seen_events.add(dedup_key)
                 unique_markets.append(market)
@@ -3491,12 +3496,17 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
         # Fetch more to account for deduplication of multi-outcome events
         markets = await platform.get_markets(limit=(per_page * 3) + 1, offset=offset, active_only=True)
 
-        # Deduplicate multi-outcome events by event_id
+        # Deduplicate multi-outcome events by event_id or title
         seen_events = set()
         unique_markets = []
         for market in markets:
-            # Use event_id for multi-outcome, otherwise market_id
-            dedup_key = market.event_id if market.is_multi_outcome and market.event_id else market.market_id
+            # Use event_id for multi-outcome, fallback to title for dedup
+            if market.is_multi_outcome:
+                # Use event_id if available, otherwise use title as dedup key
+                dedup_key = market.event_id if market.event_id else market.title
+            else:
+                dedup_key = market.market_id
+
             if dedup_key not in seen_events:
                 seen_events.add(dedup_key)
                 unique_markets.append(market)
