@@ -795,9 +795,20 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     per_page = 10
 
     try:
-        # Fetch one extra to check if there's a next page
-        markets = await platform.get_markets(limit=per_page + 1, offset=0, active_only=True)
+        # Fetch more to account for deduplication of multi-outcome events
+        markets = await platform.get_markets(limit=(per_page * 3) + 1, offset=0, active_only=True)
 
+        # Deduplicate multi-outcome events by event_id
+        seen_events = set()
+        unique_markets = []
+        for market in markets:
+            # Use event_id for multi-outcome, otherwise market_id
+            dedup_key = market.event_id if market.is_multi_outcome and market.event_id else market.market_id
+            if dedup_key not in seen_events:
+                seen_events.add(dedup_key)
+                unique_markets.append(market)
+
+        markets = unique_markets
         has_next = len(markets) > per_page
         markets = markets[:per_page]
 
@@ -3380,9 +3391,20 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
     offset = page * per_page
 
     try:
-        # Fetch one extra to check if there's a next page
-        markets = await platform.get_markets(limit=per_page + 1, offset=offset, active_only=True)
+        # Fetch more to account for deduplication of multi-outcome events
+        markets = await platform.get_markets(limit=(per_page * 3) + 1, offset=offset, active_only=True)
 
+        # Deduplicate multi-outcome events by event_id
+        seen_events = set()
+        unique_markets = []
+        for market in markets:
+            # Use event_id for multi-outcome, otherwise market_id
+            dedup_key = market.event_id if market.is_multi_outcome and market.event_id else market.market_id
+            if dedup_key not in seen_events:
+                seen_events.add(dedup_key)
+                unique_markets.append(market)
+
+        markets = unique_markets
         has_next = len(markets) > per_page
         markets = markets[:per_page]  # Trim to actual page size
 
