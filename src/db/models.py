@@ -38,7 +38,7 @@ class Base(AsyncAttrs, DeclarativeBase):
 class ChainFamily(str, Enum):
     """Blockchain families for wallet organization."""
     SOLANA = "solana"  # For Kalshi/DFlow
-    EVM = "evm"        # For Polymarket (Polygon) and Opinion (BSC)
+    EVM = "evm"        # For Polymarket (Polygon), Opinion (BSC), and Limitless (Base)
 
 
 class Platform(str, Enum):

@@ -517,7 +517,7 @@ class OpinionPlatform(BasePlatform):
             expected_output=expected_output,
             price_per_token=price,
             price_impact=Decimal("0.01"),
-            platform_fee=amount * Decimal("0.01"),  # 1% estimate
+            platform_fee=amount * Decimal("0.02"),  # 2% estimate
             network_fee_estimate=Decimal("0.001"),  # BNB
             expires_at=None,
             quote_data={

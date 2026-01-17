@@ -860,6 +860,7 @@ class LimitlessPlatform(BasePlatform):
         side: str,
         amount: Decimal,
         token_id: str = None,
+        order_type: str = "market",  # "market" or "limit" - default to market
     ) -> Quote:
         """Get a quote for a trade.
 
@@ -869,6 +870,7 @@ class LimitlessPlatform(BasePlatform):
             side: "buy" or "sell"
             amount: Amount in USDC (buy) or tokens (sell)
             token_id: Optional token ID override
+            order_type: "market" for immediate fill with slippage, "limit" for exact price
         """
         market = await self.get_market(market_id)
         if not market:
@@ -914,6 +916,7 @@ class LimitlessPlatform(BasePlatform):
                 "market_slug": market.event_id or market_id,  # Use actual slug, not numeric ID
                 "price": str(price),
                 "market": market.raw_data,
+                "order_type": order_type,  # "market" or "limit"
             },
         )
 
@@ -1123,11 +1126,13 @@ class LimitlessPlatform(BasePlatform):
         venue: dict,
         fee_rate_bps: int = 300,
         is_market_order: bool = True,
+        slippage_bps: int = 200,  # 2% slippage tolerance for market orders
     ) -> dict:
         """Build and sign EIP-712 order for Limitless.
 
         Args:
-            is_market_order: If True, use FOK market order semantics with takerAmount=1
+            is_market_order: If True, use FOK with slippage tolerance. If False, use GTC limit order.
+            slippage_bps: Slippage tolerance in basis points for market orders (default 2%)
         """
         from eth_abi import encode as abi_encode
         from eth_utils import keccak
@@ -1135,7 +1140,7 @@ class LimitlessPlatform(BasePlatform):
         wallet = Web3.to_checksum_address(private_key.address)
         exchange = venue.get("exchange", venue.get("address"))
 
-        logger.debug("Building EIP-712 order", venue=venue, exchange=exchange, is_market_order=is_market_order)
+        logger.debug("Building EIP-712 order", venue=venue, exchange=exchange, is_market_order=is_market_order, slippage_bps=slippage_bps)
 
         if not exchange:
             raise PlatformError("Exchange address not found in venue", Platform.LIMITLESS)
@@ -1143,18 +1148,40 @@ class LimitlessPlatform(BasePlatform):
         exchange_checksum = Web3.to_checksum_address(exchange)
 
         # Calculate amounts (USDC has 6 decimals)
+        # For market orders: allow slippage (worse price) to ensure fills
+        # For limit orders: use exact price
+        slippage_multiplier = Decimal(1) + Decimal(slippage_bps) / Decimal(10000) if is_market_order else Decimal(1)
+
         if side == "buy":
             # makerAmount = USDC to spend
             maker_amount = int(amount * Decimal(10 ** 6))
-            # For FOK market orders, takerAmount must be 1 to trigger market order semantics
-            taker_amount = 1 if is_market_order else int((amount / price) * Decimal(10 ** 6))
+            # takerAmount = minimum tokens expected
+            # For buy: higher price = fewer tokens. Apply slippage to accept fewer tokens.
+            effective_price = price * slippage_multiplier  # Accept worse (higher) price
+            taker_amount = int((amount / effective_price) * Decimal(10 ** 6))
             order_side = 0  # BUY
+            logger.debug(
+                "Buy order amounts",
+                maker_amount_usdc=amount,
+                quoted_price=price,
+                effective_price=effective_price,
+                min_tokens=Decimal(taker_amount) / Decimal(10 ** 6),
+            )
         else:
             # makerAmount = tokens to sell
             maker_amount = int(amount * Decimal(10 ** 6))
-            # For FOK market orders, takerAmount must be 1 to trigger market order semantics
-            taker_amount = 1 if is_market_order else int(Decimal(maker_amount) * price)
+            # takerAmount = minimum USDC expected
+            # For sell: lower price = less USDC. Apply slippage to accept less USDC.
+            effective_price = price / slippage_multiplier  # Accept worse (lower) price
+            taker_amount = int(Decimal(maker_amount) * effective_price)
             order_side = 1  # SELL
+            logger.debug(
+                "Sell order amounts",
+                maker_amount_tokens=amount,
+                quoted_price=price,
+                effective_price=effective_price,
+                min_usdc=Decimal(taker_amount) / Decimal(10 ** 6),
+            )
 
         # Parse tokenId as integer (can be very large uint256)
         if str(token_id).isdigit():
@@ -1332,6 +1359,18 @@ class LimitlessPlatform(BasePlatform):
                 if ctf_address:
                     await self._ensure_ctf_approval(private_key, ctf_address, exchange)
 
+            # Determine order type from quote_data
+            # "market" = FOK with slippage, "limit" = GTC at exact price
+            order_type = quote.quote_data.get("order_type", "market")  # Default to market
+            is_market_order = order_type == "market"
+
+            logger.info(
+                "Building order",
+                order_type=order_type,
+                is_market_order=is_market_order,
+                price=price,
+            )
+
             # Build EIP-712 signed order
             order = self._build_eip712_order(
                 private_key=private_key,
@@ -1342,12 +1381,15 @@ class LimitlessPlatform(BasePlatform):
                 price=price,
                 venue=venue,
                 fee_rate_bps=fee_rate_bps,
+                is_market_order=is_market_order,
+                slippage_bps=200,  # 2% slippage for market orders
             )
 
-            # Submit order - use FOK for immediate market execution
+            # Submit order - FOK for market orders (immediate), GTC for limit orders
+            api_order_type = "FOK" if is_market_order else "GTC"
             payload = {
                 "order": order,
-                "orderType": "FOK",  # Fill or Kill - immediate execution
+                "orderType": api_order_type,
                 "marketSlug": market_slug,
             }
 
@@ -1362,6 +1404,9 @@ class LimitlessPlatform(BasePlatform):
                 order_side=order.get("side"),
                 order_price=order.get("price"),
                 token_id=order.get("tokenId"),
+                order_type=api_order_type,
+                maker_amount=order.get("makerAmount"),
+                taker_amount=order.get("takerAmount"),
             )
 
             # Submit with retry for allowance propagation delay

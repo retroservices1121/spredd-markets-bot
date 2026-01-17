@@ -77,6 +77,64 @@ def escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def friendly_error(error: str) -> str:
+    """Convert technical error messages to user-friendly plain English."""
+    error_lower = error.lower()
+
+    # Common error patterns and their friendly versions
+    if "insufficient" in error_lower and ("balance" in error_lower or "fund" in error_lower):
+        return "You don't have enough funds in your wallet. Please deposit more and try again."
+    if "allowance" in error_lower:
+        return "Wallet approval is pending. Please wait a moment and try again."
+    if "gas" in error_lower or "fee" in error_lower and "estimate" in error_lower:
+        return "Not enough funds to cover network fees. Please add some ETH/MATIC/BNB to your wallet."
+    if "nonce" in error_lower:
+        return "Transaction conflict. Please wait a moment and try again."
+    if "timeout" in error_lower or "timed out" in error_lower:
+        return "The request took too long. Please try again."
+    if "rate limit" in error_lower or "too many" in error_lower:
+        return "Too many requests. Please wait a moment and try again."
+    if "not found" in error_lower and "market" in error_lower:
+        return "This market is no longer available."
+    if "connection" in error_lower or "network" in error_lower:
+        return "Connection issue. Please check your internet and try again."
+    if "signature" in error_lower or "sign" in error_lower:
+        return "Failed to sign the transaction. Please try again."
+    if "rejected" in error_lower or "reverted" in error_lower:
+        return "Transaction was rejected. The market price may have changed."
+    if "slippage" in error_lower:
+        return "Price moved too much. Please try again with the updated price."
+    if "expired" in error_lower:
+        return "This offer has expired. Please get a new quote."
+    if "invalid" in error_lower and "address" in error_lower:
+        return "Invalid wallet address. Please check and try again."
+    if "decryption failed" in error_lower or "invalid pin" in error_lower:
+        return "Incorrect PIN. Please try again."
+    if "api" in error_lower and "error" in error_lower:
+        return "The trading platform is having issues. Please try again later."
+    if "minimum" in error_lower:
+        return "Amount is below the minimum. Please increase your trade amount."
+    if "maximum" in error_lower:
+        return "Amount exceeds the maximum. Please reduce your trade amount."
+    if "closed" in error_lower or "not active" in error_lower:
+        return "This market is closed and no longer accepting trades."
+    if "resolved" in error_lower:
+        return "This market has already been resolved."
+
+    # If no pattern matches, return a cleaned up version
+    # Remove technical prefixes and make it more readable
+    cleaned = error
+    for prefix in ["PlatformError:", "API error:", "Error:", "HTTPError:", "Exception:"]:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+
+    # If it's still very technical, give a generic message
+    if any(x in cleaned.lower() for x in ["traceback", "0x", "bytes", "uint", "abi", "keccak"]):
+        return "Something went wrong. Please try again or contact support if the issue persists."
+
+    return cleaned if len(cleaned) < 200 else cleaned[:200] + "..."
+
+
 def format_price(price: Optional[Decimal]) -> str:
     """Format price as cents."""
     if price is None:
@@ -595,7 +653,7 @@ Type /cancel to cancel.
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion)
+<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)
 <code>{}</code>
 
 <i>Tap address to copy. Send funds to deposit.</i>
@@ -619,7 +677,7 @@ Type /cancel to cancel.
         except Exception as e:
             logger.error("Wallet creation failed", error=str(e))
             await update.message.reply_text(
-                f"❌ Failed to create wallets: {escape_html(str(e))}",
+                f"❌ Failed to create wallets: {friendly_error(str(e))}",
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -646,7 +704,7 @@ Type /cancel to cancel.
 
     # EVM wallet (for Polymarket, Opinion & Monad)
     if evm_wallet:
-        text += f"<b>🔷 EVM</b> (Polymarket + Opinion)\n"
+        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
         for bal in balances.get(ChainFamily.EVM, []):
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
@@ -791,7 +849,7 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         logger.error("Failed to get markets", error=str(e))
         await update.message.reply_text(
-            f"❌ Failed to load markets: {escape_html(str(e))}",
+            f"❌ Failed to load markets: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -872,7 +930,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.error("Search failed", error=str(e), query=query)
         await update.message.reply_text(
-            f"❌ Search failed: {escape_html(str(e))}",
+            f"❌ Search failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -1413,7 +1471,7 @@ async def handle_pnlcard_generate(query: CallbackQuery, platform_value: str, tel
     except Exception as e:
         logger.error("Failed to generate PnL card", error=str(e), platform=platform_value)
         await query.edit_message_text(
-            f"❌ Failed to generate PnL card: {escape_html(str(e))}",
+            f"❌ Failed to generate PnL card: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -1487,7 +1545,7 @@ Earn commissions when your referrals trade!
 ├ Claimable: <b>{solana_claimable}</b> USDC
 └ Total Earned: <b>{solana_earned}</b> USDC
 
-<b>🔷 EVM (Polymarket/Opinion)</b>
+<b>🔷 EVM (Polymarket/Opinion/Limitless)</b>
 ├ Claimable: <b>{evm_claimable}</b> USDC
 └ Total Earned: <b>{evm_earned}</b> USDC
 
@@ -1691,7 +1749,7 @@ Select which prediction market you want to trade on:
     except Exception as e:
         logger.error("Callback handler error", error=str(e), data=data)
         await query.edit_message_text(
-            f"❌ Error: {escape_html(str(e))}",
+            f"❌ Error: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -2188,7 +2246,7 @@ You haven't created your wallets yet.
         text += "\n"
 
     if evm_wallet:
-        text += f"<b>🔷 EVM</b> (Polymarket + Opinion)\n"
+        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
         for bal in balances.get(ChainFamily.EVM, []):
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
@@ -2289,7 +2347,7 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
         logger.error("Failed to load bridge menu", error=error_str)
         try:
             await query.edit_message_text(
-                f"❌ Failed to load bridge info: {escape_html(error_str)}",
+                f"❌ Failed to load bridge info: {friendly_error(error_str)}",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")],
@@ -2394,7 +2452,7 @@ Select amount to bridge or enter a custom amount:
         logger.error("Bridge start failed", error=error_str)
         try:
             await query.edit_message_text(
-                f"❌ Bridge error: {escape_html(error_str)}",
+                f"❌ Bridge error: {friendly_error(error_str)}",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
@@ -2709,7 +2767,7 @@ Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
                     text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
 
         else:
-            text = f"❌ <b>Bridge Failed</b>\n\n{escape_html(result.error_message or 'Unknown error')}"
+            text = f"❌ <b>Bridge Failed</b>\n\n{friendly_error(result.error_message or 'Unknown error')}"
 
         await query.edit_message_text(
             text,
@@ -2736,7 +2794,7 @@ Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
         else:
             logger.error("Bridge execution failed", error=str(e))
             await query.edit_message_text(
-                f"❌ Bridge failed: {escape_html(str(e))}",
+                f"❌ Bridge failed: {friendly_error(str(e))}",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
@@ -2904,7 +2962,7 @@ Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
                     text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
 
         else:
-            text = f"❌ <b>Bridge Failed</b>\n\n{escape_html(result.error_message or 'Unknown error')}"
+            text = f"❌ <b>Bridge Failed</b>\n\n{friendly_error(result.error_message or 'Unknown error')}"
 
         await status_msg.edit_text(
             text,
@@ -2918,7 +2976,7 @@ Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
     except Exception as e:
         logger.error("Bridge with PIN failed", error=str(e))
         await status_msg.edit_text(
-            f"❌ Bridge failed: {escape_html(str(e))}",
+            f"❌ Bridge failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
@@ -3126,7 +3184,7 @@ Type /cancel to cancel.
                 await query.edit_message_text("❌ Wallet not found.")
         except Exception as e:
             logger.error("Export key failed", error=str(e))
-            await query.edit_message_text(f"❌ Export failed: {escape_html(str(e))}")
+            await query.edit_message_text(f"❌ Export failed: {friendly_error(str(e))}")
 
 
 async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None:
@@ -3213,7 +3271,7 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
     except Exception as e:
         logger.error("Failed to refresh markets", error=str(e))
         await query.edit_message_text(
-            f"❌ Failed to load markets: {escape_html(str(e))}",
+            f"❌ Failed to load markets: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -3355,7 +3413,7 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
     except Exception as e:
         logger.error("Failed to load category markets", category=category_id, error=str(e))
         await query.edit_message_text(
-            f"❌ Failed to load {category_label} markets: {escape_html(str(e))}",
+            f"❌ Failed to load {category_label} markets: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("« Back to Categories", callback_data="categories")],
@@ -3461,11 +3519,11 @@ The PIN ensures only YOU can export your wallet's private keys. This prevents un
             "text": """<b>Fee Structure:</b>
 
 <b>Spredd Bot Fees:</b>
-• <b>1% transaction fee</b> on all trades
+• <b>2% transaction fee</b> on all trades
 • No deposit/withdrawal fees
 • Fee supports referral program rewards
 
-<b>Referral Rewards (from our 1% fee):</b>
+<b>Referral Rewards (from our 2% fee):</b>
 • Tier 1 referrers earn 25% of fee
 • Tier 2 referrers earn 5% of fee
 • Tier 3 referrers earn 3% of fee
@@ -3473,14 +3531,16 @@ The PIN ensures only YOU can export your wallet's private keys. This prevents un
 <b>Platform Fees (charged by markets):</b>
 • <b>Kalshi:</b> ~2% on winnings
 • <b>Polymarket:</b> ~2% trading fee
+• <b>Limitless:</b> ~3% trading fee
 • <b>Opinion Labs:</b> Varies by market
 
 <b>Network Fees (blockchain gas):</b>
 • <b>Solana:</b> ~$0.001 per transaction
 • <b>Polygon:</b> ~$0.01 per transaction
+• <b>Base:</b> ~$0.01 per transaction
 • <b>BSC:</b> ~$0.10 per transaction
 
-<b>Note:</b> You need native tokens (SOL, MATIC, BNB) in your wallet to pay gas fees.""",
+<b>Note:</b> You need native tokens (SOL, MATIC, ETH, BNB) in your wallet to pay gas fees.""",
         },
         "deposit": {
             "title": "📥 How do I deposit?",
@@ -3757,7 +3817,7 @@ Earn commissions when your referrals trade!
 ├ Claimable: <b>{solana_claimable}</b> USDC
 └ Total Earned: <b>{solana_earned}</b> USDC
 
-<b>🔷 EVM (Polymarket/Opinion)</b>
+<b>🔷 EVM (Polymarket/Opinion/Limitless)</b>
 ├ Claimable: <b>{evm_claimable}</b> USDC
 └ Total Earned: <b>{evm_earned}</b> USDC
 
@@ -4012,7 +4072,7 @@ Note: No position created until order fills.
             text = f"""
 ❌ <b>Order Failed</b>
 
-{escape_html(result.error_message or 'Unknown error')}
+{friendly_error(result.error_message or 'Unknown error')}
 
 Please check your wallet balance and try again.
 """
@@ -4033,7 +4093,7 @@ Please check your wallet balance and try again.
     except Exception as e:
         logger.error("Trade execution failed", error=str(e))
         await query.edit_message_text(
-            f"❌ Trade failed: {escape_html(str(e))}",
+            f"❌ Trade failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -4316,7 +4376,7 @@ Received: ~${quote.expected_output:.2f} USDC{fee_line}
             text = f"""
 ❌ <b>Sell Failed</b>
 
-{escape_html(result.error_message or 'Unknown error')}
+{friendly_error(result.error_message or 'Unknown error')}
 
 Please try again.
 """
@@ -4336,7 +4396,7 @@ Please try again.
     except Exception as e:
         logger.error("Sell execution failed", error=str(e))
         await query.edit_message_text(
-            f"❌ Sell failed: {escape_html(str(e))}",
+            f"❌ Sell failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -4412,7 +4472,7 @@ Amount: ~${result.amount_redeemed:.2f} USDC
             text = f"""
 ❌ <b>Redemption Failed</b>
 
-{escape_html(result.error_message or 'Unknown error')}
+{friendly_error(result.error_message or 'Unknown error')}
 
 Please try again or redeem manually.
 """
@@ -4432,7 +4492,7 @@ Please try again or redeem manually.
     except Exception as e:
         logger.error("Redemption failed", error=str(e))
         await query.edit_message_text(
-            f"❌ Redemption failed: {escape_html(str(e))}",
+            f"❌ Redemption failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -4526,7 +4586,7 @@ Market: {escape_html(market.title[:50])}...
 Side: BUY {outcome.upper()}
 
 💰 <b>You Pay:</b> {amount} {platform_info['collateral']}
-💸 <b>Fee (1%):</b> {fee_display}
+💸 <b>Fee (2%):</b> {fee_display}
 📦 <b>You Receive:</b> ~{expected_tokens:.2f} {outcome.upper()} tokens
 📊 <b>Price:</b> {format_probability(price)} per token
 """
@@ -4546,7 +4606,7 @@ Side: BUY {outcome.upper()}
         logger.error("Quote failed", error=str(e))
         context.user_data.pop("pending_buy", None)
         await update.message.reply_text(
-            f"❌ Failed to get quote: {escape_html(str(e))}",
+            f"❌ Failed to get quote: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -4695,7 +4755,7 @@ Type /cancel to cancel.
         else:
             logger.error("Balance check with PIN failed", error=error_msg)
             await status_msg.edit_text(
-                f"❌ Error: {escape_html(error_msg)}",
+                f"❌ Error: {friendly_error(error_msg)}",
                 parse_mode=ParseMode.HTML,
             )
 
@@ -4895,7 +4955,7 @@ Note: No position created until order fills.
             text = f"""
 ❌ <b>Order Failed</b>
 
-{escape_html(result.error_message or 'Unknown error')}
+{friendly_error(result.error_message or 'Unknown error')}
 
 Please check your wallet balance and try again.
 """
@@ -4916,7 +4976,7 @@ Please check your wallet balance and try again.
     except Exception as e:
         logger.error("Trade with PIN failed", error=str(e))
         await executing_msg.edit_text(
-            f"❌ Trade failed: {escape_html(str(e))}",
+            f"❌ Trade failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -5092,7 +5152,7 @@ Received: ~{quote.expected_output:.2f} {platform_info['collateral']}{fee_line}
             text = f"""
 ❌ <b>Sell Failed</b>
 
-{escape_html(result.error_message or 'Unknown error')}
+{friendly_error(result.error_message or 'Unknown error')}
 
 Please try again later.
 """
@@ -5112,7 +5172,7 @@ Please try again later.
     except Exception as e:
         logger.error("Sell with PIN failed", error=str(e))
         await executing_msg.edit_text(
-            f"❌ Sell failed: {escape_html(str(e))}",
+            f"❌ Sell failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -5186,7 +5246,7 @@ Your wallets are protected with your PIN.
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion)
+<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)
 <code>{}</code>
 
 ⚠️ <b>Important:</b>
@@ -5213,7 +5273,7 @@ Your wallets are protected with your PIN.
         except Exception as e:
             logger.error("Wallet creation failed", error=str(e))
             await status_msg.edit_text(
-                f"❌ Failed to create wallets: {escape_html(str(e))}",
+                f"❌ Failed to create wallets: {friendly_error(str(e))}",
                 parse_mode=ParseMode.HTML,
             )
     else:
@@ -5336,7 +5396,7 @@ async def handle_export_with_pin(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         logger.error("Export with PIN failed", error=str(e))
         await status_msg.edit_text(
-            f"❌ Export failed: {escape_html(str(e))}",
+            f"❌ Export failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -5465,7 +5525,7 @@ To: <code>{user_address}</code>
 <i>USDC has been sent to your wallet!</i>
 """
         else:
-            text = f"❌ <b>Withdrawal Failed</b>\n\n{escape_html(error or 'Unknown error')}"
+            text = f"❌ <b>Withdrawal Failed</b>\n\n{friendly_error(error or 'Unknown error')}"
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("« Back to Referrals", callback_data="referral:refresh")],
@@ -5481,7 +5541,7 @@ To: <code>{user_address}</code>
     except Exception as e:
         logger.error("Withdrawal failed", error=str(e), chain=chain_family.value)
         await status_msg.edit_text(
-            f"❌ Withdrawal failed: {escape_html(str(e))}",
+            f"❌ Withdrawal failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -5542,7 +5602,7 @@ async def handle_wallet_reset_with_pin(update: Update, context: ContextTypes.DEF
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion)
+<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)
 <code>{}</code>
 
 🔐 <b>Export PIN set!</b>
@@ -5569,7 +5629,7 @@ Trading works without PIN.
     except Exception as e:
         logger.error("Wallet reset with PIN failed", error=str(e))
         await status_msg.edit_text(
-            f"❌ Failed to reset wallets: {escape_html(str(e))}",
+            f"❌ Failed to reset wallets: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -5646,7 +5706,7 @@ async def handle_new_wallet_with_pin(update: Update, context: ContextTypes.DEFAU
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion)
+<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)
 <code>{}</code>
 
 🔐 <b>Export PIN set!</b>
@@ -5673,7 +5733,7 @@ Trading works without PIN.
     except Exception as e:
         logger.error("New wallet with PIN failed", error=str(e))
         await status_msg.edit_text(
-            f"❌ Failed to create wallets: {escape_html(str(e))}",
+            f"❌ Failed to create wallets: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -5795,7 +5855,7 @@ users from that group will be attributed to them.</i>
 
         except Exception as e:
             logger.error("Partner creation failed", error=str(e))
-            await update.message.reply_text(f"❌ Failed to create partner: {escape_html(str(e))}")
+            await update.message.reply_text(f"❌ Failed to create partner: {friendly_error(str(e))}")
 
     elif action == "stats":
         if len(args) < 2:
@@ -6237,6 +6297,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             logger.error("Search failed", error=str(e))
             await update.message.reply_text(
-                f"❌ Search failed: {escape_html(str(e))}",
+                f"❌ Search failed: {friendly_error(str(e))}",
                 parse_mode=ParseMode.HTML,
             )
