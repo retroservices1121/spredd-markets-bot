@@ -1126,13 +1126,12 @@ class LimitlessPlatform(BasePlatform):
         venue: dict,
         fee_rate_bps: int = 300,
         is_market_order: bool = True,
-        slippage_bps: int = 200,  # 2% slippage tolerance for market orders
     ) -> dict:
         """Build and sign EIP-712 order for Limitless.
 
         Args:
-            is_market_order: If True, use FOK with slippage tolerance. If False, use GTC limit order.
-            slippage_bps: Slippage tolerance in basis points for market orders (default 2%)
+            is_market_order: If True, use FOK (market order with takerAmount=1).
+                            If False, use GTC limit order with calculated takerAmount.
         """
         from eth_abi import encode as abi_encode
         from eth_utils import keccak
@@ -1148,40 +1147,55 @@ class LimitlessPlatform(BasePlatform):
         exchange_checksum = Web3.to_checksum_address(exchange)
 
         # Calculate amounts (USDC has 6 decimals)
-        # For market orders: allow slippage (worse price) to ensure fills
-        # For limit orders: use exact price
-        slippage_multiplier = Decimal(1) + Decimal(slippage_bps) / Decimal(10000) if is_market_order else Decimal(1)
+        # For FOK (market) orders: Limitless API requires takerAmount=1
+        # For GTC (limit) orders: use calculated takerAmount for price protection
 
         if side == "buy":
             # makerAmount = USDC to spend
             maker_amount = int(amount * Decimal(10 ** 6))
-            # takerAmount = minimum tokens expected
-            # For buy: higher price = fewer tokens. Apply slippage to accept fewer tokens.
-            effective_price = price * slippage_multiplier  # Accept worse (higher) price
-            taker_amount = int((amount / effective_price) * Decimal(10 ** 6))
             order_side = 0  # BUY
-            logger.debug(
-                "Buy order amounts",
-                maker_amount_usdc=amount,
-                quoted_price=price,
-                effective_price=effective_price,
-                min_tokens=Decimal(taker_amount) / Decimal(10 ** 6),
-            )
+
+            if is_market_order:
+                # FOK orders MUST have takerAmount=1 per Limitless API
+                taker_amount = 1
+                logger.debug(
+                    "Buy FOK order amounts",
+                    maker_amount_usdc=amount,
+                    quoted_price=price,
+                    taker_amount=taker_amount,
+                )
+            else:
+                # GTC limit order - calculate taker amount for price protection
+                taker_amount = int((amount / price) * Decimal(10 ** 6))
+                logger.debug(
+                    "Buy GTC order amounts",
+                    maker_amount_usdc=amount,
+                    price=price,
+                    min_tokens=Decimal(taker_amount) / Decimal(10 ** 6),
+                )
         else:
             # makerAmount = tokens to sell
             maker_amount = int(amount * Decimal(10 ** 6))
-            # takerAmount = minimum USDC expected
-            # For sell: lower price = less USDC. Apply slippage to accept less USDC.
-            effective_price = price / slippage_multiplier  # Accept worse (lower) price
-            taker_amount = int(Decimal(maker_amount) * effective_price)
             order_side = 1  # SELL
-            logger.debug(
-                "Sell order amounts",
-                maker_amount_tokens=amount,
-                quoted_price=price,
-                effective_price=effective_price,
-                min_usdc=Decimal(taker_amount) / Decimal(10 ** 6),
-            )
+
+            if is_market_order:
+                # FOK orders MUST have takerAmount=1 per Limitless API
+                taker_amount = 1
+                logger.debug(
+                    "Sell FOK order amounts",
+                    maker_amount_tokens=amount,
+                    quoted_price=price,
+                    taker_amount=taker_amount,
+                )
+            else:
+                # GTC limit order - calculate taker amount for price protection
+                taker_amount = int(Decimal(maker_amount) * price)
+                logger.debug(
+                    "Sell GTC order amounts",
+                    maker_amount_tokens=amount,
+                    price=price,
+                    min_usdc=Decimal(taker_amount) / Decimal(10 ** 6),
+                )
 
         # Parse tokenId as integer (can be very large uint256)
         if str(token_id).isdigit():
@@ -1360,7 +1374,7 @@ class LimitlessPlatform(BasePlatform):
                     await self._ensure_ctf_approval(private_key, ctf_address, exchange)
 
             # Determine order type from quote_data
-            # "market" = FOK with slippage, "limit" = GTC at exact price
+            # "market" = FOK (fill at any price), "limit" = GTC at exact price
             order_type = quote.quote_data.get("order_type", "market")  # Default to market
             is_market_order = order_type == "market"
 
@@ -1382,7 +1396,6 @@ class LimitlessPlatform(BasePlatform):
                 venue=venue,
                 fee_rate_bps=fee_rate_bps,
                 is_market_order=is_market_order,
-                slippage_bps=200,  # 2% slippage for market orders
             )
 
             # Submit order - FOK for market orders (immediate), GTC for limit orders
