@@ -2148,6 +2148,7 @@ async def handle_ai_research(query, platform_value: str, market_id: str, telegra
             f"<i>Get $SPRDD tokens or increase your trading volume to unlock AI Research!</i>",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 Buy $SPRDD", url="https://app.virtuals.io/virtuals/23167")],
                 [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
             ]),
         )
