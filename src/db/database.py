@@ -1382,3 +1382,70 @@ async def get_analytics_by_platform(
             }
 
         return results
+
+
+async def get_top_traders(
+    since: Optional[datetime] = None,
+    limit: int = 10,
+) -> list:
+    """
+    Get top traders by volume.
+
+    Args:
+        since: Optional start date for filtering
+        limit: Number of top traders to return
+
+    Returns:
+        List of dicts with user info and trading stats
+    """
+    async with get_session() as session:
+        # Get all confirmed orders grouped by user
+        order_query = select(Order).where(Order.status == OrderStatus.CONFIRMED)
+        if since:
+            order_query = order_query.where(Order.created_at >= since)
+
+        order_result = await session.execute(order_query)
+        orders = list(order_result.scalars().all())
+
+        # Aggregate by user
+        user_stats = {}
+        for order in orders:
+            user_id = order.user_id
+            if user_id not in user_stats:
+                user_stats[user_id] = {
+                    "user_id": user_id,
+                    "volume": Decimal("0"),
+                    "trade_count": 0,
+                }
+            try:
+                user_stats[user_id]["volume"] += Decimal(order.input_amount) / Decimal("1000000")
+                user_stats[user_id]["trade_count"] += 1
+            except:
+                pass
+
+        # Sort by volume and take top N
+        sorted_traders = sorted(
+            user_stats.values(),
+            key=lambda x: x["volume"],
+            reverse=True
+        )[:limit]
+
+        # Get user details for top traders
+        result = []
+        for trader in sorted_traders:
+            user_result = await session.execute(
+                select(User).where(User.id == trader["user_id"])
+            )
+            user = user_result.scalar_one_or_none()
+            if user:
+                result.append({
+                    "user_id": user.id,
+                    "telegram_id": user.telegram_id,
+                    "username": user.username,
+                    "first_name": user.first_name,
+                    "volume": trader["volume"],
+                    "trade_count": trader["trade_count"],
+                    "fees_paid": trader["volume"] * Decimal("0.02"),
+                })
+
+        return result

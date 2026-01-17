@@ -1758,13 +1758,19 @@ Select which prediction market you want to trade on:
 
         elif action == "analytics":
             # Admin analytics dashboard
-            # Formats: analytics:period, analytics:platforms, analytics:plat:period
+            # Formats: analytics:period, analytics:platforms, analytics:plat:period, analytics:traders, analytics:top:period
             if parts[1] == "platforms":
                 await handle_analytics_platforms(query, update.effective_user.id)
             elif parts[1] == "plat":
                 # Platform breakdown with time period
                 period = parts[2] if len(parts) > 2 else "all"
                 await handle_analytics_platforms(query, update.effective_user.id, period)
+            elif parts[1] == "traders":
+                await handle_analytics_traders(query, update.effective_user.id)
+            elif parts[1] == "top":
+                # Top traders with time period
+                period = parts[2] if len(parts) > 2 else "all"
+                await handle_analytics_traders(query, update.effective_user.id, period)
             else:
                 # Time period selection (daily, weekly, monthly, all)
                 await handle_analytics_callback(query, parts[1], update.effective_user.id)
@@ -6596,7 +6602,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ===================
 
 from datetime import timedelta
-from src.db.database import get_analytics_stats, get_analytics_by_platform
+from src.db.database import get_analytics_stats, get_analytics_by_platform, get_top_traders
 
 PLATFORM_NAMES = {
     "kalshi": "Kalshi",
@@ -6632,6 +6638,7 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         ],
         [
             InlineKeyboardButton("🔍 By Platform", callback_data="analytics:platforms"),
+            InlineKeyboardButton("🏆 Top Traders", callback_data="analytics:traders"),
         ],
     ])
 
@@ -6700,6 +6707,7 @@ async def handle_analytics_callback(query, period: str, telegram_id: int) -> Non
             ],
             [
                 InlineKeyboardButton("🔍 By Platform", callback_data="analytics:platforms"),
+                InlineKeyboardButton("🏆 Top Traders", callback_data="analytics:traders"),
             ],
         ])
 
@@ -6713,6 +6721,87 @@ async def handle_analytics_callback(query, period: str, telegram_id: int) -> Non
         logger.error("Analytics query failed", error=str(e))
         await query.edit_message_text(
             f"❌ Failed to load analytics: {str(e)[:100]}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_analytics_traders(query, telegram_id: int, period: str = "all") -> None:
+    """Handle top traders view."""
+    from datetime import datetime, timezone
+
+    if not is_admin(telegram_id):
+        await query.answer("❌ Admin only", show_alert=True)
+        return
+
+    await query.answer()
+
+    now = datetime.now(timezone.utc)
+    since = None
+    period_name = "All Time"
+
+    if period == "daily":
+        since = now - timedelta(days=1)
+        period_name = "Last 24 Hours"
+    elif period == "weekly":
+        since = now - timedelta(weeks=1)
+        period_name = "Last 7 Days"
+    elif period == "monthly":
+        since = now - timedelta(days=30)
+        period_name = "Last 30 Days"
+
+    try:
+        traders = await get_top_traders(since=since, limit=10)
+
+        text = f"🏆 <b>Top Traders - {period_name}</b>\n\n"
+
+        if not traders:
+            text += "<i>No trades in this period</i>"
+        else:
+            for i, trader in enumerate(traders, 1):
+                # Display name: username or first_name or telegram_id
+                name = trader["username"] or trader["first_name"] or f"User {trader['telegram_id']}"
+                if trader["username"]:
+                    name = f"@{name}"
+
+                medal = ""
+                if i == 1:
+                    medal = "🥇 "
+                elif i == 2:
+                    medal = "🥈 "
+                elif i == 3:
+                    medal = "🥉 "
+
+                text += f"""{medal}<b>{i}. {name}</b>
+├ Volume: <code>${trader['volume']:,.2f}</code>
+├ Trades: <code>{trader['trade_count']:,}</code>
+└ Fees: <code>${trader['fees_paid']:,.2f}</code>
+
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📅 Today", callback_data="analytics:top:daily"),
+                InlineKeyboardButton("📆 Week", callback_data="analytics:top:weekly"),
+            ],
+            [
+                InlineKeyboardButton("📊 Month", callback_data="analytics:top:monthly"),
+                InlineKeyboardButton("📈 All", callback_data="analytics:top:all"),
+            ],
+            [
+                InlineKeyboardButton("⬅️ Back", callback_data="analytics:all"),
+            ],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Analytics traders query failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Failed to load top traders: {str(e)[:100]}",
             parse_mode=ParseMode.HTML,
         )
 
