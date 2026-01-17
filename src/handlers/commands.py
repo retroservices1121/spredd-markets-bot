@@ -1756,6 +1756,19 @@ Select which prediction market you want to trade on:
                 pending_platform = parts[2] if len(parts) > 2 else None
                 await show_geo_verification(query, update.effective_user.id, pending_platform)
 
+        elif action == "analytics":
+            # Admin analytics dashboard
+            # Formats: analytics:period, analytics:platforms, analytics:plat:period
+            if parts[1] == "platforms":
+                await handle_analytics_platforms(query, update.effective_user.id)
+            elif parts[1] == "plat":
+                # Platform breakdown with time period
+                period = parts[2] if len(parts) > 2 else "all"
+                await handle_analytics_platforms(query, update.effective_user.id, period)
+            else:
+                # Time period selection (daily, weekly, monthly, all)
+                await handle_analytics_callback(query, parts[1], update.effective_user.id)
+
     except Exception as e:
         logger.error("Callback handler error", error=str(e), data=data)
         await query.edit_message_text(
@@ -6576,3 +6589,212 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"❌ Search failed: {friendly_error(str(e))}",
                 parse_mode=ParseMode.HTML,
             )
+
+
+# ===================
+# Admin Analytics Dashboard
+# ===================
+
+from datetime import timedelta
+from src.db.database import get_analytics_stats, get_analytics_by_platform
+
+PLATFORM_NAMES = {
+    "kalshi": "Kalshi",
+    "polymarket": "Polymarket",
+    "opinion": "Opinion Labs",
+    "limitless": "Limitless",
+}
+
+
+async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to view analytics dashboard.
+    Usage: /analytics
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    # Show the analytics dashboard with time period selection
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📅 Today", callback_data="analytics:daily"),
+            InlineKeyboardButton("📆 This Week", callback_data="analytics:weekly"),
+        ],
+        [
+            InlineKeyboardButton("📊 This Month", callback_data="analytics:monthly"),
+            InlineKeyboardButton("📈 All Time", callback_data="analytics:all"),
+        ],
+        [
+            InlineKeyboardButton("🔍 By Platform", callback_data="analytics:platforms"),
+        ],
+    ])
+
+    await update.message.reply_text(
+        "📊 <b>Admin Analytics Dashboard</b>\n\n"
+        "Select a time period to view stats:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def handle_analytics_callback(query, period: str, telegram_id: int) -> None:
+    """Handle analytics time period selection."""
+    from datetime import datetime, timezone
+
+    if not is_admin(telegram_id):
+        await query.answer("❌ Admin only", show_alert=True)
+        return
+
+    await query.answer()
+
+    now = datetime.now(timezone.utc)
+    since = None
+    period_name = "All Time"
+
+    if period == "daily":
+        since = now - timedelta(days=1)
+        period_name = "Last 24 Hours"
+    elif period == "weekly":
+        since = now - timedelta(weeks=1)
+        period_name = "Last 7 Days"
+    elif period == "monthly":
+        since = now - timedelta(days=30)
+        period_name = "Last 30 Days"
+    elif period == "all":
+        since = None
+        period_name = "All Time"
+
+    try:
+        stats = await get_analytics_stats(since=since)
+
+        text = f"""📊 <b>Analytics - {period_name}</b>
+
+👥 <b>Users</b>
+├ Total Users: <code>{stats['total_users']:,}</code>
+└ New Users: <code>{stats['new_users']:,}</code>
+
+💰 <b>Trading</b>
+├ Volume: <code>${stats['trade_volume']:,.2f}</code>
+└ Trades: <code>{stats['trade_count']:,}</code>
+
+💵 <b>Revenue</b>
+└ Fees Collected: <code>${stats['fee_revenue']:,.2f}</code>
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📅 Today", callback_data="analytics:daily"),
+                InlineKeyboardButton("📆 Week", callback_data="analytics:weekly"),
+            ],
+            [
+                InlineKeyboardButton("📊 Month", callback_data="analytics:monthly"),
+                InlineKeyboardButton("📈 All", callback_data="analytics:all"),
+            ],
+            [
+                InlineKeyboardButton("🔍 By Platform", callback_data="analytics:platforms"),
+            ],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Analytics query failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Failed to load analytics: {str(e)[:100]}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def handle_analytics_platforms(query, telegram_id: int, period: str = "all") -> None:
+    """Handle analytics platform breakdown."""
+    from datetime import datetime, timezone
+
+    if not is_admin(telegram_id):
+        await query.answer("❌ Admin only", show_alert=True)
+        return
+
+    await query.answer()
+
+    now = datetime.now(timezone.utc)
+    since = None
+    period_name = "All Time"
+
+    if period == "daily":
+        since = now - timedelta(days=1)
+        period_name = "Last 24 Hours"
+    elif period == "weekly":
+        since = now - timedelta(weeks=1)
+        period_name = "Last 7 Days"
+    elif period == "monthly":
+        since = now - timedelta(days=30)
+        period_name = "Last 30 Days"
+
+    try:
+        platform_stats = await get_analytics_by_platform(since=since)
+
+        text = f"📊 <b>Platform Breakdown - {period_name}</b>\n\n"
+
+        total_volume = Decimal("0")
+        total_trades = 0
+        total_users = 0
+
+        for plat_key, stats in platform_stats.items():
+            plat_name = PLATFORM_NAMES.get(plat_key, plat_key.title())
+            volume = stats["trade_volume"]
+            trades = stats["trade_count"]
+            users = stats["active_users"]
+
+            total_volume += volume
+            total_trades += trades
+            total_users += users
+
+            if trades > 0 or users > 0:
+                text += f"""<b>{plat_name}</b>
+├ Volume: <code>${volume:,.2f}</code>
+├ Trades: <code>{trades:,}</code>
+└ Active Users: <code>{users:,}</code>
+
+"""
+
+        text += f"""<b>📈 Totals</b>
+├ Volume: <code>${total_volume:,.2f}</code>
+├ Trades: <code>{total_trades:,}</code>
+└ Active Users: <code>{total_users:,}</code>
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📅 Today", callback_data="analytics:plat:daily"),
+                InlineKeyboardButton("📆 Week", callback_data="analytics:plat:weekly"),
+            ],
+            [
+                InlineKeyboardButton("📊 Month", callback_data="analytics:plat:monthly"),
+                InlineKeyboardButton("📈 All", callback_data="analytics:plat:all"),
+            ],
+            [
+                InlineKeyboardButton("⬅️ Back", callback_data="analytics:all"),
+            ],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Analytics platform query failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Failed to load platform analytics: {str(e)[:100]}",
+            parse_mode=ParseMode.HTML,
+        )

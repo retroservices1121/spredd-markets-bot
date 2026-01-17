@@ -1231,3 +1231,138 @@ async def update_partner_volume(partner_id: str, volume_usdc: Decimal, fee_usdc:
             partner.total_volume_usdc = str(current_volume + volume_usdc)
             partner.total_fees_usdc = str(current_fees + fee_usdc)
             await session.commit()
+
+
+# ============================================================================
+# Analytics Functions
+# ============================================================================
+
+from datetime import datetime, timedelta
+from sqlalchemy import func as sql_func
+
+async def get_analytics_stats(
+    since: Optional[datetime] = None,
+    platform: Optional[Platform] = None,
+) -> dict:
+    """
+    Get analytics stats for admin dashboard.
+
+    Args:
+        since: Optional start date for filtering
+        platform: Optional platform to filter by
+
+    Returns:
+        Dict with user_count, new_users, trade_volume, fee_revenue
+    """
+    async with get_session() as session:
+        # Count total users
+        total_users_query = select(sql_func.count(User.id))
+        total_users_result = await session.execute(total_users_query)
+        total_users = total_users_result.scalar() or 0
+
+        # Count new users in period
+        new_users_query = select(sql_func.count(User.id))
+        if since:
+            new_users_query = new_users_query.where(User.created_at >= since)
+        new_users_result = await session.execute(new_users_query)
+        new_users = new_users_result.scalar() or 0
+
+        # Get trade volume from confirmed orders
+        volume_query = select(Order).where(Order.status == OrderStatus.CONFIRMED)
+        if since:
+            volume_query = volume_query.where(Order.created_at >= since)
+        if platform:
+            volume_query = volume_query.where(Order.platform == platform)
+
+        volume_result = await session.execute(volume_query)
+        orders = list(volume_result.scalars().all())
+
+        trade_volume = Decimal("0")
+        trade_count = 0
+        for order in orders:
+            try:
+                trade_volume += Decimal(order.input_amount) / Decimal("1000000")
+                trade_count += 1
+            except:
+                pass
+
+        # Get fee revenue from fee_transactions where tx_type = 'fee_collected'
+        fee_query = select(FeeTransaction).where(FeeTransaction.tx_type == "fee_collected")
+        if since:
+            fee_query = fee_query.where(FeeTransaction.created_at >= since)
+        # Note: FeeTransaction doesn't have platform field, so we can't filter by platform directly
+        # We'd need to join with orders, but for now we'll show total fees
+
+        fee_result = await session.execute(fee_query)
+        fee_transactions = list(fee_result.scalars().all())
+
+        fee_revenue = Decimal("0")
+        for fee_tx in fee_transactions:
+            try:
+                fee_revenue += Decimal(fee_tx.amount_usdc)
+            except:
+                pass
+
+        return {
+            "total_users": total_users,
+            "new_users": new_users,
+            "trade_volume": trade_volume,
+            "trade_count": trade_count,
+            "fee_revenue": fee_revenue,
+        }
+
+
+async def get_analytics_by_platform(
+    since: Optional[datetime] = None,
+) -> dict:
+    """
+    Get analytics stats broken down by platform.
+
+    Args:
+        since: Optional start date for filtering
+
+    Returns:
+        Dict with stats per platform
+    """
+    async with get_session() as session:
+        results = {}
+
+        for plat in Platform:
+            # Get trade volume from confirmed orders for this platform
+            volume_query = select(Order).where(
+                Order.status == OrderStatus.CONFIRMED,
+                Order.platform == plat,
+            )
+            if since:
+                volume_query = volume_query.where(Order.created_at >= since)
+
+            volume_result = await session.execute(volume_query)
+            orders = list(volume_result.scalars().all())
+
+            trade_volume = Decimal("0")
+            trade_count = 0
+            for order in orders:
+                try:
+                    trade_volume += Decimal(order.input_amount) / Decimal("1000000")
+                    trade_count += 1
+                except:
+                    pass
+
+            # Get unique users who traded on this platform
+            user_query = select(sql_func.count(sql_func.distinct(Order.user_id))).where(
+                Order.status == OrderStatus.CONFIRMED,
+                Order.platform == plat,
+            )
+            if since:
+                user_query = user_query.where(Order.created_at >= since)
+
+            user_result = await session.execute(user_query)
+            active_users = user_result.scalar() or 0
+
+            results[plat.value] = {
+                "trade_volume": trade_volume,
+                "trade_count": trade_count,
+                "active_users": active_users,
+            }
+
+        return results
