@@ -231,6 +231,17 @@ class KalshiPlatform(BasePlatform):
             yes_token = usdc_accounts.get("yesMint")
             no_token = usdc_accounts.get("noMint")
 
+        # Extract resolution criteria from various possible fields
+        resolution_criteria = (
+            data.get("rules_primary") or
+            data.get("rulesPrimary") or
+            data.get("rules") or
+            data.get("settlement_rules") or
+            data.get("settlementRules") or
+            data.get("resolution_rules") or
+            data.get("resolutionRules")
+        )
+
         return Market(
             platform=Platform.KALSHI,
             chain=Chain.SOLANA,
@@ -248,6 +259,7 @@ class KalshiPlatform(BasePlatform):
             yes_token=yes_token,
             no_token=no_token,
             raw_data=data,
+            resolution_criteria=resolution_criteria,
         )
     
     # ===================

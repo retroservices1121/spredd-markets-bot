@@ -471,6 +471,15 @@ class LimitlessPlatform(BasePlatform):
         # Use negRiskMarketId as event_id for grouping, fall back to slug
         event_id = neg_risk_id or slug
 
+        # Resolution criteria - check multiple possible fields
+        resolution_criteria = (
+            data.get("rules") or
+            data.get("resolutionRules") or
+            data.get("resolution_rules") or
+            data.get("settlementRules") or
+            data.get("description")  # Fallback to description which may contain rules
+        )
+
         return Market(
             platform=Platform.LIMITLESS,
             chain=Chain.BASE,
@@ -489,6 +498,7 @@ class LimitlessPlatform(BasePlatform):
             yes_token=yes_token,
             no_token=no_token,
             raw_data=data,
+            resolution_criteria=resolution_criteria,
         )
 
     async def get_markets(
@@ -673,7 +683,7 @@ class LimitlessPlatform(BasePlatform):
                         yes_price = (orderbook.best_ask + orderbook.best_bid) / 2
                     else:
                         yes_price = orderbook.best_ask or orderbook.best_bid
-                    # Update market prices (preserve multi-outcome fields)
+                    # Update market prices (preserve multi-outcome and resolution fields)
                     market = Market(
                         platform=market.platform,
                         chain=market.chain,
@@ -694,6 +704,7 @@ class LimitlessPlatform(BasePlatform):
                         outcome_name=market.outcome_name,
                         is_multi_outcome=market.is_multi_outcome,
                         related_market_count=market.related_market_count,
+                        resolution_criteria=market.resolution_criteria,
                     )
             except Exception as e:
                 logger.debug("Failed to fetch orderbook for prices", error=str(e))

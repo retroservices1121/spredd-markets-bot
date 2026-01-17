@@ -679,13 +679,23 @@ class PolymarketPlatform(BasePlatform):
         volume = m.get("volume") or m.get("volumeNum") or data.get("volume") or data.get("volume24hr") or 0
         liquidity = m.get("liquidity") or data.get("liquidity") or data.get("liquidityClob") or 0
 
+        # Resolution criteria - Polymarket stores rules in description field
+        description = m.get("description") or data.get("description")
+        # Also check for explicit resolution fields
+        resolution_criteria = (
+            m.get("resolutionSource") or
+            m.get("resolution_source") or
+            data.get("resolutionSource") or
+            description  # Polymarket description typically contains resolution rules
+        )
+
         return Market(
             platform=Platform.POLYMARKET,
             chain=Chain.POLYGON,
             market_id=market_id,
             event_id=str(data.get("id") or data.get("slug", "")),
             title=title,
-            description=m.get("description") or data.get("description"),
+            description=description,
             category=(data.get("tags", [{}])[0].get("label") if data.get("tags") else None),
             yes_price=yes_price,
             no_price=no_price,
@@ -699,6 +709,7 @@ class PolymarketPlatform(BasePlatform):
             outcome_name=outcome_name,
             is_multi_outcome=is_multi_outcome,
             related_market_count=len(event_markets) if is_multi_outcome else 0,
+            resolution_criteria=resolution_criteria,
         )
     
     # ===================

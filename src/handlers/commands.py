@@ -1927,8 +1927,12 @@ Liquidity: {format_usd(market.liquidity)}
 Status: {"🟢 Active" if market.is_active else "🔴 Closed"}
 Expires: {expiration_text}
 """
-        if market.description:
-            text += f"\n📝 {escape_html(market.description[:150])}..."
+        # Show resolution criteria if available
+        if market.resolution_criteria:
+            criteria_text = market.resolution_criteria[:300]
+            if len(market.resolution_criteria) > 300:
+                criteria_text += "..."
+            text += f"\n📋 <b>Resolution Rules</b>\n{escape_html(criteria_text)}\n"
 
         # Create buy buttons for each outcome (up to 8 to fit Telegram limits)
         buttons = []
@@ -1963,8 +1967,12 @@ Liquidity: {format_usd(market.liquidity)}
 Status: {"🟢 Active" if market.is_active else "🔴 Closed"}
 Expires: {expiration_text}
 """
-        if market.description:
-            text += f"\n📝 {escape_html(market.description[:200])}..."
+        # Show resolution criteria if available
+        if market.resolution_criteria:
+            criteria_text = market.resolution_criteria[:400]
+            if len(market.resolution_criteria) > 400:
+                criteria_text += "..."
+            text += f"\n📋 <b>Resolution Rules</b>\n{escape_html(criteria_text)}\n"
 
         # Buy buttons for binary market
         keyboard = InlineKeyboardMarkup([

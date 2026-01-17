@@ -163,6 +163,9 @@ class OpinionPlatform(BasePlatform):
         if close_time and isinstance(close_time, (int, float)):
             close_time = datetime.fromtimestamp(close_time).isoformat()
 
+        # Resolution criteria - Opinion uses 'rules' field for settlement rules
+        resolution_criteria = data.get("rules") or data.get("resolutionRules") or data.get("description")
+
         return Market(
             platform=Platform.OPINION,
             chain=Chain.BSC,
@@ -180,6 +183,7 @@ class OpinionPlatform(BasePlatform):
             yes_token=yes_token,
             no_token=no_token,
             raw_data=data,
+            resolution_criteria=resolution_criteria,
         )
     
     # ===================

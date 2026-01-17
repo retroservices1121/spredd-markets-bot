@@ -50,6 +50,9 @@ class Market:
     outcome_name: Optional[str] = None  # Short name for this outcome (e.g., "Trump", "Biden")
     is_multi_outcome: bool = False  # True if part of a multi-outcome event
     related_market_count: int = 0  # Number of related markets in the same event
+
+    # Resolution criteria - how the market will be settled
+    resolution_criteria: Optional[str] = None
     
     @property
     def yes_probability(self) -> Optional[float]:
