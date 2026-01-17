@@ -801,10 +801,14 @@ class LimitlessPlatform(BasePlatform):
         slug: str = None,
     ) -> OrderBook:
         """Get order book from Limitless."""
-        # Try with provided ID first, then with slug if that fails
-        endpoints_to_try = [market_id]
-        if slug and slug != market_id:
+        # Limitless API requires slug for orderbook, numeric IDs don't work
+        # Try slug first if available, then fall back to market_id only if it looks like a slug
+        endpoints_to_try = []
+        if slug:
             endpoints_to_try.append(slug)
+        # Only try market_id if it's not a numeric ID (those always fail)
+        if market_id and not market_id.isdigit() and market_id not in endpoints_to_try:
+            endpoints_to_try.append(market_id)
 
         data = None
         for endpoint_id in endpoints_to_try:
