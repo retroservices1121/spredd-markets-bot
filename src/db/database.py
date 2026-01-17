@@ -1286,22 +1286,9 @@ async def get_analytics_stats(
             except:
                 pass
 
-        # Get fee revenue from fee_transactions where tx_type = 'fee_collected'
-        fee_query = select(FeeTransaction).where(FeeTransaction.tx_type == "fee_collected")
-        if since:
-            fee_query = fee_query.where(FeeTransaction.created_at >= since)
-        # Note: FeeTransaction doesn't have platform field, so we can't filter by platform directly
-        # We'd need to join with orders, but for now we'll show total fees
-
-        fee_result = await session.execute(fee_query)
-        fee_transactions = list(fee_result.scalars().all())
-
-        fee_revenue = Decimal("0")
-        for fee_tx in fee_transactions:
-            try:
-                fee_revenue += Decimal(fee_tx.amount_usdc)
-            except:
-                pass
+        # Calculate fee revenue as 2% of trade volume
+        # Fee is 200 basis points (2%) on every trade
+        fee_revenue = trade_volume * Decimal("0.02")
 
         return {
             "total_users": total_users,
@@ -1348,6 +1335,9 @@ async def get_analytics_by_platform(
                 except:
                     pass
 
+            # Calculate fee revenue as 2% of trade volume
+            fee_revenue = trade_volume * Decimal("0.02")
+
             # Get unique users who traded on this platform
             user_query = select(sql_func.count(sql_func.distinct(Order.user_id))).where(
                 Order.status == OrderStatus.CONFIRMED,
@@ -1363,6 +1353,7 @@ async def get_analytics_by_platform(
                 "trade_volume": trade_volume,
                 "trade_count": trade_count,
                 "active_users": active_users,
+                "fee_revenue": fee_revenue,
             }
 
         return results

@@ -6747,21 +6747,25 @@ async def handle_analytics_platforms(query, telegram_id: int, period: str = "all
         total_volume = Decimal("0")
         total_trades = 0
         total_users = 0
+        total_fees = Decimal("0")
 
         for plat_key, stats in platform_stats.items():
             plat_name = PLATFORM_NAMES.get(plat_key, plat_key.title())
             volume = stats["trade_volume"]
             trades = stats["trade_count"]
             users = stats["active_users"]
+            fees = stats["fee_revenue"]
 
             total_volume += volume
             total_trades += trades
             total_users += users
+            total_fees += fees
 
             if trades > 0 or users > 0:
                 text += f"""<b>{plat_name}</b>
 ├ Volume: <code>${volume:,.2f}</code>
 ├ Trades: <code>{trades:,}</code>
+├ Fees: <code>${fees:,.2f}</code>
 └ Active Users: <code>{users:,}</code>
 
 """
@@ -6769,6 +6773,7 @@ async def handle_analytics_platforms(query, telegram_id: int, period: str = "all
         text += f"""<b>📈 Totals</b>
 ├ Volume: <code>${total_volume:,.2f}</code>
 ├ Trades: <code>{total_trades:,}</code>
+├ Fees: <code>${total_fees:,.2f}</code>
 └ Active Users: <code>{total_users:,}</code>
 """
 
