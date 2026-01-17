@@ -1767,6 +1767,12 @@ Select which prediction market you want to trade on:
                 pending_platform = parts[2] if len(parts) > 2 else None
                 await show_geo_verification(query, update.effective_user.id, pending_platform)
 
+        elif action == "market_more":
+            # View more options for multi-outcome market
+            # Format: market_more:platform:market_id:offset
+            offset = int(parts[3]) if len(parts) > 3 else 0
+            await handle_market_more_options(query, parts[1], parts[2], offset, update.effective_user.id)
+
         elif action == "ai_research":
             # AI Research for market
             # Format: ai_research:platform:market_id
@@ -2043,9 +2049,10 @@ Expires: {expiration_text}
                 criteria_text += "..."
             text += f"\n📋 <b>Resolution Rules</b>\n{escape_html(criteria_text)}\n"
 
-        # Create buy buttons for each outcome (up to 8 to fit Telegram limits)
+        # Create buy buttons for each outcome (up to 15 to fit Telegram limits)
+        max_buttons = 15
         buttons = []
-        for rm in related_markets[:8]:
+        for rm in related_markets[:max_buttons]:
             name = rm.outcome_name or rm.title
             if len(name) > 20:
                 name = name[:17] + "..."
@@ -2056,6 +2063,16 @@ Expires: {expiration_text}
                 InlineKeyboardButton(
                     f"{escape_html(name)} ({prob})",
                     callback_data=f"buy:{platform_value}:{short_id}:yes"
+                )
+            ])
+
+        # Show "more options" if there are more than max_buttons
+        if len(related_markets) > max_buttons:
+            remaining = len(related_markets) - max_buttons
+            buttons.append([
+                InlineKeyboardButton(
+                    f"📋 View {remaining} more options...",
+                    callback_data=f"market_more:{platform_value}:{market_id}:{max_buttons}"
                 )
             ])
 
@@ -2116,6 +2133,86 @@ Expires: {expiration_text}
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
+    )
+
+
+async def handle_market_more_options(query, platform_value: str, market_id: str, offset: int, telegram_id: int) -> None:
+    """Handle viewing more options for multi-outcome markets."""
+    try:
+        platform_enum = Platform(platform_value)
+    except ValueError:
+        await query.edit_message_text("Invalid platform.")
+        return
+
+    platform = get_platform(platform_enum)
+    market = await platform.get_market(market_id)
+
+    if not market:
+        await query.edit_message_text("Market not found.")
+        return
+
+    # Get related markets for multi-outcome event
+    related_markets = []
+    if market.is_multi_outcome and market.event_id:
+        related_markets = await platform.get_related_markets(market.event_id)
+
+    if not related_markets or len(related_markets) <= offset:
+        await query.answer("No more options available")
+        return
+
+    await query.answer()
+
+    info = PLATFORM_INFO[platform_enum]
+    max_buttons = 15
+
+    # Get the remaining options starting from offset
+    remaining_markets = related_markets[offset:]
+
+    text = f"""
+{info['emoji']} <b>{escape_html(market.title)}</b>
+
+📊 <b>More Options (showing {offset + 1}-{min(offset + max_buttons, len(related_markets))} of {len(related_markets)})</b>
+"""
+    # List remaining options
+    for i, rm in enumerate(remaining_markets[:max_buttons], offset + 1):
+        name = rm.outcome_name or rm.title
+        prob = format_probability(rm.yes_price)
+        text += f"{i}. {escape_html(name)}: {prob}\n"
+
+    # Create buttons for remaining options
+    buttons = []
+    for rm in remaining_markets[:max_buttons]:
+        name = rm.outcome_name or rm.title
+        if len(name) > 20:
+            name = name[:17] + "..."
+        prob = format_probability(rm.yes_price)
+        short_id = rm.market_id[:40]
+        buttons.append([
+            InlineKeyboardButton(
+                f"{escape_html(name)} ({prob})",
+                callback_data=f"buy:{platform_value}:{short_id}:yes"
+            )
+        ])
+
+    # Show more if still more options
+    new_offset = offset + max_buttons
+    if len(related_markets) > new_offset:
+        remaining = len(related_markets) - new_offset
+        buttons.append([
+            InlineKeyboardButton(
+                f"📋 View {remaining} more options...",
+                callback_data=f"market_more:{platform_value}:{market_id}:{new_offset}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton("« Back to Market", callback_data=f"market:{platform_value}:{market_id}"),
+    ])
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
