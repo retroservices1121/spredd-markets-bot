@@ -1466,13 +1466,14 @@ class LimitlessPlatform(BasePlatform):
             else:
                 actual_output = quote.expected_output
 
-            # Collect platform fee after successful trade
+            # Collect platform fee in background (non-blocking) after successful trade
             if self._fee_account and self._fee_bps > 0 and quote.side == "buy":
                 fee_amount = (quote.input_amount * Decimal(self._fee_bps) / Decimal(10000)).quantize(
                     Decimal("0.000001"), rounding=ROUND_DOWN
                 )
                 if fee_amount > 0:
-                    self._collect_platform_fee(private_key, fee_amount)
+                    # Fire and forget - don't block trade response
+                    asyncio.create_task(self._collect_platform_fee_async(private_key, fee_amount))
 
             return TradeResult(
                 success=True,
@@ -1494,12 +1495,24 @@ class LimitlessPlatform(BasePlatform):
                 explorer_url=None,
             )
 
+    async def _collect_platform_fee_async(
+        self,
+        private_key: LocalAccount,
+        amount_usdc: Decimal,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Collect platform fee asynchronously (non-blocking)."""
+        try:
+            return await asyncio.to_thread(self._collect_platform_fee, private_key, amount_usdc)
+        except Exception as e:
+            logger.error("Async fee collection failed", error=str(e))
+            return False, None, str(e)
+
     def _collect_platform_fee(
         self,
         private_key: LocalAccount,
         amount_usdc: Decimal,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
-        """Collect platform fee by transferring USDC."""
+        """Collect platform fee by transferring USDC (sync, called from background)."""
         if not self._fee_account or not self._sync_web3:
             return True, None, None
 

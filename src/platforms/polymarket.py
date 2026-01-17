@@ -3,6 +3,7 @@ Polymarket platform implementation using CLOB API.
 World's largest prediction market on Polygon.
 """
 
+import asyncio
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Optional, Tuple
 from datetime import datetime
@@ -1217,13 +1218,25 @@ class PolymarketPlatform(BasePlatform):
             },
         )
 
+    async def _collect_platform_fee_async(
+        self,
+        private_key: LocalAccount,
+        amount_usdc: Decimal,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Collect platform fee asynchronously (non-blocking)."""
+        try:
+            return await asyncio.to_thread(self._collect_platform_fee, private_key, amount_usdc)
+        except Exception as e:
+            logger.error("Async fee collection failed", error=str(e))
+            return False, None, str(e)
+
     def _collect_platform_fee(
         self,
         private_key: LocalAccount,
         amount_usdc: Decimal,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
-        Collect platform fee by transferring USDC from user to fee account.
+        Collect platform fee by transferring USDC from user to fee account (sync, called from background).
 
         Args:
             private_key: User's EVM account for signing
@@ -1589,19 +1602,14 @@ class PolymarketPlatform(BasePlatform):
                 order_id=tx_hash,
             )
 
-            # Collect platform fee AFTER successful trade
+            # Collect platform fee in background (non-blocking) after successful trade
             if self._fee_account and self._fee_bps > 0:
                 fee_amount = (quote.input_amount * Decimal(self._fee_bps) / Decimal(10000)).quantize(
                     Decimal("0.000001"), rounding=ROUND_DOWN
                 )
                 if fee_amount > 0:
-                    fee_success, fee_tx, fee_error = self._collect_platform_fee(
-                        private_key, fee_amount
-                    )
-                    if fee_success:
-                        logger.debug("Fee collected", fee_amount=str(fee_amount), fee_tx=fee_tx)
-                    else:
-                        logger.warning("Fee collection failed after trade", error=fee_error)
+                    # Fire and forget - don't block trade response
+                    asyncio.create_task(self._collect_platform_fee_async(private_key, fee_amount))
 
             return TradeResult(
                 success=True,

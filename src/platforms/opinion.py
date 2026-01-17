@@ -49,6 +49,10 @@ class OpinionPlatform(BasePlatform):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._web3: Optional[AsyncWeb3] = None
         self._sdk_client: Any = None
+        # Cache SDK clients per wallet address for faster repeat trades
+        self._sdk_client_cache: dict[str, Any] = {}
+        # Track wallets that have already enabled trading
+        self._trading_enabled_wallets: set[str] = set()
     
     async def initialize(self) -> None:
         """Initialize Opinion Labs API client."""
@@ -561,21 +565,35 @@ class OpinionPlatform(BasePlatform):
             from opinion_clob_sdk.chain.py_order_utils.model.sides import OrderSide
             from opinion_clob_sdk.chain.py_order_utils.model.order_type import MARKET_ORDER, LIMIT_ORDER
 
-            # Initialize SDK client
-            client = Client(
-                host=settings.opinion_api_url,
-                apikey=(settings.opinion_api_key or "").strip(),
-                chain_id=56,  # BNB Chain mainnet
-                rpc_url=settings.bsc_rpc_url,
-                private_key=private_key.key.hex(),
-                multi_sig_addr=settings.opinion_multi_sig_addr or "",
-            )
+            wallet_address = private_key.address.lower()
 
-            # Enable trading (required once per wallet)
-            try:
-                client.enable_trading()
-            except Exception as e:
-                logger.debug("enable_trading call", note=str(e))
+            # Use cached SDK client or create new one
+            if wallet_address in self._sdk_client_cache:
+                client = self._sdk_client_cache[wallet_address]
+                logger.debug("Using cached Opinion SDK client", wallet=wallet_address[:10])
+            else:
+                # Initialize SDK client
+                client = Client(
+                    host=settings.opinion_api_url,
+                    apikey=(settings.opinion_api_key or "").strip(),
+                    chain_id=56,  # BNB Chain mainnet
+                    rpc_url=settings.bsc_rpc_url,
+                    private_key=private_key.key.hex(),
+                    multi_sig_addr=settings.opinion_multi_sig_addr or "",
+                )
+                self._sdk_client_cache[wallet_address] = client
+                logger.debug("Created new Opinion SDK client", wallet=wallet_address[:10])
+
+            # Enable trading only if not already done for this wallet
+            if wallet_address not in self._trading_enabled_wallets:
+                try:
+                    client.enable_trading()
+                    self._trading_enabled_wallets.add(wallet_address)
+                    logger.debug("Trading enabled for wallet", wallet=wallet_address[:10])
+                except Exception as e:
+                    # If it fails, wallet might already be enabled - mark as done
+                    self._trading_enabled_wallets.add(wallet_address)
+                    logger.debug("enable_trading call", note=str(e))
 
             token_id = quote.quote_data["token_id"]
             market_id = int(quote.quote_data["market_id"])
