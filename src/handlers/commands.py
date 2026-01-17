@@ -2012,6 +2012,10 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
     platform = get_platform(platform_enum)
     market = await platform.get_market(market_id)
 
+    # Truncate market_id for callback_data (Telegram 64-byte limit)
+    # Polymarket condition IDs can be 66+ chars, which exceeds the limit
+    short_market_id = market_id[:40]
+
     if not market:
         await query.edit_message_text("Market not found.")
         return
@@ -2077,14 +2081,14 @@ Expires: {expiration_text}
             buttons.append([
                 InlineKeyboardButton(
                     f"📋 View {remaining} more options...",
-                    callback_data=f"market_more:{platform_value}:{market_id}:{max_buttons}"
+                    callback_data=f"market_more:{platform_value}:{short_market_id}:{max_buttons}"
                 )
             ])
 
         buttons.append([
             InlineKeyboardButton(
                 "🤖 AI Research",
-                callback_data=f"ai_research:{platform_value}:{market_id}"
+                callback_data=f"ai_research:{platform_value}:{short_market_id}"
             ),
         ])
         buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
@@ -2116,19 +2120,19 @@ Expires: {expiration_text}
             [
                 InlineKeyboardButton(
                     f"🟢 Buy YES ({format_probability(market.yes_price)})",
-                    callback_data=f"buy:{platform_value}:{market_id}:yes"
+                    callback_data=f"buy:{platform_value}:{short_market_id}:yes"
                 ),
             ],
             [
                 InlineKeyboardButton(
                     f"🔴 Buy NO ({format_probability(market.no_price)})",
-                    callback_data=f"buy:{platform_value}:{market_id}:no"
+                    callback_data=f"buy:{platform_value}:{short_market_id}:no"
                 ),
             ],
             [
                 InlineKeyboardButton(
                     "🤖 AI Research",
-                    callback_data=f"ai_research:{platform_value}:{market_id}"
+                    callback_data=f"ai_research:{platform_value}:{short_market_id}"
                 ),
             ],
             [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
@@ -2151,6 +2155,9 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
 
     platform = get_platform(platform_enum)
     market = await platform.get_market(market_id)
+
+    # Truncate for callback_data limit
+    short_market_id = market_id[:40]
 
     if not market:
         await query.edit_message_text("Market not found.")
@@ -2206,12 +2213,12 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
         buttons.append([
             InlineKeyboardButton(
                 f"📋 View {remaining} more options...",
-                callback_data=f"market_more:{platform_value}:{market_id}:{new_offset}"
+                callback_data=f"market_more:{platform_value}:{short_market_id}:{new_offset}"
             )
         ])
 
     buttons.append([
-        InlineKeyboardButton("« Back to Market", callback_data=f"market:{platform_value}:{market_id}"),
+        InlineKeyboardButton("« Back to Market", callback_data=f"market:{platform_value}:{short_market_id}"),
     ])
 
     await query.edit_message_text(
@@ -2225,6 +2232,9 @@ async def handle_ai_research(query, platform_value: str, market_id: str, telegra
     """Handle AI research request for a market."""
     from src.services.factsai import factsai_service
     from src.db.database import get_user_trading_volume, get_wallet
+
+    # Truncate for callback_data limit
+    short_market_id = market_id[:40]
 
     await query.answer()
 
@@ -2262,7 +2272,7 @@ async def handle_ai_research(query, platform_value: str, market_id: str, telegra
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("💎 Buy $SPRDD", url="https://app.virtuals.io/virtuals/23167")],
-                [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
+                [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{short_market_id}")],
             ]),
         )
         return
@@ -2300,8 +2310,8 @@ async def handle_ai_research(query, platform_value: str, market_id: str, telegra
             f"❌ <b>Research Failed</b>\n\n{result['error']}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Retry", callback_data=f"ai_research:{platform_value}:{market_id}")],
-                [InlineKeyboardButton("« Back to Market", callback_data=f"market:{platform_value}:{market_id}")],
+                [InlineKeyboardButton("🔄 Retry", callback_data=f"ai_research:{platform_value}:{short_market_id}")],
+                [InlineKeyboardButton("« Back to Market", callback_data=f"market:{platform_value}:{short_market_id}")],
             ]),
         )
         return
@@ -2336,14 +2346,17 @@ async def handle_ai_research(query, platform_value: str, market_id: str, telegra
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Refresh Analysis", callback_data=f"ai_research:{platform_value}:{market_id}")],
-            [InlineKeyboardButton("« Back to Market", callback_data=f"market:{platform_value}:{market_id}")],
+            [InlineKeyboardButton("🔄 Refresh Analysis", callback_data=f"ai_research:{platform_value}:{short_market_id}")],
+            [InlineKeyboardButton("« Back to Market", callback_data=f"market:{platform_value}:{short_market_id}")],
         ]),
     )
 
 
 async def handle_buy_start(query, platform_value: str, market_id: str, outcome: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle starting a buy order."""
+    # Truncate for callback_data limit
+    short_market_id = market_id[:40]
+
     try:
         platform_enum = Platform(platform_value)
     except ValueError:
@@ -2426,7 +2439,7 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
 
             if not ready:
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
+                    [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{short_market_id}")],
                 ])
                 await query.edit_message_text(
                     f"❌ <b>Cannot Trade</b>\n\n{escape_html(message)}",
@@ -2470,7 +2483,7 @@ Type /cancel to cancel.
 """
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
+        [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{short_market_id}")],
     ])
 
     await query.edit_message_text(
@@ -4224,6 +4237,9 @@ Type /cancel to cancel.
 
 async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome: str, amount_str: str, telegram_id: int) -> None:
     """Execute the confirmed buy order."""
+    # Truncate for callback_data limit
+    short_market_id = market_id[:40]
+
     try:
         amount = Decimal(amount_str)
         platform_enum = Platform(platform_value)
@@ -4409,7 +4425,7 @@ Please check your wallet balance and try again.
         logger.error("Trade execution failed", error=str(e))
         # Add retry button to go back to market with fresh prices
         retry_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy_start:{platform_value}:{market_id}:{outcome}")],
+            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy_start:{platform_value}:{short_market_id}:{outcome}")],
             [InlineKeyboardButton("« Back to Markets", callback_data=f"markets:{platform_value}:1")],
         ])
         await query.edit_message_text(
@@ -4979,6 +4995,8 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
     market_id = pending["market_id"]
     outcome = pending["outcome"]
     chain_family = ChainFamily.EVM
+    # Truncate for callback_data limit
+    short_market_id = market_id[:40]
 
     status_msg = await update.message.reply_text(
         "🔄 Verifying PIN and checking USDC balance...",
@@ -5077,7 +5095,7 @@ Type /cancel to cancel.
 """
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{market_id}")],
+            [InlineKeyboardButton("« Back", callback_data=f"market:{platform_value}:{short_market_id}")],
         ])
 
         await status_msg.edit_text(
@@ -5130,6 +5148,8 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
     market_id = pending["market_id"]
     outcome = pending["outcome"]
     amount_str = pending["amount"]
+    # Truncate for callback_data limit
+    short_market_id = market_id[:40]
 
     # Clear pending state
     context.user_data.pop("pending_buy", None)
@@ -5330,7 +5350,7 @@ Please check your wallet balance and try again.
         logger.error("Trade with PIN failed", error=str(e))
         # Add retry button to go back to market with fresh prices
         retry_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy_start:{platform_value}:{market_id}:{outcome}")],
+            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy_start:{platform_value}:{short_market_id}:{outcome}")],
             [InlineKeyboardButton("« Back to Markets", callback_data=f"markets:{platform_value}:1")],
         ])
         await executing_msg.edit_text(

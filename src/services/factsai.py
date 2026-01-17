@@ -5,6 +5,8 @@ Provides AI research capabilities for prediction markets using the FactsAI API.
 Access is gated by $SPRDD token balance or trading volume requirements.
 """
 
+import json
+
 import aiohttp
 from decimal import Decimal
 from typing import Optional
@@ -225,27 +227,48 @@ class FactsAIService:
                             "citations": [],
                         }
                     elif response.status == 500:
+                        logger.error(
+                            "FactsAI server error",
+                            status=500,
+                            response_body=response_text[:1000] if response_text else "empty",
+                        )
                         return {
                             "error": "FactsAI server error. Please try again.",
                             "answer": None,
                             "citations": [],
                         }
                     elif response.status != 200:
+                        logger.error(
+                            "FactsAI unexpected status",
+                            status=response.status,
+                            response_body=response_text[:500] if response_text else "empty",
+                        )
                         return {
                             "error": f"API error: {response.status}",
                             "answer": None,
                             "citations": [],
                         }
 
-                    import json
                     data = json.loads(response_text)
 
-                    return {
-                        "answer": data.get("answer", ""),
-                        "citations": data.get("citations", []),
-                        "cost": data.get("costDollars", "$0.012"),
-                        "error": None,
-                    }
+                    # Response structure: {"success": true, "data": {"answer": ..., "citations": ...}}
+                    if data.get("success"):
+                        inner_data = data.get("data", {})
+                        return {
+                            "answer": inner_data.get("answer", ""),
+                            "citations": inner_data.get("citations", []),
+                            "cost": inner_data.get("costDollars", "$0.012"),
+                            "error": None,
+                        }
+                    else:
+                        # API returned success: false
+                        error_msg = data.get("error", data.get("message", "Unknown API error"))
+                        logger.error("FactsAI returned error", error=error_msg)
+                        return {
+                            "error": str(error_msg)[:100],
+                            "answer": None,
+                            "citations": [],
+                        }
 
         except aiohttp.ClientTimeout:
             return {
