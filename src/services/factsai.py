@@ -189,11 +189,7 @@ class FactsAIService:
                     "text": True,  # Include full text in citations
                 }
 
-                logger.info(
-                    "FactsAI request",
-                    url=f"{self.api_url}/answer",
-                    query_length=len(query),
-                )
+                print(f"[FactsAI] Request to {self.api_url}/answer, query_length={len(query)}")
 
                 async with session.post(
                     f"{self.api_url}/answer",
@@ -202,11 +198,7 @@ class FactsAIService:
                     timeout=aiohttp.ClientTimeout(total=60),
                 ) as response:
                     response_text = await response.text()
-                    logger.info(
-                        "FactsAI response",
-                        status=response.status,
-                        response_preview=response_text[:500] if response_text else "empty",
-                    )
+                    print(f"[FactsAI] Response status={response.status}, body_preview={response_text[:500] if response_text else 'empty'}")
 
                     if response.status == 401:
                         return {
@@ -227,22 +219,14 @@ class FactsAIService:
                             "citations": [],
                         }
                     elif response.status == 500:
-                        logger.error(
-                            "FactsAI server error",
-                            status=500,
-                            response_body=response_text[:1000] if response_text else "empty",
-                        )
+                        print(f"[FactsAI] ERROR 500: {response_text[:1000] if response_text else 'empty'}")
                         return {
                             "error": "FactsAI server error. Please try again.",
                             "answer": None,
                             "citations": [],
                         }
                     elif response.status != 200:
-                        logger.error(
-                            "FactsAI unexpected status",
-                            status=response.status,
-                            response_body=response_text[:500] if response_text else "empty",
-                        )
+                        print(f"[FactsAI] ERROR {response.status}: {response_text[:500] if response_text else 'empty'}")
                         return {
                             "error": f"API error: {response.status}",
                             "answer": None,
@@ -254,8 +238,10 @@ class FactsAIService:
                     # Response structure: {"success": true, "data": {"answer": ..., "citations": ...}}
                     if data.get("success"):
                         inner_data = data.get("data", {})
+                        answer = inner_data.get("answer", "")
+                        print(f"[FactsAI] SUCCESS: answer_length={len(answer)}, citations={len(inner_data.get('citations', []))}")
                         return {
-                            "answer": inner_data.get("answer", ""),
+                            "answer": answer,
                             "citations": inner_data.get("citations", []),
                             "cost": inner_data.get("costDollars", "$0.012"),
                             "error": None,
@@ -263,7 +249,7 @@ class FactsAIService:
                     else:
                         # API returned success: false
                         error_msg = data.get("error", data.get("message", "Unknown API error"))
-                        logger.error("FactsAI returned error", error=error_msg)
+                        print(f"[FactsAI] API returned error: {error_msg}")
                         return {
                             "error": str(error_msg)[:100],
                             "answer": None,
