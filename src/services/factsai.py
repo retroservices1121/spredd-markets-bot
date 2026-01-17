@@ -187,12 +187,25 @@ class FactsAIService:
                     "text": True,  # Include full text in citations
                 }
 
+                logger.info(
+                    "FactsAI request",
+                    url=f"{self.api_url}/answer",
+                    query_length=len(query),
+                )
+
                 async with session.post(
                     f"{self.api_url}/answer",
                     headers=headers,
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30),
+                    timeout=aiohttp.ClientTimeout(total=60),
                 ) as response:
+                    response_text = await response.text()
+                    logger.info(
+                        "FactsAI response",
+                        status=response.status,
+                        response_preview=response_text[:500] if response_text else "empty",
+                    )
+
                     if response.status == 401:
                         return {
                             "error": "Invalid API key",
@@ -211,6 +224,12 @@ class FactsAIService:
                             "answer": None,
                             "citations": [],
                         }
+                    elif response.status == 500:
+                        return {
+                            "error": "FactsAI server error. Please try again.",
+                            "answer": None,
+                            "citations": [],
+                        }
                     elif response.status != 200:
                         return {
                             "error": f"API error: {response.status}",
@@ -218,7 +237,8 @@ class FactsAIService:
                             "citations": [],
                         }
 
-                    data = await response.json()
+                    import json
+                    data = json.loads(response_text)
 
                     return {
                         "answer": data.get("answer", ""),
