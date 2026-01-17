@@ -1624,6 +1624,10 @@ Select which prediction market you want to trade on:
         elif action == "buy":
             await handle_buy_start(query, parts[1], parts[2], parts[3], update.effective_user.id, context)
 
+        elif action == "buy_start":
+            # Retry button handler - same as buy
+            await handle_buy_start(query, parts[1], parts[2], parts[3], update.effective_user.id, context)
+
         elif action == "confirm_buy":
             # Read from user_data (stored when quote was shown)
             pending = context.user_data.get("pending_confirm")
@@ -1713,6 +1717,10 @@ Select which prediction market you want to trade on:
 
         elif action == "sell":
             # Format: sell:position_id
+            await handle_sell_start(query, parts[1], update.effective_user.id)
+
+        elif action == "sell_start":
+            # Retry button handler - same as sell
             await handle_sell_start(query, parts[1], update.effective_user.id)
 
         elif action == "sell_confirm":
