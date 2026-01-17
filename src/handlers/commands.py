@@ -4092,9 +4092,15 @@ Please check your wallet balance and try again.
 
     except Exception as e:
         logger.error("Trade execution failed", error=str(e))
+        # Add retry button to go back to market with fresh prices
+        retry_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy_start:{platform_value}:{market_id}:{outcome}")],
+            [InlineKeyboardButton("« Back to Markets", callback_data=f"markets:{platform_value}:1")],
+        ])
         await query.edit_message_text(
             f"❌ Trade failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
+            reply_markup=retry_keyboard,
         )
 
 
@@ -4395,9 +4401,15 @@ Please try again.
 
     except Exception as e:
         logger.error("Sell execution failed", error=str(e))
+        # Add retry button to go back to sell options
+        retry_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Retry", callback_data=f"sell_start:{position_id}")],
+            [InlineKeyboardButton("« Back to Positions", callback_data="positions")],
+        ])
         await query.edit_message_text(
             f"❌ Sell failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
+            reply_markup=retry_keyboard,
         )
 
 
@@ -4975,9 +4987,15 @@ Please check your wallet balance and try again.
 
     except Exception as e:
         logger.error("Trade with PIN failed", error=str(e))
+        # Add retry button to go back to market with fresh prices
+        retry_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy_start:{platform_value}:{market_id}:{outcome}")],
+            [InlineKeyboardButton("« Back to Markets", callback_data=f"markets:{platform_value}:1")],
+        ])
         await executing_msg.edit_text(
             f"❌ Trade failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
+            reply_markup=retry_keyboard,
         )
 
 
@@ -5171,9 +5189,15 @@ Please try again later.
 
     except Exception as e:
         logger.error("Sell with PIN failed", error=str(e))
+        # Add retry button to go back to sell options
+        retry_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Retry", callback_data=f"sell_start:{position_id}")],
+            [InlineKeyboardButton("« Back to Positions", callback_data="positions")],
+        ])
         await executing_msg.edit_text(
             f"❌ Sell failed: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
+            reply_markup=retry_keyboard,
         )
 
 
