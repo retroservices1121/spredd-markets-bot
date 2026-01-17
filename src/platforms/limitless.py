@@ -1139,7 +1139,7 @@ class LimitlessPlatform(BasePlatform):
         wallet = Web3.to_checksum_address(private_key.address)
         exchange = venue.get("exchange", venue.get("address"))
 
-        logger.debug("Building EIP-712 order", venue=venue, exchange=exchange, is_market_order=is_market_order, slippage_bps=slippage_bps)
+        logger.debug("Building EIP-712 order", venue=venue, exchange=exchange, is_market_order=is_market_order)
 
         if not exchange:
             raise PlatformError("Exchange address not found in venue", Platform.LIMITLESS)
