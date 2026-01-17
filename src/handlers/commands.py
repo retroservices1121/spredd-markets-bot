@@ -6684,7 +6684,9 @@ async def handle_analytics_callback(query, period: str, telegram_id: int) -> Non
 └ Trades: <code>{stats['trade_count']:,}</code>
 
 💵 <b>Revenue</b>
-└ Fees Collected: <code>${stats['fee_revenue']:,.2f}</code>
+├ Fees Collected: <code>${stats['fee_revenue']:,.2f}</code>
+├ Referral Payouts: <code>${stats['referral_payouts']:,.2f}</code> ({stats['referral_count']} payouts)
+└ Net Revenue: <code>${stats['net_revenue']:,.2f}</code>
 """
 
         keyboard = InlineKeyboardMarkup([

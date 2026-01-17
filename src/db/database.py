@@ -1290,12 +1290,37 @@ async def get_analytics_stats(
         # Fee is 200 basis points (2%) on every trade
         fee_revenue = trade_volume * Decimal("0.02")
 
+        # Get referral payouts from fee_transactions
+        referral_query = select(FeeTransaction).where(
+            FeeTransaction.tx_type.in_(["referral_tier1", "referral_tier2", "referral_tier3"])
+        )
+        if since:
+            referral_query = referral_query.where(FeeTransaction.created_at >= since)
+
+        referral_result = await session.execute(referral_query)
+        referral_transactions = list(referral_result.scalars().all())
+
+        referral_payouts = Decimal("0")
+        referral_count = 0
+        for ref_tx in referral_transactions:
+            try:
+                referral_payouts += Decimal(ref_tx.amount_usdc)
+                referral_count += 1
+            except:
+                pass
+
+        # Net revenue = fees collected - referral payouts
+        net_revenue = fee_revenue - referral_payouts
+
         return {
             "total_users": total_users,
             "new_users": new_users,
             "trade_volume": trade_volume,
             "trade_count": trade_count,
             "fee_revenue": fee_revenue,
+            "referral_payouts": referral_payouts,
+            "referral_count": referral_count,
+            "net_revenue": net_revenue,
         }
 
 
