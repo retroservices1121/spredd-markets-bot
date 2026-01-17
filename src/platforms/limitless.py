@@ -671,18 +671,16 @@ class LimitlessPlatform(BasePlatform):
             except Exception as e:
                 logger.debug("Title search failed", error=str(e))
 
-        # If market found but has default prices (0.5), try to get real prices from orderbook
-        if market and market.yes_price == Decimal("0.5") and market.no_price == Decimal("0.5"):
+        # ALWAYS get orderbook prices - API prices can be stale
+        # This ensures displayed price matches the quote price (which uses orderbook.best_ask)
+        if market:
             try:
                 from src.db.models import Outcome
-                # Get YES orderbook for price
+                # Get YES orderbook for price - use best_ask since that's what buy orders use
                 orderbook = await self.get_orderbook(market.market_id, Outcome.YES, slug=market.event_id)
                 if orderbook.best_ask or orderbook.best_bid:
-                    # Use mid price or available price
-                    if orderbook.best_ask and orderbook.best_bid:
-                        yes_price = (orderbook.best_ask + orderbook.best_bid) / 2
-                    else:
-                        yes_price = orderbook.best_ask or orderbook.best_bid
+                    # For display, use best_ask (what buyers pay) to match quote price
+                    yes_price = orderbook.best_ask or orderbook.best_bid
                     # Update market prices (preserve multi-outcome and resolution fields)
                     market = Market(
                         platform=market.platform,
