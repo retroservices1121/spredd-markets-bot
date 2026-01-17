@@ -1772,9 +1772,9 @@ Select which prediction market you want to trade on:
                 pending_platform = parts[2] if len(parts) > 2 else None
                 await show_geo_verification(query, update.effective_user.id, pending_platform)
 
-        elif action == "market_more":
+        elif action == "more":
             # View more options for multi-outcome market
-            # Format: market_more:platform:market_id:offset
+            # Format: more:platform:market_id:offset (shortened from market_more for 64-byte limit)
             offset = int(parts[3]) if len(parts) > 3 else 0
             await handle_market_more_options(query, parts[1], parts[2], offset, update.effective_user.id)
 
@@ -2081,7 +2081,7 @@ Expires: {expiration_text}
             buttons.append([
                 InlineKeyboardButton(
                     f"📋 View {remaining} more options...",
-                    callback_data=f"market_more:{platform_value}:{short_market_id}:{max_buttons}"
+                    callback_data=f"more:{platform_value}:{short_market_id}:{max_buttons}"
                 )
             ])
 
@@ -2213,7 +2213,7 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
         buttons.append([
             InlineKeyboardButton(
                 f"📋 View {remaining} more options...",
-                callback_data=f"market_more:{platform_value}:{short_market_id}:{new_offset}"
+                callback_data=f"more:{platform_value}:{short_market_id}:{new_offset}"
             )
         ])
 
@@ -4425,7 +4425,7 @@ Please check your wallet balance and try again.
         logger.error("Trade execution failed", error=str(e))
         # Add retry button to go back to market with fresh prices
         retry_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy_start:{platform_value}:{short_market_id}:{outcome}")],
+            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy:{platform_value}:{short_market_id}:{outcome}")],
             [InlineKeyboardButton("« Back to Markets", callback_data=f"markets:{platform_value}:1")],
         ])
         await query.edit_message_text(
@@ -5350,7 +5350,7 @@ Please check your wallet balance and try again.
         logger.error("Trade with PIN failed", error=str(e))
         # Add retry button to go back to market with fresh prices
         retry_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy_start:{platform_value}:{short_market_id}:{outcome}")],
+            [InlineKeyboardButton("🔄 Retry", callback_data=f"buy:{platform_value}:{short_market_id}:{outcome}")],
             [InlineKeyboardButton("« Back to Markets", callback_data=f"markets:{platform_value}:1")],
         ])
         await executing_msg.edit_text(
