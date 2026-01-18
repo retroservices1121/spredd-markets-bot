@@ -2041,15 +2041,22 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
         # Check if this looks like a player props market (has Over/Under pattern)
         def check_player_prop(rm):
             """Check if a market is a player prop by looking for over/under keywords."""
+            def has_ou_keywords(text):
+                """Check for over/under patterns including abbreviations."""
+                if not text:
+                    return False
+                t = text.lower()
+                return "over" in t or "under" in t or "o/u" in t or " ou " in t
+
             # Check outcome_name
-            if rm.outcome_name and ("over" in rm.outcome_name.lower() or "under" in rm.outcome_name.lower()):
+            if rm.outcome_name and has_ou_keywords(rm.outcome_name):
                 return True
             # Check raw_data for question or groupItemTitle
             if rm.raw_data and isinstance(rm.raw_data, dict):
                 market_raw = rm.raw_data.get("market", {})
                 if isinstance(market_raw, dict):
-                    question = (market_raw.get("question") or market_raw.get("groupItemTitle") or "").lower()
-                    if "over" in question or "under" in question:
+                    question = market_raw.get("question") or market_raw.get("groupItemTitle") or ""
+                    if has_ou_keywords(question):
                         return True
             return False
 
@@ -2214,19 +2221,24 @@ Expires: {expiration_text}
             logger.warning("Failed to fetch orderbook prices", market_id=market_id, error=str(e))
 
         # Check if this is a player prop market (contains over/under in title, outcome_name, or question)
-        title_lower = market.title.lower()
-        outcome_name_lower = (market.outcome_name or "").lower()
-        # Also check the question field in raw_data (Polymarket stores prop details there)
-        question_lower = ""
+        def has_ou_keywords(text):
+            """Check for over/under patterns including abbreviations."""
+            if not text:
+                return False
+            t = text.lower()
+            return "over" in t or "under" in t or "o/u" in t or " ou " in t
+
+        # Check all relevant fields
+        question_text = ""
         if market.raw_data and isinstance(market.raw_data, dict):
             market_raw = market.raw_data.get("market", {})
             if isinstance(market_raw, dict):
-                question_lower = (market_raw.get("question") or market_raw.get("groupItemTitle") or "").lower()
+                question_text = market_raw.get("question") or market_raw.get("groupItemTitle") or ""
 
         is_player_prop = (
-            "over" in title_lower or "under" in title_lower or
-            "over" in outcome_name_lower or "under" in outcome_name_lower or
-            "over" in question_lower or "under" in question_lower
+            has_ou_keywords(market.title) or
+            has_ou_keywords(market.outcome_name) or
+            has_ou_keywords(question_text)
         )
 
         if is_player_prop:
@@ -2329,13 +2341,19 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
     # Check if this is a player props market
     def check_player_prop(rm):
         """Check if a market is a player prop by looking for over/under keywords."""
-        if rm.outcome_name and ("over" in rm.outcome_name.lower() or "under" in rm.outcome_name.lower()):
+        def has_ou_keywords(text):
+            if not text:
+                return False
+            t = text.lower()
+            return "over" in t or "under" in t or "o/u" in t or " ou " in t
+
+        if rm.outcome_name and has_ou_keywords(rm.outcome_name):
             return True
         if rm.raw_data and isinstance(rm.raw_data, dict):
             market_raw = rm.raw_data.get("market", {})
             if isinstance(market_raw, dict):
-                question = (market_raw.get("question") or market_raw.get("groupItemTitle") or "").lower()
-                if "over" in question or "under" in question:
+                question = market_raw.get("question") or market_raw.get("groupItemTitle") or ""
+                if has_ou_keywords(question):
                     return True
         return False
 
@@ -2693,6 +2711,36 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
 
     swap_note = locals().get("swap_note", "")
 
+    # Fetch market to check if it's a player prop
+    platform = get_platform(platform_enum)
+    market = await platform.get_market(market_id)
+
+    # Check if this is a player prop market
+    def has_ou_keywords(text):
+        if not text:
+            return False
+        t = text.lower()
+        return "over" in t or "under" in t or "o/u" in t or " ou " in t
+
+    is_player_prop = False
+    if market:
+        question_text = ""
+        if market.raw_data and isinstance(market.raw_data, dict):
+            market_raw = market.raw_data.get("market", {})
+            if isinstance(market_raw, dict):
+                question_text = market_raw.get("question") or market_raw.get("groupItemTitle") or ""
+        is_player_prop = (
+            has_ou_keywords(market.title) or
+            has_ou_keywords(market.outcome_name) or
+            has_ou_keywords(question_text)
+        )
+
+    # Use appropriate label
+    if is_player_prop:
+        position_label = "OVER" if outcome == "yes" else "UNDER"
+    else:
+        position_label = outcome.upper()
+
     # Store buy context for message handler
     context.user_data["pending_buy"] = {
         "platform": platform_value,
@@ -2701,7 +2749,7 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
     }
 
     text = f"""
-💰 <b>Buy {outcome.upper()} Position</b>
+💰 <b>Buy {position_label} Position</b>
 
 Platform: {info['name']}
 Collateral: {info['collateral']}{swap_note}
@@ -5177,19 +5225,24 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 price_warning = f"\n⚠️ <b>Note:</b> Execution price ({format_probability(price)}) differs from displayed mid-price ({format_probability(displayed_price)}) due to orderbook depth.\n"
 
         # Check if this is a player prop market (contains over/under in title, outcome_name, or question)
-        title_lower = market.title.lower()
-        outcome_name_lower = (market.outcome_name or "").lower()
-        # Also check the question field in raw_data (Polymarket stores prop details there)
-        question_lower = ""
+        def has_ou_keywords(text):
+            """Check for over/under patterns including abbreviations."""
+            if not text:
+                return False
+            t = text.lower()
+            return "over" in t or "under" in t or "o/u" in t or " ou " in t
+
+        # Check all relevant fields
+        question_text = ""
         if market.raw_data and isinstance(market.raw_data, dict):
             market_raw = market.raw_data.get("market", {})
             if isinstance(market_raw, dict):
-                question_lower = (market_raw.get("question") or market_raw.get("groupItemTitle") or "").lower()
+                question_text = market_raw.get("question") or market_raw.get("groupItemTitle") or ""
 
         is_player_prop = (
-            "over" in title_lower or "under" in title_lower or
-            "over" in outcome_name_lower or "under" in outcome_name_lower or
-            "over" in question_lower or "under" in question_lower
+            has_ou_keywords(market.title) or
+            has_ou_keywords(market.outcome_name) or
+            has_ou_keywords(question_text)
         )
 
         if is_player_prop:
@@ -5345,8 +5398,38 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
 
         info = PLATFORM_INFO[Platform(platform_value)]
 
+        # Fetch market to check if it's a player prop
+        platform = get_platform(Platform(platform_value))
+        market = await platform.get_market(market_id)
+
+        # Check if this is a player prop market
+        def has_ou_keywords(text):
+            if not text:
+                return False
+            t = text.lower()
+            return "over" in t or "under" in t or "o/u" in t or " ou " in t
+
+        is_player_prop = False
+        if market:
+            question_text = ""
+            if market.raw_data and isinstance(market.raw_data, dict):
+                market_raw = market.raw_data.get("market", {})
+                if isinstance(market_raw, dict):
+                    question_text = market_raw.get("question") or market_raw.get("groupItemTitle") or ""
+            is_player_prop = (
+                has_ou_keywords(market.title) or
+                has_ou_keywords(market.outcome_name) or
+                has_ou_keywords(question_text)
+            )
+
+        # Use appropriate label
+        if is_player_prop:
+            position_label = "OVER" if outcome == "yes" else "UNDER"
+        else:
+            position_label = outcome.upper()
+
         text = f"""
-💰 <b>Buy {outcome.upper()} Position</b>
+💰 <b>Buy {position_label} Position</b>
 
 Platform: {info['name']}
 Collateral: {info['collateral']}{swap_note}
