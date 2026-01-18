@@ -220,8 +220,14 @@ class FactsAIService:
                         }
                     elif response.status == 500:
                         print(f"[FactsAI] ERROR 500: {response_text[:1000] if response_text else 'empty'}")
+                        # Parse error message if available
+                        try:
+                            err_data = json.loads(response_text)
+                            err_msg = err_data.get("error", "Server error")
+                        except Exception:
+                            err_msg = "Server error"
                         return {
-                            "error": "FactsAI server error. Please try again.",
+                            "error": f"FactsAI: {err_msg}. Please try again later.",
                             "answer": None,
                             "citations": [],
                         }
