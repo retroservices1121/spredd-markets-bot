@@ -551,3 +551,26 @@ class PartnerGroup(Base):
 
     # Relationships
     partner: Mapped["Partner"] = relationship(back_populates="groups")
+
+
+# ===================
+# System Configuration
+# ===================
+
+class SystemConfig(Base):
+    """
+    Key-value store for system-wide configuration.
+    Used for dynamic settings that can be changed at runtime via admin commands.
+    """
+
+    __tablename__ = "system_config"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )

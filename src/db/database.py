@@ -26,6 +26,7 @@ from src.db.models import (
     FeeTransaction,
     Partner,
     PartnerGroup,
+    SystemConfig,
     ChainFamily,
     Platform,
     Chain,
@@ -1569,3 +1570,61 @@ async def get_top_referrers(
                 })
 
         return result
+
+
+# ===================
+# System Configuration
+# ===================
+
+async def get_config(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Get a system configuration value by key."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(SystemConfig).where(SystemConfig.key == key)
+        )
+        config = result.scalar_one_or_none()
+        if config:
+            return config.value
+        return default
+
+
+async def set_config(key: str, value: str, description: Optional[str] = None) -> None:
+    """Set a system configuration value."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(SystemConfig).where(SystemConfig.key == key)
+        )
+        config = result.scalar_one_or_none()
+
+        if config:
+            config.value = value
+            if description:
+                config.description = description
+        else:
+            config = SystemConfig(
+                key=key,
+                value=value,
+                description=description,
+            )
+            session.add(config)
+
+        await session.commit()
+        logger.info("Config updated", key=key, value=value)
+
+
+async def delete_config(key: str) -> bool:
+    """Delete a system configuration value."""
+    async with get_session() as session:
+        result = await session.execute(
+            delete(SystemConfig).where(SystemConfig.key == key)
+        )
+        await session.commit()
+        return result.rowcount > 0
+
+
+async def get_all_config() -> dict[str, str]:
+    """Get all system configuration values."""
+    async with get_session() as session:
+        result = await session.execute(select(SystemConfig))
+        configs = result.scalars().all()
+        return {c.key: c.value for c in configs}

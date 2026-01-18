@@ -7284,3 +7284,149 @@ async def handle_analytics_platforms(query, telegram_id: int, period: str = "all
             f"❌ Failed to load platform analytics: {str(e)[:100]}",
             parse_mode=ParseMode.HTML,
         )
+
+
+# ===================
+# Fee Configuration Commands (Admin)
+# ===================
+
+async def getfees_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to view current referral fee percentages.
+    Usage: /getfees
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    from src.services.fee import get_tier_commissions, DEFAULT_TIER_COMMISSIONS
+
+    try:
+        current = await get_tier_commissions()
+
+        text = """⚙️ <b>Referral Fee Configuration</b>
+
+<b>Current Rates (% of 2% fee):</b>
+├ Tier 1 (Direct): <code>{:.1f}%</code>{}
+├ Tier 2: <code>{:.1f}%</code>{}
+└ Tier 3: <code>{:.1f}%</code>{}
+
+<b>Default Rates:</b>
+├ Tier 1: 25%
+├ Tier 2: 5%
+└ Tier 3: 3%
+
+<b>Commands:</b>
+• <code>/setfee 1 50</code> - Set Tier 1 to 50%
+• <code>/setfee 2 10</code> - Set Tier 2 to 10%
+• <code>/resetfees</code> - Reset to defaults (25/5/3)""".format(
+            float(current[1] * 100),
+            " ✏️" if current[1] != DEFAULT_TIER_COMMISSIONS[1] else "",
+            float(current[2] * 100),
+            " ✏️" if current[2] != DEFAULT_TIER_COMMISSIONS[2] else "",
+            float(current[3] * 100),
+            " ✏️" if current[3] != DEFAULT_TIER_COMMISSIONS[3] else "",
+        )
+
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        logger.error("Failed to get fee config", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+
+
+async def setfee_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to set referral fee percentage for a tier.
+    Usage: /setfee <tier> <percent>
+    Example: /setfee 1 50  (sets Tier 1 to 50%)
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    from src.services.fee import set_tier_commission
+    from decimal import Decimal
+
+    args = context.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "❌ <b>Usage:</b> <code>/setfee &lt;tier&gt; &lt;percent&gt;</code>\n\n"
+            "<b>Examples:</b>\n"
+            "• <code>/setfee 1 50</code> - Tier 1 = 50%\n"
+            "• <code>/setfee 2 10</code> - Tier 2 = 10%\n"
+            "• <code>/setfee 3 5</code> - Tier 3 = 5%",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        tier = int(args[0])
+        percent = Decimal(args[1])
+
+        if tier not in [1, 2, 3]:
+            await update.message.reply_text("❌ Tier must be 1, 2, or 3")
+            return
+
+        if percent < 0 or percent > 100:
+            await update.message.reply_text("❌ Percent must be between 0 and 100")
+            return
+
+        success = await set_tier_commission(tier, percent)
+
+        if success:
+            await update.message.reply_text(
+                f"✅ <b>Tier {tier} commission set to {percent}%</b>\n\n"
+                f"Use /getfees to see all current rates.",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await update.message.reply_text("❌ Failed to update fee configuration")
+
+    except ValueError:
+        await update.message.reply_text("❌ Invalid tier or percent value. Both must be numbers.")
+    except Exception as e:
+        logger.error("Failed to set fee", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+
+
+async def resetfees_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to reset referral fees to default values.
+    Usage: /resetfees
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    from src.services.fee import reset_tier_commissions
+
+    try:
+        await reset_tier_commissions()
+
+        await update.message.reply_text(
+            "✅ <b>Referral fees reset to defaults:</b>\n\n"
+            "├ Tier 1: 25%\n"
+            "├ Tier 2: 5%\n"
+            "└ Tier 3: 3%",
+            parse_mode=ParseMode.HTML,
+        )
+
+    except Exception as e:
+        logger.error("Failed to reset fees", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")

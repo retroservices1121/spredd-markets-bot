@@ -22,6 +22,8 @@ from src.db.database import (
     get_user_by_telegram_id,
     update_partner_volume,
     get_effective_revenue_share,
+    get_config,
+    set_config,
 )
 from src.db.models import ChainFamily, Platform
 from src.utils.logging import get_logger
@@ -30,12 +32,68 @@ logger = get_logger(__name__)
 
 # Fee configuration
 TRANSACTION_FEE_BPS = 200  # 2% = 200 basis points
-TIER_COMMISSIONS = {
+
+# Default tier commissions (can be overridden via admin commands)
+DEFAULT_TIER_COMMISSIONS = {
     1: Decimal("0.25"),  # 25% of fee
     2: Decimal("0.05"),  # 5% of fee
     3: Decimal("0.03"),  # 3% of fee
 }
+
+# Config keys for tier commissions
+TIER_CONFIG_KEYS = {
+    1: "referral_tier1_percent",
+    2: "referral_tier2_percent",
+    3: "referral_tier3_percent",
+}
+
 MIN_WITHDRAWAL_USDC = Decimal("5.00")
+
+
+async def get_tier_commissions() -> dict[int, Decimal]:
+    """
+    Get current tier commission rates from database config.
+    Falls back to defaults if not configured.
+    """
+    commissions = {}
+    for tier, key in TIER_CONFIG_KEYS.items():
+        value = await get_config(key)
+        if value is not None:
+            try:
+                # Convert percentage (e.g., "25") to decimal (0.25)
+                commissions[tier] = Decimal(value) / Decimal("100")
+            except Exception:
+                commissions[tier] = DEFAULT_TIER_COMMISSIONS[tier]
+        else:
+            commissions[tier] = DEFAULT_TIER_COMMISSIONS[tier]
+    return commissions
+
+
+async def set_tier_commission(tier: int, percent: Decimal) -> bool:
+    """
+    Set a tier commission rate.
+
+    Args:
+        tier: Tier number (1, 2, or 3)
+        percent: Commission percentage (e.g., 25 for 25%)
+
+    Returns:
+        True if successful
+    """
+    if tier not in TIER_CONFIG_KEYS:
+        return False
+
+    key = TIER_CONFIG_KEYS[tier]
+    description = f"Tier {tier} referral commission percentage"
+    await set_config(key, str(percent), description)
+    return True
+
+
+async def reset_tier_commissions() -> None:
+    """Reset all tier commissions to default values."""
+    for tier, default in DEFAULT_TIER_COMMISSIONS.items():
+        percent = default * Decimal("100")  # Convert 0.25 to 25
+        await set_tier_commission(tier, percent)
 
 
 def get_chain_family_for_platform(platform: Platform) -> ChainFamily:
@@ -112,13 +170,16 @@ async def distribute_referral_fees(
     # Get the referral chain for this user
     referral_chain = await get_referral_chain(trader_user_id)
 
+    # Get current tier commission rates (may be customized via admin)
+    tier_commissions = await get_tier_commissions()
+
     total_distributed = Decimal("0")
 
     for tier, referrer in enumerate(referral_chain, start=1):
         if tier > 3:
             break
 
-        commission_rate = TIER_COMMISSIONS.get(tier, Decimal("0"))
+        commission_rate = tier_commissions.get(tier, Decimal("0"))
         commission = (fee_amount * commission_rate).quantize(
             Decimal("0.000001"), rounding=ROUND_DOWN
         )
