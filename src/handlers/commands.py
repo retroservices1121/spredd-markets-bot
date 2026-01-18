@@ -2202,9 +2202,13 @@ Expires: {expiration_text}
         except Exception as e:
             logger.warning("Failed to fetch orderbook prices", market_id=market_id, error=str(e))
 
-        # Check if this is a player prop market (contains over/under in title)
+        # Check if this is a player prop market (contains over/under in title or outcome_name)
         title_lower = market.title.lower()
-        is_player_prop = "over" in title_lower or "under" in title_lower
+        outcome_name_lower = (market.outcome_name or "").lower()
+        is_player_prop = (
+            "over" in title_lower or "under" in title_lower or
+            "over" in outcome_name_lower or "under" in outcome_name_lower
+        )
 
         if is_player_prop:
             # Player prop - show Over/Under labels
@@ -5144,15 +5148,32 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             if diff > 0.05:  # More than 5% difference
                 price_warning = f"\n⚠️ <b>Note:</b> Execution price ({format_probability(price)}) differs from displayed mid-price ({format_probability(displayed_price)}) due to orderbook depth.\n"
 
+        # Check if this is a player prop market (contains over/under in title or outcome_name)
+        title_lower = market.title.lower()
+        outcome_name_lower = (market.outcome_name or "").lower()
+        is_player_prop = (
+            "over" in title_lower or "under" in title_lower or
+            "over" in outcome_name_lower or "under" in outcome_name_lower
+        )
+
+        if is_player_prop:
+            # Player prop - use Over/Under labels
+            side_label = "OVER" if outcome == "yes" else "UNDER"
+            token_label = "OVER" if outcome == "yes" else "UNDER"
+        else:
+            # Regular market - use YES/NO labels
+            side_label = outcome.upper()
+            token_label = outcome.upper()
+
         text = f"""
 📋 <b>Order Quote</b>
 
 Market: {escape_html(market.title[:50])}...
-Side: BUY {outcome.upper()}
+Side: BUY {side_label}
 
 💰 <b>You Pay:</b> {amount} {platform_info['collateral']}
 💸 <b>Fee (2%):</b> {fee_display}
-📦 <b>You Receive:</b> ~{expected_tokens:.2f} {outcome.upper()} tokens
+📦 <b>You Receive:</b> ~{expected_tokens:.2f} {token_label} tokens
 📊 <b>Execution Price:</b> {format_probability(price)} per token
 {price_warning}"""
 
