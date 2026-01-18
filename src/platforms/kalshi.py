@@ -541,13 +541,14 @@ class KalshiPlatform(BasePlatform):
             return []
 
         # Also define title/description keywords for each category
+        # Note: Be careful with short keywords to avoid false positives
         CATEGORY_KEYWORDS = {
-            "crypto": ["bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto", "cryptocurrency", "token", "coin"],
-            "sports": ["nfl", "nba", "mlb", "nhl", "super bowl", "championship", "playoff", "game", "match", "player"],
-            "politics": ["president", "election", "senate", "congress", "trump", "biden", "vote", "political"],
-            "economics": ["inflation", "fed", "interest rate", "gdp", "recession", "economy", "stock", "market"],
-            "world": ["war", "ukraine", "russia", "china", "international", "global"],
-            "entertainment": ["oscar", "grammy", "emmy", "movie", "music", "award", "celebrity"],
+            "crypto": ["bitcoin", " btc ", "ethereum", " eth ", "solana", "cryptocurrency"],  # Removed ambiguous: "crypto", "token", "coin"
+            "sports": ["super bowl", "championship", "playoff", "touchdown", "quarterback"],  # More specific
+            "politics": ["president", "election", "senate", "congress", "vote", "political"],
+            "economics": ["inflation", "interest rate", "gdp", "recession", "federal reserve"],
+            "world": ["ukraine", "russia", "international", "global conflict"],
+            "entertainment": ["oscar", "grammy", "emmy", "academy award"],
         }
         keywords = CATEGORY_KEYWORDS.get(category.lower(), [])
 
