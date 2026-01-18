@@ -1417,9 +1417,10 @@ Create a shareable image of your trading stats!
 <b>Select a platform:</b>"""
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔮 Kalshi", callback_data="pnlcard:kalshi")],
-        [InlineKeyboardButton("🔷 Polymarket", callback_data="pnlcard:polymarket")],
-        [InlineKeyboardButton("💬 Opinion", callback_data="pnlcard:opinion")],
+        [InlineKeyboardButton("🇺🇸 Kalshi", callback_data="pnlcard:kalshi")],
+        [InlineKeyboardButton("🔮 Polymarket", callback_data="pnlcard:polymarket")],
+        [InlineKeyboardButton("🤖 Opinion", callback_data="pnlcard:opinion")],
+        [InlineKeyboardButton("♾️ Limitless", callback_data="pnlcard:limitless")],
     ])
 
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
