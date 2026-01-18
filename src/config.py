@@ -57,7 +57,7 @@ class Settings(BaseSettings):
         description="Polygon RPC endpoint"
     )
     polygon_rpc_fallbacks: str = Field(
-        default="https://polygon.llamarpc.com,https://polygon-mainnet.public.blastapi.io,https://polygon-rpc.com",
+        default="https://polygon-bor-rpc.publicnode.com,https://1rpc.io/matic,https://polygon-mainnet.public.blastapi.io",
         description="Comma-separated fallback Polygon RPC endpoints"
     )
     bsc_rpc_url: str = Field(
