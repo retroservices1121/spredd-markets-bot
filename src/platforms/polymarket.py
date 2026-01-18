@@ -844,14 +844,20 @@ class PolymarketPlatform(BasePlatform):
                         markets.append(self._parse_market(event))
                         seen_event_ids.add(event_id)
                 else:
-                    # Multi-market event - add once with first active market
-                    # (displays as "[X options]" in the UI)
-                    for market_data in event_markets:
-                        if market_data.get("active", True) and not market_data.get("closed", False):
-                            if not is_market_expired(event, market_data):
-                                markets.append(self._parse_market(event, market_data))
-                                seen_event_ids.add(event_id)
-                                break  # Only add one entry per event
+                    # Multi-market event - add once, preferring main game over player props
+                    # Markets with groupItemTitle are player props, those without are main games
+                    active_markets = [
+                        m for m in event_markets
+                        if m.get("active", True) and not m.get("closed", False)
+                        and not is_market_expired(event, m)
+                    ]
+
+                    if active_markets:
+                        # Prefer main game (no groupItemTitle) over player props
+                        main_games = [m for m in active_markets if not m.get("groupItemTitle")]
+                        selected = main_games[0] if main_games else active_markets[0]
+                        markets.append(self._parse_market(event, selected))
+                        seen_event_ids.add(event_id)
 
                 # Stop if we have enough markets
                 if len(markets) >= limit:
@@ -935,13 +941,19 @@ class PolymarketPlatform(BasePlatform):
                         markets.append(self._parse_market(event))
                         seen_event_ids.add(event_id)
                 else:
-                    # Multi-market event - add once with first active market
-                    for market_data in event_markets:
-                        if market_data.get("active", True) and not market_data.get("closed", False):
-                            if not is_market_expired(event, market_data):
-                                markets.append(self._parse_market(event, market_data))
-                                seen_event_ids.add(event_id)
-                                break  # Only add one entry per event
+                    # Multi-market event - prefer main game over player props
+                    active_markets = [
+                        m for m in event_markets
+                        if m.get("active", True) and not m.get("closed", False)
+                        and not is_market_expired(event, m)
+                    ]
+
+                    if active_markets:
+                        # Prefer main game (no groupItemTitle) over player props
+                        main_games = [m for m in active_markets if not m.get("groupItemTitle")]
+                        selected = main_games[0] if main_games else active_markets[0]
+                        markets.append(self._parse_market(event, selected))
+                        seen_event_ids.add(event_id)
 
                 if len(markets) >= limit:
                     break
@@ -1146,13 +1158,19 @@ class PolymarketPlatform(BasePlatform):
                             markets.append(self._parse_market(event))
                             seen_event_ids.add(event_id)
                     else:
-                        # Multi-market event - add once with first active market
-                        for market_data in event_markets:
-                            if market_data.get("active", True) and not market_data.get("closed", False):
-                                if not is_market_expired(event, market_data):
-                                    markets.append(self._parse_market(event, market_data))
-                                    seen_event_ids.add(event_id)
-                                    break  # Only add one entry per event
+                        # Multi-market event - prefer main game over player props
+                        active_markets = [
+                            m for m in event_markets
+                            if m.get("active", True) and not m.get("closed", False)
+                            and not is_market_expired(event, m)
+                        ]
+
+                        if active_markets:
+                            # Prefer main game (no groupItemTitle) over player props
+                            main_games = [m for m in active_markets if not m.get("groupItemTitle")]
+                            selected = main_games[0] if main_games else active_markets[0]
+                            markets.append(self._parse_market(event, selected))
+                            seen_event_ids.add(event_id)
 
                     if len(markets) >= limit:
                         break
