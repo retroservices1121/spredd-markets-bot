@@ -2048,16 +2048,25 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
                 t = text.lower()
                 return "over" in t or "under" in t or "o/u" in t or " ou " in t
 
+            # Check title
+            if rm.title and has_ou_keywords(rm.title):
+                return True
             # Check outcome_name
             if rm.outcome_name and has_ou_keywords(rm.outcome_name):
                 return True
-            # Check raw_data for question or groupItemTitle
+            # Check raw_data for question or groupItemTitle (Polymarket structure)
             if rm.raw_data and isinstance(rm.raw_data, dict):
+                # Polymarket: nested under "market" key
                 market_raw = rm.raw_data.get("market", {})
                 if isinstance(market_raw, dict):
                     question = market_raw.get("question") or market_raw.get("groupItemTitle") or ""
                     if has_ou_keywords(question):
                         return True
+                # Kalshi: direct fields at top level
+                kalshi_title = rm.raw_data.get("title") or rm.raw_data.get("question") or ""
+                kalshi_subtitle = rm.raw_data.get("yesSubtitle") or rm.raw_data.get("subtitle") or ""
+                if has_ou_keywords(kalshi_title) or has_ou_keywords(kalshi_subtitle):
+                    return True
             return False
 
         is_player_props = any(check_player_prop(rm) for rm in related_markets[:5])
@@ -2357,14 +2366,25 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
             t = text.lower()
             return "over" in t or "under" in t or "o/u" in t or " ou " in t
 
+        # Check title
+        if rm.title and has_ou_keywords(rm.title):
+            return True
+        # Check outcome_name
         if rm.outcome_name and has_ou_keywords(rm.outcome_name):
             return True
+        # Check raw_data for question or groupItemTitle (Polymarket structure)
         if rm.raw_data and isinstance(rm.raw_data, dict):
+            # Polymarket: nested under "market" key
             market_raw = rm.raw_data.get("market", {})
             if isinstance(market_raw, dict):
                 question = market_raw.get("question") or market_raw.get("groupItemTitle") or ""
                 if has_ou_keywords(question):
                     return True
+            # Kalshi: direct fields at top level
+            kalshi_title = rm.raw_data.get("title") or rm.raw_data.get("question") or ""
+            kalshi_subtitle = rm.raw_data.get("yesSubtitle") or rm.raw_data.get("subtitle") or ""
+            if has_ou_keywords(kalshi_title) or has_ou_keywords(kalshi_subtitle):
+                return True
         return False
 
     is_player_props = any(check_player_prop(rm) for rm in related_markets[:5])

@@ -473,28 +473,38 @@ class KalshiPlatform(BasePlatform):
     CATEGORY_PATTERNS = {
         "sports": [
             "KXSB", "KXNFL", "KXNBA", "KXNHL", "KXMLB",  # US Sports
-            "KXNCAAF", "KXMARMAD",  # College sports
-            "KXPREMIERLEAGUE", "KXLALIGA", "KXUCL",  # Soccer
+            "KXNCAAF", "KXMARMAD", "KXCFB", "KXCBB",  # College sports
+            "KXPREMIERLEAGUE", "KXLALIGA", "KXUCL", "KXSOCCER", "KXEPL",  # Soccer
             "KXTEAMSINSB", "KXNFLGAME", "KXNFLMVP", "KXNFLAFCCHAMP", "KXNFLNFCCHAMP",
-            "KXNFLCOTY", "KXNFLOPOTY", "KXNFLOROTY", "KXNFLDPOTY",
-            "KXNBAMVP", "KXNBADPOY", "KXNBAEAST", "KXNBAWEST",
+            "KXNFLCOTY", "KXNFLOPOTY", "KXNFLOROTY", "KXNFLDPOTY", "KXNFLPROP",
+            "KXNBAMVP", "KXNBADPOY", "KXNBAEAST", "KXNBAWEST", "KXNBAPROP",
+            "KXUFC", "KXMMA", "KXBOXING", "KXWRESTL", "KXTENNIS", "KXGOLF",
+            "KXF1", "KXNASCAR", "KXOLYMPIC",
         ],
         "politics": [
             "KXPRES", "KXCONTROL", "KXSENATE", "KXGOV", "KXCAB",
-            "KXTRUMP", "KXLEADERS", "KXLEAVE", "KXARREST",
+            "KXTRUMP", "KXLEADERS", "KXLEAVE", "KXARREST", "KXBIDEN",
+            "KXHOUSE", "KXCONGRESS", "KXELECTION", "KXVOTE", "KXPOLICY",
         ],
         "economics": [
             "KXFED", "KXGOVT", "RECSSNBER", "KXGOVSHUT",
+            "KXINFLATION", "KXCPI", "KXGDP", "KXJOBS", "KXRATE",
+            "KXSP500", "KXSTOCK", "KXMARKET", "KXDOW", "KXNASDAQ",
         ],
         "crypto": [
-            "KXBTC", "KXETH", "KXSOL",
+            "KXBTC", "KXETH", "KXSOL", "KXCRYPTO", "KXCOIN",
+            "KXDOGE", "KXXRP", "KXADA", "KXAVAX", "KXLINK",
+            "KXMATIC", "KXDOT", "KXATOM", "KXUNI", "KXAAVE",
+            "BITCOIN", "ETHEREUM", "CRYPTO",  # Catch-all patterns
         ],
         "world": [
             "KXKHAMENEI", "KXGREENLAND", "KXGREENTER", "KXVENEZUELA",
-            "KXDJTVO",  # Trump foreign policy
+            "KXDJTVO", "KXCHINA", "KXRUSSIA", "KXUKRAINE", "KXEU",
+            "KXWAR", "KXPEACE", "KXNATO", "KXUN", "KXMIDEAST",
         ],
         "entertainment": [
-            "KXOSCAR", "KXGRAM", "KXMEDIA",
+            "KXOSCAR", "KXGRAM", "KXMEDIA", "KXEMMY", "KXGOLDEN",
+            "KXTV", "KXMOVIE", "KXMUSIC", "KXAWARD", "KXCELEB",
         ],
     }
 
@@ -515,12 +525,12 @@ class KalshiPlatform(BasePlatform):
     async def get_markets_by_category(
         self,
         category: str,
-        limit: int = 50,
+        limit: int = 100,
     ) -> list[Market]:
         """Get markets filtered by category.
 
-        Categories are inferred from ticker patterns since DFlow API
-        doesn't have a categories endpoint.
+        Categories are inferred from ticker patterns and title/description
+        since DFlow API doesn't have a categories endpoint.
         """
         # Get all markets (uses cache if available)
         all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
@@ -530,12 +540,41 @@ class KalshiPlatform(BasePlatform):
         if not patterns:
             return []
 
-        # Filter markets by ticker pattern
+        # Also define title/description keywords for each category
+        CATEGORY_KEYWORDS = {
+            "crypto": ["bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto", "cryptocurrency", "token", "coin"],
+            "sports": ["nfl", "nba", "mlb", "nhl", "super bowl", "championship", "playoff", "game", "match", "player"],
+            "politics": ["president", "election", "senate", "congress", "trump", "biden", "vote", "political"],
+            "economics": ["inflation", "fed", "interest rate", "gdp", "recession", "economy", "stock", "market"],
+            "world": ["war", "ukraine", "russia", "china", "international", "global"],
+            "entertainment": ["oscar", "grammy", "emmy", "movie", "music", "award", "celebrity"],
+        }
+        keywords = CATEGORY_KEYWORDS.get(category.lower(), [])
+
+        # Filter markets by ticker pattern OR title/description keywords
         filtered = []
+        seen_ids = set()
         for market in all_markets:
+            if market.market_id in seen_ids:
+                continue
+
             ticker = market.market_id.upper()
+            title_lower = (market.title or "").lower()
+            desc_lower = (market.description or "").lower()
+
+            # Match by ticker pattern
             if any(ticker.startswith(pattern) for pattern in patterns):
                 filtered.append(market)
+                seen_ids.add(market.market_id)
+                continue
+
+            # Match by title/description keywords
+            if keywords:
+                for keyword in keywords:
+                    if keyword in title_lower or keyword in desc_lower:
+                        filtered.append(market)
+                        seen_ids.add(market.market_id)
+                        break
 
         return filtered[:limit]
 
