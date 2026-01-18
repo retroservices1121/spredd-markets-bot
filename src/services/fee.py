@@ -96,6 +96,59 @@ async def reset_tier_commissions() -> None:
         await set_tier_commission(tier, percent)
 
 
+# ===================
+# Per-User Rate Overrides
+# ===================
+
+def _user_rate_key(user_id: str) -> str:
+    """Get the config key for a user's custom rate."""
+    return f"user_rate_{user_id}"
+
+
+async def get_user_custom_rate(user_id: str) -> Optional[Decimal]:
+    """
+    Get a user's custom Tier 1 commission rate if set.
+
+    Returns:
+        Decimal rate (e.g., 0.50 for 50%) or None if not set
+    """
+    value = await get_config(_user_rate_key(user_id))
+    if value is not None:
+        try:
+            return Decimal(value) / Decimal("100")
+        except Exception:
+            return None
+    return None
+
+
+async def set_user_custom_rate(user_id: str, percent: Decimal) -> bool:
+    """
+    Set a custom Tier 1 commission rate for a specific user.
+
+    Args:
+        user_id: The user's database ID
+        percent: Commission percentage (e.g., 50 for 50%)
+
+    Returns:
+        True if successful
+    """
+    key = _user_rate_key(user_id)
+    description = f"Custom Tier 1 rate for user {user_id}"
+    await set_config(key, str(percent), description)
+    return True
+
+
+async def clear_user_custom_rate(user_id: str) -> bool:
+    """
+    Remove a user's custom rate (they'll use global rates).
+
+    Returns:
+        True if a rate was removed, False if none existed
+    """
+    from src.db.database import delete_config
+    return await delete_config(_user_rate_key(user_id))
+
+
 def get_chain_family_for_platform(platform: Platform) -> ChainFamily:
     """Get the chain family for a platform."""
     if platform == Platform.KALSHI:
@@ -179,7 +232,17 @@ async def distribute_referral_fees(
         if tier > 3:
             break
 
-        commission_rate = tier_commissions.get(tier, Decimal("0"))
+        # For Tier 1, check if referrer has a custom rate
+        custom_rate = None
+        if tier == 1:
+            custom_rate = await get_user_custom_rate(referrer.id)
+            if custom_rate is not None:
+                commission_rate = custom_rate
+            else:
+                commission_rate = tier_commissions.get(tier, Decimal("0"))
+        else:
+            commission_rate = tier_commissions.get(tier, Decimal("0"))
+
         commission = (fee_amount * commission_rate).quantize(
             Decimal("0.000001"), rounding=ROUND_DOWN
         )
@@ -198,6 +261,7 @@ async def distribute_referral_fees(
                 "user_id": referrer.id,
                 "username": referrer.username,
                 "amount": str(commission),
+                "custom_rate": custom_rate is not None,
             }
             total_distributed += commission
 
@@ -208,6 +272,7 @@ async def distribute_referral_fees(
                 amount=str(commission),
                 chain=chain_family.value,
                 trader_id=trader_user_id,
+                custom_rate=float(custom_rate * 100) if custom_rate is not None else None,
             )
 
     distributions["total_distributed"] = str(total_distributed)

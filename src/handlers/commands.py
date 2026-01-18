@@ -7430,3 +7430,188 @@ async def resetfees_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except Exception as e:
         logger.error("Failed to reset fees", error=str(e))
         await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+
+
+async def checkuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to check a user's referral stats.
+    Usage: /checkuser <telegram_id>
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    from src.db.database import get_user_by_telegram_id, get_referral_stats
+    from src.services.fee import get_user_custom_rate, DEFAULT_TIER_COMMISSIONS
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "❌ <b>Usage:</b> <code>/checkuser &lt;telegram_id&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/checkuser 123456789</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        target_telegram_id = int(args[0])
+        user = await get_user_by_telegram_id(target_telegram_id)
+
+        if not user:
+            await update.message.reply_text(f"❌ User with Telegram ID {target_telegram_id} not found.")
+            return
+
+        # Get referral stats
+        stats = await get_referral_stats(user.id)
+
+        # Check for custom rate
+        custom_rate = await get_user_custom_rate(user.id)
+        default_rate = DEFAULT_TIER_COMMISSIONS[1] * 100
+
+        rate_text = f"{float(custom_rate * 100):.0f}% ⭐ (VIP)" if custom_rate else f"{float(default_rate):.0f}% (default)"
+
+        text = f"""👤 <b>User Details</b>
+
+<b>Telegram ID:</b> <code>{user.telegram_id}</code>
+<b>Username:</b> @{user.username or 'N/A'}
+<b>Name:</b> {user.first_name or 'N/A'}
+<b>Database ID:</b> <code>{user.id}</code>
+
+📊 <b>Referral Stats</b>
+├ Direct Referrals: <code>{stats.get('direct_referrals', 0)}</code>
+├ Tier 2 Referrals: <code>{stats.get('tier2_referrals', 0)}</code>
+├ Tier 3 Referrals: <code>{stats.get('tier3_referrals', 0)}</code>
+└ Total Earnings: <code>${float(stats.get('total_earnings', 0)):,.2f}</code>
+
+💰 <b>Commission Rate</b>
+└ Tier 1 Rate: <code>{rate_text}</code>
+
+<b>Commands:</b>
+• <code>/setuserrate {user.telegram_id} 50</code> - Set to 50%
+• <code>/clearuserrate {user.telegram_id}</code> - Reset to default"""
+
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    except ValueError:
+        await update.message.reply_text("❌ Invalid Telegram ID. Must be a number.")
+    except Exception as e:
+        logger.error("Failed to check user", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+
+
+async def setuserrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to set a custom referral rate for a specific user.
+    Usage: /setuserrate <telegram_id> <percent>
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    from src.db.database import get_user_by_telegram_id
+    from src.services.fee import set_user_custom_rate
+    from decimal import Decimal
+
+    args = context.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "❌ <b>Usage:</b> <code>/setuserrate &lt;telegram_id&gt; &lt;percent&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/setuserrate 123456789 50</code> - Give user 50% commission",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        target_telegram_id = int(args[0])
+        percent = Decimal(args[1])
+
+        if percent < 0 or percent > 100:
+            await update.message.reply_text("❌ Percent must be between 0 and 100")
+            return
+
+        user = await get_user_by_telegram_id(target_telegram_id)
+        if not user:
+            await update.message.reply_text(f"❌ User with Telegram ID {target_telegram_id} not found.")
+            return
+
+        await set_user_custom_rate(user.id, percent)
+
+        await update.message.reply_text(
+            f"✅ <b>Custom rate set!</b>\n\n"
+            f"User: @{user.username or user.first_name or target_telegram_id}\n"
+            f"Tier 1 Rate: <code>{percent}%</code> ⭐\n\n"
+            f"This user will now earn {percent}% of trading fees from their direct referrals.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    except ValueError:
+        await update.message.reply_text("❌ Invalid Telegram ID or percent. Both must be numbers.")
+    except Exception as e:
+        logger.error("Failed to set user rate", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+
+
+async def clearuserrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to remove a user's custom rate (back to default).
+    Usage: /clearuserrate <telegram_id>
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    from src.db.database import get_user_by_telegram_id
+    from src.services.fee import clear_user_custom_rate
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "❌ <b>Usage:</b> <code>/clearuserrate &lt;telegram_id&gt;</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        target_telegram_id = int(args[0])
+
+        user = await get_user_by_telegram_id(target_telegram_id)
+        if not user:
+            await update.message.reply_text(f"❌ User with Telegram ID {target_telegram_id} not found.")
+            return
+
+        removed = await clear_user_custom_rate(user.id)
+
+        if removed:
+            await update.message.reply_text(
+                f"✅ Custom rate removed for @{user.username or user.first_name or target_telegram_id}\n\n"
+                f"They will now earn the default global rate.",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await update.message.reply_text(
+                f"ℹ️ User @{user.username or user.first_name or target_telegram_id} had no custom rate set.",
+                parse_mode=ParseMode.HTML,
+            )
+
+    except ValueError:
+        await update.message.reply_text("❌ Invalid Telegram ID. Must be a number.")
+    except Exception as e:
+        logger.error("Failed to clear user rate", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")

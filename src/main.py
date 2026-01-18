@@ -54,6 +54,9 @@ from src.handlers.commands import (
     getfees_command,
     setfee_command,
     resetfees_command,
+    checkuser_command,
+    setuserrate_command,
+    clearuserrate_command,
     handle_group_add,
     handle_group_message,
 )
@@ -132,6 +135,9 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("getfees", getfees_command))
     application.add_handler(CommandHandler("setfee", setfee_command))
     application.add_handler(CommandHandler("resetfees", resetfees_command))
+    application.add_handler(CommandHandler("checkuser", checkuser_command))
+    application.add_handler(CommandHandler("setuserrate", setuserrate_command))
+    application.add_handler(CommandHandler("clearuserrate", clearuserrate_command))
 
     # Callback query handler for inline buttons
     application.add_handler(CallbackQueryHandler(callback_handler))
