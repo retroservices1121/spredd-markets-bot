@@ -213,8 +213,15 @@ class FactsAIService:
                             "citations": [],
                         }
                     elif response.status == 429:
+                        logger.warning("FactsAI rate limited by Cloudflare")
                         return {
-                            "error": "Rate limited, please try again later",
+                            "error": "AI Research is temporarily unavailable due to high demand. Please try again in a few minutes.",
+                            "answer": None,
+                            "citations": [],
+                        }
+                    elif response.status == 503:
+                        return {
+                            "error": "AI Research service is temporarily unavailable. Please try again later.",
                             "answer": None,
                             "citations": [],
                         }
