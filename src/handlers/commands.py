@@ -2038,19 +2038,34 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
 
     if related_markets and len(related_markets) > 1:
         # Multi-outcome event - show all options
+        # Check if this looks like a player props market (has Over/Under pattern)
+        is_player_props = any(
+            rm.outcome_name and ("over" in rm.outcome_name.lower() or "under" in rm.outcome_name.lower())
+            for rm in related_markets[:5]  # Check first 5 markets
+        )
+
         text = f"""
 {info['emoji']} <b>{escape_html(market.title)}</b>
 
 📊 <b>Options ({len(related_markets)} choices)</b>
 """
-        # Add each outcome with its probability
+        # Add each outcome with its prices
         for i, rm in enumerate(related_markets, 1):
-            prob = format_probability(rm.yes_price)
             name = rm.outcome_name or rm.title
             # Truncate long names
-            if len(name) > 30:
-                name = name[:27] + "..."
-            text += f"{i}. {escape_html(name)}: {prob}\n"
+            if len(name) > 35:
+                name = name[:32] + "..."
+
+            # Show both Over (YES) and Under (NO) prices
+            yes_price_str = format_probability(rm.yes_price) if rm.yes_price else "N/A"
+            no_price_str = format_probability(rm.no_price) if rm.no_price else "N/A"
+
+            if is_player_props:
+                # For player props: show Over/Under format
+                text += f"{i}. {escape_html(name)}\n   ⬆️ Over: {yes_price_str} | ⬇️ Under: {no_price_str}\n"
+            else:
+                # For other multi-outcome (like elections): show YES price
+                text += f"{i}. {escape_html(name)}: {yes_price_str}\n"
 
         text += f"""
 📈 <b>Stats</b>
@@ -2066,22 +2081,42 @@ Expires: {expiration_text}
                 criteria_text += "..."
             text += f"\n📋 <b>Resolution Rules</b>\n{escape_html(criteria_text)}\n"
 
-        # Create buy buttons for each outcome (up to 15 to fit Telegram limits)
-        max_buttons = 15
+        # Create buy buttons for each outcome
+        # Limit to fewer items if showing Over/Under buttons (takes more space)
+        max_buttons = 8 if is_player_props else 15
         buttons = []
         for rm in related_markets[:max_buttons]:
             name = rm.outcome_name or rm.title
-            if len(name) > 20:
-                name = name[:17] + "..."
-            prob = format_probability(rm.yes_price)
             # Truncate market_id to fit callback_data limit (64 bytes)
             short_id = rm.market_id[:40]
-            buttons.append([
-                InlineKeyboardButton(
-                    f"{escape_html(name)} ({prob})",
-                    callback_data=f"buy:{platform_value}:{short_id}:yes"
-                )
-            ])
+
+            if is_player_props:
+                # For player props: show Over and Under buttons side by side
+                if len(name) > 15:
+                    name = name[:12] + "..."
+                yes_price_str = format_probability(rm.yes_price) if rm.yes_price else "?"
+                no_price_str = format_probability(rm.no_price) if rm.no_price else "?"
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"⬆️ {escape_html(name)} Over ({yes_price_str})",
+                        callback_data=f"buy:{platform_value}:{short_id}:yes"
+                    ),
+                    InlineKeyboardButton(
+                        f"⬇️ Under ({no_price_str})",
+                        callback_data=f"buy:{platform_value}:{short_id}:no"
+                    )
+                ])
+            else:
+                # For other multi-outcome: single button per option
+                if len(name) > 20:
+                    name = name[:17] + "..."
+                prob = format_probability(rm.yes_price)
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{escape_html(name)} ({prob})",
+                        callback_data=f"buy:{platform_value}:{short_id}:yes"
+                    )
+                ])
 
         # Show "more options" if there are more than max_buttons
         if len(related_markets) > max_buttons:
@@ -2183,36 +2218,68 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
     await query.answer()
 
     info = PLATFORM_INFO[platform_enum]
-    max_buttons = 15
 
     # Get the remaining options starting from offset
     remaining_markets = related_markets[offset:]
+
+    # Check if this is a player props market
+    is_player_props = any(
+        rm.outcome_name and ("over" in rm.outcome_name.lower() or "under" in rm.outcome_name.lower())
+        for rm in related_markets[:5]
+    )
+
+    max_buttons = 8 if is_player_props else 15
 
     text = f"""
 {info['emoji']} <b>{escape_html(market.title)}</b>
 
 📊 <b>More Options (showing {offset + 1}-{min(offset + max_buttons, len(related_markets))} of {len(related_markets)})</b>
 """
-    # List remaining options
+    # List remaining options with prices
     for i, rm in enumerate(remaining_markets[:max_buttons], offset + 1):
         name = rm.outcome_name or rm.title
-        prob = format_probability(rm.yes_price)
-        text += f"{i}. {escape_html(name)}: {prob}\n"
+        if len(name) > 35:
+            name = name[:32] + "..."
+        if is_player_props:
+            yes_price_str = format_probability(rm.yes_price) if rm.yes_price else "N/A"
+            no_price_str = format_probability(rm.no_price) if rm.no_price else "N/A"
+            text += f"{i}. {escape_html(name)}\n   ⬆️ Over: {yes_price_str} | ⬇️ Under: {no_price_str}\n"
+        else:
+            prob = format_probability(rm.yes_price)
+            text += f"{i}. {escape_html(name)}: {prob}\n"
 
     # Create buttons for remaining options
     buttons = []
     for rm in remaining_markets[:max_buttons]:
         name = rm.outcome_name or rm.title
-        if len(name) > 20:
-            name = name[:17] + "..."
-        prob = format_probability(rm.yes_price)
         short_id = rm.market_id[:40]
-        buttons.append([
-            InlineKeyboardButton(
-                f"{escape_html(name)} ({prob})",
-                callback_data=f"buy:{platform_value}:{short_id}:yes"
-            )
-        ])
+
+        if is_player_props:
+            # Show Over/Under buttons for player props
+            if len(name) > 15:
+                name = name[:12] + "..."
+            yes_price_str = format_probability(rm.yes_price) if rm.yes_price else "?"
+            no_price_str = format_probability(rm.no_price) if rm.no_price else "?"
+            buttons.append([
+                InlineKeyboardButton(
+                    f"⬆️ {escape_html(name)} Over ({yes_price_str})",
+                    callback_data=f"buy:{platform_value}:{short_id}:yes"
+                ),
+                InlineKeyboardButton(
+                    f"⬇️ Under ({no_price_str})",
+                    callback_data=f"buy:{platform_value}:{short_id}:no"
+                )
+            ])
+        else:
+            if len(name) > 20:
+                name = name[:17] + "..."
+            prob = format_probability(rm.yes_price)
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{escape_html(name)} ({prob})",
+                    callback_data=f"buy:{platform_value}:{short_id}:yes"
+                )
+            ])
 
     # Show more if still more options
     new_offset = offset + max_buttons
@@ -4945,6 +5012,14 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             "amount": str(amount),
         }
 
+        # Get market's displayed price (mid-price) for comparison
+        displayed_price = market.yes_price if outcome == "yes" else market.no_price
+        price_warning = ""
+        if displayed_price and price:
+            diff = abs(float(price) - float(displayed_price))
+            if diff > 0.05:  # More than 5% difference
+                price_warning = f"\n⚠️ <b>Note:</b> Execution price ({format_probability(price)}) differs from displayed mid-price ({format_probability(displayed_price)}) due to orderbook depth.\n"
+
         text = f"""
 📋 <b>Order Quote</b>
 
@@ -4954,8 +5029,8 @@ Side: BUY {outcome.upper()}
 💰 <b>You Pay:</b> {amount} {platform_info['collateral']}
 💸 <b>Fee (2%):</b> {fee_display}
 📦 <b>You Receive:</b> ~{expected_tokens:.2f} {outcome.upper()} tokens
-📊 <b>Price:</b> {format_probability(price)} per token
-"""
+📊 <b>Execution Price:</b> {format_probability(price)} per token
+{price_warning}"""
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_buy")],
