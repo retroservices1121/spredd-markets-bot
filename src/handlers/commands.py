@@ -2202,12 +2202,29 @@ Expires: {expiration_text}
         except Exception as e:
             logger.warning("Failed to fetch orderbook prices", market_id=market_id, error=str(e))
 
+        # Check if this is a player prop market (contains over/under in title)
+        title_lower = market.title.lower()
+        is_player_prop = "over" in title_lower or "under" in title_lower
+
+        if is_player_prop:
+            # Player prop - show Over/Under labels
+            yes_label = "⬆️ Over"
+            no_label = "⬇️ Under"
+            yes_btn_label = f"⬆️ Buy OVER ({format_probability(yes_ask_price)})"
+            no_btn_label = f"⬇️ Buy UNDER ({format_probability(no_ask_price)})"
+        else:
+            # Regular binary market - show YES/NO labels
+            yes_label = "🟢 YES"
+            no_label = "🔴 NO"
+            yes_btn_label = f"🟢 Buy YES ({format_probability(yes_ask_price)})"
+            no_btn_label = f"🔴 Buy NO ({format_probability(no_ask_price)})"
+
         text = f"""
 {info['emoji']} <b>{escape_html(market.title)}</b>
 
 📊 <b>Buy Prices</b> (from orderbook)
-🟢 YES: {format_probability(yes_ask_price)} ({format_price(yes_ask_price)})
-🔴 NO: {format_probability(no_ask_price)} ({format_price(no_ask_price)})
+{yes_label}: {format_probability(yes_ask_price)} ({format_price(yes_ask_price)})
+{no_label}: {format_probability(no_ask_price)} ({format_price(no_ask_price)})
 
 📈 <b>Stats</b>
 Volume (24h): {format_usd(market.volume_24h)}
@@ -2226,13 +2243,13 @@ Expires: {expiration_text}
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    f"🟢 Buy YES ({format_probability(yes_ask_price)})",
+                    yes_btn_label,
                     callback_data=f"buy:{platform_value}:{short_market_id}:yes"
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    f"🔴 Buy NO ({format_probability(no_ask_price)})",
+                    no_btn_label,
                     callback_data=f"buy:{platform_value}:{short_market_id}:no"
                 ),
             ],
