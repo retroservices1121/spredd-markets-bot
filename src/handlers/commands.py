@@ -1809,11 +1809,18 @@ Select which prediction market you want to trade on:
                 await handle_analytics_callback(query, parts[1], update.effective_user.id)
 
     except Exception as e:
-        logger.error("Callback handler error", error=str(e), data=data)
-        await query.edit_message_text(
-            f"❌ Error: {friendly_error(str(e))}",
-            parse_mode=ParseMode.HTML,
-        )
+        error_str = str(e)
+        # Silently ignore "message not modified" errors (happens on refresh with no changes)
+        if "message is not modified" in error_str.lower():
+            return
+        logger.error("Callback handler error", error=error_str, data=data)
+        try:
+            await query.edit_message_text(
+                f"❌ Error: {friendly_error(error_str)}",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass  # Ignore errors when showing error message
 
 
 async def handle_platform_select(query, platform_value: str, telegram_id: int) -> None:
