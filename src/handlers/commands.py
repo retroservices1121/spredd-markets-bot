@@ -2155,14 +2155,24 @@ Expires: {expiration_text}
             prices = orderbook_prices.get(rm.market_id, {"yes_ask": rm.yes_price, "no_ask": rm.no_price})
 
             if is_player_props:
-                # For player props: show Over and Under buttons side by side
-                if len(name) > 15:
-                    name = name[:12] + "..."
+                # For player props: show prop name button + Over/Under buttons below
+                if len(name) > 30:
+                    display_name = name[:27] + "..."
+                else:
+                    display_name = name
                 yes_price_str = format_probability(prices["yes_ask"]) if prices["yes_ask"] else "?"
                 no_price_str = format_probability(prices["no_ask"]) if prices["no_ask"] else "?"
+                # Row 1: Prop name (clicking opens market details)
                 buttons.append([
                     InlineKeyboardButton(
-                        f"⬆️ {escape_html(name)} Over ({yes_price_str})",
+                        f"📊 {escape_html(display_name)}",
+                        callback_data=f"market:{platform_value}:{short_id}"
+                    )
+                ])
+                # Row 2: Over and Under buttons
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"⬆️ Over ({yes_price_str})",
                         callback_data=f"buy:{platform_value}:{short_id}:yes"
                     ),
                     InlineKeyboardButton(
@@ -2429,14 +2439,24 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
         prices = orderbook_prices.get(rm.market_id, {"yes_ask": rm.yes_price, "no_ask": rm.no_price})
 
         if is_player_props:
-            # Show Over/Under buttons for player props
-            if len(name) > 15:
-                name = name[:12] + "..."
+            # Show prop name on one row, Over/Under buttons below
+            if len(name) > 30:
+                display_name = name[:27] + "..."
+            else:
+                display_name = name
             yes_price_str = format_probability(prices["yes_ask"]) if prices["yes_ask"] else "?"
             no_price_str = format_probability(prices["no_ask"]) if prices["no_ask"] else "?"
+            # Row 1: Prop name
             buttons.append([
                 InlineKeyboardButton(
-                    f"⬆️ {escape_html(name)} Over ({yes_price_str})",
+                    f"📊 {escape_html(display_name)}",
+                    callback_data=f"market:{platform_value}:{short_id}"
+                )
+            ])
+            # Row 2: Over and Under buttons
+            buttons.append([
+                InlineKeyboardButton(
+                    f"⬆️ Over ({yes_price_str})",
                     callback_data=f"buy:{platform_value}:{short_id}:yes"
                 ),
                 InlineKeyboardButton(
@@ -4559,14 +4579,28 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
             return
 
         # Get market title from quote data or fetch market
+        # Prefer outcome_name or question for player props
         market_title = None
-        if quote.quote_data and "market" in quote.quote_data:
-            market_data = quote.quote_data["market"]
-            market_title = market_data.get("title") or market_data.get("market_title") or market_data.get("question")
-        if not market_title:
-            market = await platform.get_market(market_id)
-            if market:
+        market = await platform.get_market(market_id)
+        if market:
+            # For multi-outcome/player props, use outcome_name if available
+            if market.outcome_name:
+                market_title = market.outcome_name
+            elif market.raw_data and isinstance(market.raw_data, dict):
+                market_raw = market.raw_data.get("market", {})
+                if isinstance(market_raw, dict):
+                    market_title = (
+                        market_raw.get("question") or
+                        market_raw.get("groupItemTitle") or
+                        market.title
+                    )
+                else:
+                    market_title = market.title
+            else:
                 market_title = market.title
+        elif quote.quote_data and "market" in quote.quote_data:
+            market_data = quote.quote_data["market"]
+            market_title = market_data.get("question") or market_data.get("title") or market_data.get("market_title")
 
         # Create order record before executing
         order = await create_order(
@@ -4610,11 +4644,8 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
                     platform=platform_enum,
                 )
 
-                # Create position record
+                # Create position record (market_title already set above)
                 try:
-                    market = await platform.get_market(market_id)
-                    market_title = market.title if market else market_id
-
                     # For Limitless, the exchange fee (3%) is deducted from output tokens
                     # Adjust stored amount to reflect actual received tokens
                     adjusted_output = actual_output
@@ -5554,14 +5585,28 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
         # Get market title from quote data or fetch market
+        # Prefer outcome_name or question for player props
         market_title = None
-        if quote.quote_data and "market" in quote.quote_data:
-            market_data = quote.quote_data["market"]
-            market_title = market_data.get("title") or market_data.get("market_title") or market_data.get("question")
-        if not market_title:
-            market = await platform.get_market(market_id)
-            if market:
+        market = await platform.get_market(market_id)
+        if market:
+            # For multi-outcome/player props, use outcome_name if available
+            if market.outcome_name:
+                market_title = market.outcome_name
+            elif market.raw_data and isinstance(market.raw_data, dict):
+                market_raw = market.raw_data.get("market", {})
+                if isinstance(market_raw, dict):
+                    market_title = (
+                        market_raw.get("question") or
+                        market_raw.get("groupItemTitle") or
+                        market.title
+                    )
+                else:
+                    market_title = market.title
+            else:
                 market_title = market.title
+        elif quote.quote_data and "market" in quote.quote_data:
+            market_data = quote.quote_data["market"]
+            market_title = market_data.get("question") or market_data.get("title") or market_data.get("market_title")
 
         # Create order record before executing
         order = await create_order(
@@ -5605,11 +5650,8 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
                     platform=platform_enum,
                 )
 
-                # Create position record
+                # Create position record (market_title already set above)
                 try:
-                    market = await platform.get_market(market_id)
-                    market_title = market.title if market else market_id
-
                     # For Limitless, the exchange fee (3%) is deducted from output tokens
                     adjusted_output = actual_output
                     if platform_enum == Platform.LIMITLESS:
