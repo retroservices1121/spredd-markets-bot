@@ -826,20 +826,32 @@ class PolymarketPlatform(BasePlatform):
                 return False  # Parse error, assume not expired
 
         markets = []
+        seen_event_ids = set()
+
         for event in data if isinstance(data, list) else []:
             try:
+                event_id = event.get("id") or event.get("slug")
+
+                # Skip if we've already added this event (deduplication)
+                if event_id in seen_event_ids:
+                    continue
+
                 event_markets = event.get("markets", [])
 
                 if len(event_markets) <= 1:
                     # Single market event - check expiration
                     if not is_market_expired(event):
                         markets.append(self._parse_market(event))
+                        seen_event_ids.add(event_id)
                 else:
-                    # Multi-market event - expand each market as separate entry
+                    # Multi-market event - add once with first active market
+                    # (displays as "[X options]" in the UI)
                     for market_data in event_markets:
                         if market_data.get("active", True) and not market_data.get("closed", False):
                             if not is_market_expired(event, market_data):
                                 markets.append(self._parse_market(event, market_data))
+                                seen_event_ids.add(event_id)
+                                break  # Only add one entry per event
 
                 # Stop if we have enough markets
                 if len(markets) >= limit:
@@ -907,17 +919,29 @@ class PolymarketPlatform(BasePlatform):
                 return False
 
         markets = []
+        seen_event_ids = set()
+
         for event in filtered_events:
             try:
+                event_id = event.get("id") or event.get("slug")
+
+                # Skip if we've already added this event
+                if event_id in seen_event_ids:
+                    continue
+
                 event_markets = event.get("markets", [])
                 if len(event_markets) <= 1:
                     if not is_market_expired(event):
                         markets.append(self._parse_market(event))
+                        seen_event_ids.add(event_id)
                 else:
+                    # Multi-market event - add once with first active market
                     for market_data in event_markets:
                         if market_data.get("active", True) and not market_data.get("closed", False):
                             if not is_market_expired(event, market_data):
                                 markets.append(self._parse_market(event, market_data))
+                                seen_event_ids.add(event_id)
+                                break  # Only add one entry per event
 
                 if len(markets) >= limit:
                     break
@@ -1087,9 +1111,16 @@ class PolymarketPlatform(BasePlatform):
             match_terms = category_aliases.get(category_lower, [category_lower])
 
             markets = []
+            seen_event_ids = set()
 
             for event in data if isinstance(data, list) else []:
                 try:
+                    event_id = event.get("id") or event.get("slug")
+
+                    # Skip if we've already added this event
+                    if event_id in seen_event_ids:
+                        continue
+
                     # Check if event has matching tag
                     event_tags = event.get("tags", [])
                     tag_matches = False
@@ -1113,11 +1144,15 @@ class PolymarketPlatform(BasePlatform):
                     if len(event_markets) <= 1:
                         if not is_market_expired(event):
                             markets.append(self._parse_market(event))
+                            seen_event_ids.add(event_id)
                     else:
+                        # Multi-market event - add once with first active market
                         for market_data in event_markets:
                             if market_data.get("active", True) and not market_data.get("closed", False):
                                 if not is_market_expired(event, market_data):
                                     markets.append(self._parse_market(event, market_data))
+                                    seen_event_ids.add(event_id)
+                                    break  # Only add one entry per event
 
                     if len(markets) >= limit:
                         break
