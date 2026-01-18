@@ -2039,10 +2039,21 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
     if related_markets and len(related_markets) > 1:
         # Multi-outcome event - show all options
         # Check if this looks like a player props market (has Over/Under pattern)
-        is_player_props = any(
-            rm.outcome_name and ("over" in rm.outcome_name.lower() or "under" in rm.outcome_name.lower())
-            for rm in related_markets[:5]  # Check first 5 markets
-        )
+        def check_player_prop(rm):
+            """Check if a market is a player prop by looking for over/under keywords."""
+            # Check outcome_name
+            if rm.outcome_name and ("over" in rm.outcome_name.lower() or "under" in rm.outcome_name.lower()):
+                return True
+            # Check raw_data for question or groupItemTitle
+            if rm.raw_data and isinstance(rm.raw_data, dict):
+                market_raw = rm.raw_data.get("market", {})
+                if isinstance(market_raw, dict):
+                    question = (market_raw.get("question") or market_raw.get("groupItemTitle") or "").lower()
+                    if "over" in question or "under" in question:
+                        return True
+            return False
+
+        is_player_props = any(check_player_prop(rm) for rm in related_markets[:5])
 
         # Limit display items
         max_buttons = 8 if is_player_props else 15
@@ -2202,12 +2213,20 @@ Expires: {expiration_text}
         except Exception as e:
             logger.warning("Failed to fetch orderbook prices", market_id=market_id, error=str(e))
 
-        # Check if this is a player prop market (contains over/under in title or outcome_name)
+        # Check if this is a player prop market (contains over/under in title, outcome_name, or question)
         title_lower = market.title.lower()
         outcome_name_lower = (market.outcome_name or "").lower()
+        # Also check the question field in raw_data (Polymarket stores prop details there)
+        question_lower = ""
+        if market.raw_data and isinstance(market.raw_data, dict):
+            market_raw = market.raw_data.get("market", {})
+            if isinstance(market_raw, dict):
+                question_lower = (market_raw.get("question") or market_raw.get("groupItemTitle") or "").lower()
+
         is_player_prop = (
             "over" in title_lower or "under" in title_lower or
-            "over" in outcome_name_lower or "under" in outcome_name_lower
+            "over" in outcome_name_lower or "under" in outcome_name_lower or
+            "over" in question_lower or "under" in question_lower
         )
 
         if is_player_prop:
@@ -2308,10 +2327,19 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
     remaining_markets = related_markets[offset:]
 
     # Check if this is a player props market
-    is_player_props = any(
-        rm.outcome_name and ("over" in rm.outcome_name.lower() or "under" in rm.outcome_name.lower())
-        for rm in related_markets[:5]
-    )
+    def check_player_prop(rm):
+        """Check if a market is a player prop by looking for over/under keywords."""
+        if rm.outcome_name and ("over" in rm.outcome_name.lower() or "under" in rm.outcome_name.lower()):
+            return True
+        if rm.raw_data and isinstance(rm.raw_data, dict):
+            market_raw = rm.raw_data.get("market", {})
+            if isinstance(market_raw, dict):
+                question = (market_raw.get("question") or market_raw.get("groupItemTitle") or "").lower()
+                if "over" in question or "under" in question:
+                    return True
+        return False
+
+    is_player_props = any(check_player_prop(rm) for rm in related_markets[:5])
 
     max_buttons = 8 if is_player_props else 15
     displayed_markets = remaining_markets[:max_buttons]
@@ -5148,12 +5176,20 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             if diff > 0.05:  # More than 5% difference
                 price_warning = f"\n⚠️ <b>Note:</b> Execution price ({format_probability(price)}) differs from displayed mid-price ({format_probability(displayed_price)}) due to orderbook depth.\n"
 
-        # Check if this is a player prop market (contains over/under in title or outcome_name)
+        # Check if this is a player prop market (contains over/under in title, outcome_name, or question)
         title_lower = market.title.lower()
         outcome_name_lower = (market.outcome_name or "").lower()
+        # Also check the question field in raw_data (Polymarket stores prop details there)
+        question_lower = ""
+        if market.raw_data and isinstance(market.raw_data, dict):
+            market_raw = market.raw_data.get("market", {})
+            if isinstance(market_raw, dict):
+                question_lower = (market_raw.get("question") or market_raw.get("groupItemTitle") or "").lower()
+
         is_player_prop = (
             "over" in title_lower or "under" in title_lower or
-            "over" in outcome_name_lower or "under" in outcome_name_lower
+            "over" in outcome_name_lower or "under" in outcome_name_lower or
+            "over" in question_lower or "under" in question_lower
         )
 
         if is_player_prop:
