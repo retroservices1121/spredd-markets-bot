@@ -2137,13 +2137,31 @@ Expires: {expiration_text}
         buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
         keyboard = InlineKeyboardMarkup(buttons)
     else:
-        # Binary market - show YES/NO
+        # Binary market - show YES/NO with orderbook prices
+        # Fetch actual orderbook prices (what you'd pay to buy)
+        from src.db.models import Outcome as OutcomeEnum
+        yes_ask_price = market.yes_price  # fallback to mid-price
+        no_ask_price = market.no_price    # fallback to mid-price
+
+        try:
+            # Get orderbook for YES - best_ask is what you pay to buy YES
+            yes_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.YES)
+            if yes_orderbook and yes_orderbook.best_ask:
+                yes_ask_price = yes_orderbook.best_ask
+
+            # Get orderbook for NO - best_ask is what you pay to buy NO
+            no_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.NO)
+            if no_orderbook and no_orderbook.best_ask:
+                no_ask_price = no_orderbook.best_ask
+        except Exception as e:
+            logger.warning("Failed to fetch orderbook prices", market_id=market_id, error=str(e))
+
         text = f"""
 {info['emoji']} <b>{escape_html(market.title)}</b>
 
-📊 <b>Current Prices</b>
-YES: {format_probability(market.yes_price)} ({format_price(market.yes_price)})
-NO: {format_probability(market.no_price)} ({format_price(market.no_price)})
+📊 <b>Buy Prices</b> (from orderbook)
+🟢 YES: {format_probability(yes_ask_price)} ({format_price(yes_ask_price)})
+🔴 NO: {format_probability(no_ask_price)} ({format_price(no_ask_price)})
 
 📈 <b>Stats</b>
 Volume (24h): {format_usd(market.volume_24h)}
@@ -2158,17 +2176,17 @@ Expires: {expiration_text}
                 criteria_text += "..."
             text += f"\n📋 <b>Resolution Rules</b>\n{escape_html(criteria_text)}\n"
 
-        # Buy buttons for binary market
+        # Buy buttons for binary market with orderbook prices
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    f"🟢 Buy YES ({format_probability(market.yes_price)})",
+                    f"🟢 Buy YES ({format_probability(yes_ask_price)})",
                     callback_data=f"buy:{platform_value}:{short_market_id}:yes"
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    f"🔴 Buy NO ({format_probability(market.no_price)})",
+                    f"🔴 Buy NO ({format_probability(no_ask_price)})",
                     callback_data=f"buy:{platform_value}:{short_market_id}:no"
                 ),
             ],
