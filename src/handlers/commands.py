@@ -2044,21 +2044,66 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
             for rm in related_markets[:5]  # Check first 5 markets
         )
 
+        # Limit display items
+        max_buttons = 8 if is_player_props else 15
+        displayed_markets = related_markets[:max_buttons]
+
+        # Fetch orderbook prices for all displayed markets in parallel
+        from src.db.models import Outcome as OutcomeEnum
+        import asyncio
+
+        orderbook_prices = {}  # market_id -> {yes_ask, no_ask}
+
+        async def fetch_orderbook_prices(rm):
+            """Fetch orderbook prices for a single market."""
+            try:
+                yes_price = rm.yes_price  # fallback
+                no_price = rm.no_price    # fallback
+
+                # Fetch YES orderbook
+                try:
+                    yes_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.YES)
+                    if yes_ob and yes_ob.best_ask:
+                        yes_price = yes_ob.best_ask
+                except:
+                    pass
+
+                # Fetch NO orderbook
+                try:
+                    no_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.NO)
+                    if no_ob and no_ob.best_ask:
+                        no_price = no_ob.best_ask
+                except:
+                    pass
+
+                return rm.market_id, {"yes_ask": yes_price, "no_ask": no_price}
+            except Exception as e:
+                return rm.market_id, {"yes_ask": rm.yes_price, "no_ask": rm.no_price}
+
+        # Fetch all orderbooks in parallel
+        try:
+            results = await asyncio.gather(*[fetch_orderbook_prices(rm) for rm in displayed_markets])
+            for market_id, prices in results:
+                orderbook_prices[market_id] = prices
+        except Exception as e:
+            logger.warning("Failed to fetch orderbook prices for multi-outcome", error=str(e))
+
         text = f"""
 {info['emoji']} <b>{escape_html(market.title)}</b>
 
-📊 <b>Options ({len(related_markets)} choices)</b>
+📊 <b>Buy Prices</b> (from orderbook)
 """
-        # Add each outcome with its prices
-        for i, rm in enumerate(related_markets, 1):
+        # Add each outcome with orderbook prices
+        for i, rm in enumerate(displayed_markets, 1):
             name = rm.outcome_name or rm.title
             # Truncate long names
             if len(name) > 35:
                 name = name[:32] + "..."
 
-            # Show both Over (YES) and Under (NO) prices
-            yes_price_str = format_probability(rm.yes_price) if rm.yes_price else "N/A"
-            no_price_str = format_probability(rm.no_price) if rm.no_price else "N/A"
+            # Get orderbook prices (or fallback to mid-price)
+            prices = orderbook_prices.get(rm.market_id, {"yes_ask": rm.yes_price, "no_ask": rm.no_price})
+            yes_price_str = format_probability(prices["yes_ask"]) if prices["yes_ask"] else "N/A"
+            no_price_str = format_probability(prices["no_ask"]) if prices["no_ask"] else "N/A"
 
             if is_player_props:
                 # For player props: show Over/Under format
@@ -2081,21 +2126,22 @@ Expires: {expiration_text}
                 criteria_text += "..."
             text += f"\n📋 <b>Resolution Rules</b>\n{escape_html(criteria_text)}\n"
 
-        # Create buy buttons for each outcome
-        # Limit to fewer items if showing Over/Under buttons (takes more space)
-        max_buttons = 8 if is_player_props else 15
+        # Create buy buttons for each outcome with orderbook prices
         buttons = []
-        for rm in related_markets[:max_buttons]:
+        for rm in displayed_markets:
             name = rm.outcome_name or rm.title
             # Truncate market_id to fit callback_data limit (64 bytes)
             short_id = rm.market_id[:40]
+
+            # Get orderbook prices
+            prices = orderbook_prices.get(rm.market_id, {"yes_ask": rm.yes_price, "no_ask": rm.no_price})
 
             if is_player_props:
                 # For player props: show Over and Under buttons side by side
                 if len(name) > 15:
                     name = name[:12] + "..."
-                yes_price_str = format_probability(rm.yes_price) if rm.yes_price else "?"
-                no_price_str = format_probability(rm.no_price) if rm.no_price else "?"
+                yes_price_str = format_probability(prices["yes_ask"]) if prices["yes_ask"] else "?"
+                no_price_str = format_probability(prices["no_ask"]) if prices["no_ask"] else "?"
                 buttons.append([
                     InlineKeyboardButton(
                         f"⬆️ {escape_html(name)} Over ({yes_price_str})",
@@ -2110,7 +2156,7 @@ Expires: {expiration_text}
                 # For other multi-outcome: single button per option
                 if len(name) > 20:
                     name = name[:17] + "..."
-                prob = format_probability(rm.yes_price)
+                prob = format_probability(prices["yes_ask"])
                 buttons.append([
                     InlineKeyboardButton(
                         f"{escape_html(name)} ({prob})",
@@ -2247,37 +2293,80 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
     )
 
     max_buttons = 8 if is_player_props else 15
+    displayed_markets = remaining_markets[:max_buttons]
+
+    # Fetch orderbook prices for all displayed markets in parallel
+    from src.db.models import Outcome as OutcomeEnum
+    import asyncio
+
+    orderbook_prices = {}  # market_id -> {yes_ask, no_ask}
+
+    async def fetch_orderbook_prices(rm):
+        """Fetch orderbook prices for a single market."""
+        try:
+            yes_price = rm.yes_price  # fallback
+            no_price = rm.no_price    # fallback
+
+            try:
+                yes_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.YES)
+                if yes_ob and yes_ob.best_ask:
+                    yes_price = yes_ob.best_ask
+            except:
+                pass
+
+            try:
+                no_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.NO)
+                if no_ob and no_ob.best_ask:
+                    no_price = no_ob.best_ask
+            except:
+                pass
+
+            return rm.market_id, {"yes_ask": yes_price, "no_ask": no_price}
+        except Exception:
+            return rm.market_id, {"yes_ask": rm.yes_price, "no_ask": rm.no_price}
+
+    # Fetch all orderbooks in parallel
+    try:
+        results = await asyncio.gather(*[fetch_orderbook_prices(rm) for rm in displayed_markets])
+        for market_id, prices in results:
+            orderbook_prices[market_id] = prices
+    except Exception as e:
+        logger.warning("Failed to fetch orderbook prices for more options", error=str(e))
 
     text = f"""
 {info['emoji']} <b>{escape_html(market.title)}</b>
 
-📊 <b>More Options (showing {offset + 1}-{min(offset + max_buttons, len(related_markets))} of {len(related_markets)})</b>
+📊 <b>More Options</b> (showing {offset + 1}-{min(offset + max_buttons, len(related_markets))} of {len(related_markets)})
 """
-    # List remaining options with prices
-    for i, rm in enumerate(remaining_markets[:max_buttons], offset + 1):
+    # List remaining options with orderbook prices
+    for i, rm in enumerate(displayed_markets, offset + 1):
         name = rm.outcome_name or rm.title
         if len(name) > 35:
             name = name[:32] + "..."
+
+        prices = orderbook_prices.get(rm.market_id, {"yes_ask": rm.yes_price, "no_ask": rm.no_price})
+        yes_price_str = format_probability(prices["yes_ask"]) if prices["yes_ask"] else "N/A"
+        no_price_str = format_probability(prices["no_ask"]) if prices["no_ask"] else "N/A"
+
         if is_player_props:
-            yes_price_str = format_probability(rm.yes_price) if rm.yes_price else "N/A"
-            no_price_str = format_probability(rm.no_price) if rm.no_price else "N/A"
             text += f"{i}. {escape_html(name)}\n   ⬆️ Over: {yes_price_str} | ⬇️ Under: {no_price_str}\n"
         else:
-            prob = format_probability(rm.yes_price)
-            text += f"{i}. {escape_html(name)}: {prob}\n"
+            text += f"{i}. {escape_html(name)}: {yes_price_str}\n"
 
-    # Create buttons for remaining options
+    # Create buttons for remaining options with orderbook prices
     buttons = []
-    for rm in remaining_markets[:max_buttons]:
+    for rm in displayed_markets:
         name = rm.outcome_name or rm.title
         short_id = rm.market_id[:40]
+
+        prices = orderbook_prices.get(rm.market_id, {"yes_ask": rm.yes_price, "no_ask": rm.no_price})
 
         if is_player_props:
             # Show Over/Under buttons for player props
             if len(name) > 15:
                 name = name[:12] + "..."
-            yes_price_str = format_probability(rm.yes_price) if rm.yes_price else "?"
-            no_price_str = format_probability(rm.no_price) if rm.no_price else "?"
+            yes_price_str = format_probability(prices["yes_ask"]) if prices["yes_ask"] else "?"
+            no_price_str = format_probability(prices["no_ask"]) if prices["no_ask"] else "?"
             buttons.append([
                 InlineKeyboardButton(
                     f"⬆️ {escape_html(name)} Over ({yes_price_str})",
@@ -2291,7 +2380,7 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
         else:
             if len(name) > 20:
                 name = name[:17] + "..."
-            prob = format_probability(rm.yes_price)
+            prob = format_probability(prices["yes_ask"])
             buttons.append([
                 InlineKeyboardButton(
                     f"{escape_html(name)} ({prob})",
