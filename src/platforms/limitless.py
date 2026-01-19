@@ -748,8 +748,11 @@ class LimitlessPlatform(BasePlatform):
                 if self._is_group_market(data):
                     logger.info("Detected group market", slug=lookup_id)
                     # Cache the raw group data for get_related_markets()
-                    self._group_market_cache = getattr(self, '_group_market_cache', {})
+                    # Cache by both slug AND negRiskMarketId for lookup flexibility
                     self._group_market_cache[lookup_id] = data
+                    neg_risk_id = data.get("negRiskMarketId") or data.get("neg_risk_market_id")
+                    if neg_risk_id:
+                        self._group_market_cache[neg_risk_id] = data
                     # Parse all nested markets
                     nested_markets = self._parse_group_markets(data)
                     if nested_markets:
@@ -766,8 +769,11 @@ class LimitlessPlatform(BasePlatform):
                 # Check if this is a group market with nested outcomes
                 if self._is_group_market(data):
                     logger.info("Detected group market", slug=market_id)
-                    self._group_market_cache = getattr(self, '_group_market_cache', {})
+                    # Cache by both slug AND negRiskMarketId
                     self._group_market_cache[market_id] = data
+                    neg_risk_id = data.get("negRiskMarketId") or data.get("neg_risk_market_id")
+                    if neg_risk_id:
+                        self._group_market_cache[neg_risk_id] = data
                     nested_markets = self._parse_group_markets(data)
                     if nested_markets:
                         market = nested_markets[0]
@@ -844,7 +850,6 @@ class LimitlessPlatform(BasePlatform):
             return []
 
         # Check if we have cached group data from get_market()
-        self._group_market_cache = getattr(self, '_group_market_cache', {})
         if event_id in self._group_market_cache:
             logger.debug("Using cached group market data", event_id=event_id)
             return self._parse_group_markets(self._group_market_cache[event_id])
