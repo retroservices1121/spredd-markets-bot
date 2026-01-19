@@ -171,6 +171,8 @@ class LimitlessPlatform(BasePlatform):
         self._approval_cache: dict[str, set[str]] = {}
         # ID to slug cache (numeric ID -> slug for API lookups)
         self._id_to_slug_cache: dict[str, str] = {}
+        # Group market cache (slug -> raw group data for nested markets)
+        self._group_market_cache: dict[str, dict] = {}
 
     async def initialize(self) -> None:
         """Initialize Limitless API clients."""
@@ -387,8 +389,18 @@ class LimitlessPlatform(BasePlatform):
         # Fallback to isActive field with default True
         return data.get("isActive", True)
 
-    def _parse_market(self, data: dict) -> Market:
-        """Parse Limitless market data into Market object."""
+    def _parse_market(self, data: dict, parent_group: dict = None) -> Market:
+        """Parse Limitless market data into Market object.
+
+        Args:
+            data: Market data from API
+            parent_group: Optional parent group data for nested markets
+        """
+        # Check if this is a group market with nested markets
+        is_group = data.get("marketType") == "group" or (
+            data.get("markets") and isinstance(data.get("markets"), list) and len(data.get("markets")) > 1
+        )
+
         # Extract prices
         yes_price = None
         no_price = None
@@ -468,6 +480,9 @@ class LimitlessPlatform(BasePlatform):
         # NegRisk grouping for multi-outcome markets
         # negRiskMarketId groups related markets together
         neg_risk_id = data.get("negRiskMarketId") or data.get("neg_risk_market_id")
+        # For nested markets in a group, use parent's negRiskMarketId
+        if parent_group:
+            neg_risk_id = parent_group.get("negRiskMarketId") or parent_group.get("neg_risk_market_id") or neg_risk_id
         # Use negRiskMarketId as event_id for grouping, fall back to slug
         event_id = neg_risk_id or slug
 
@@ -480,12 +495,25 @@ class LimitlessPlatform(BasePlatform):
             data.get("description")  # Fallback to description which may contain rules
         )
 
+        # Determine if this is a multi-outcome market
+        nested_markets = data.get("markets", [])
+        is_multi_outcome = is_group or len(nested_markets) > 1
+        related_count = len(nested_markets) if nested_markets else None
+
+        # For nested markets, use the title as outcome name
+        outcome_name = None
+        if parent_group:
+            outcome_name = data.get("title") or data.get("question", "")
+            # Limit outcome name length
+            if outcome_name and len(outcome_name) > 50:
+                outcome_name = outcome_name[:47] + "..."
+
         return Market(
             platform=Platform.LIMITLESS,
             chain=Chain.BASE,
             market_id=market_id,
             event_id=event_id,  # Use negRiskMarketId for grouping multi-outcome markets
-            title=data.get("title") or data.get("question", ""),
+            title=parent_group.get("title") if parent_group else (data.get("title") or data.get("question", "")),
             description=data.get("description"),
             category=category,
             yes_price=yes_price,
@@ -499,6 +527,75 @@ class LimitlessPlatform(BasePlatform):
             no_token=no_token,
             raw_data=data,
             resolution_criteria=resolution_criteria,
+            is_multi_outcome=is_multi_outcome,
+            related_market_count=related_count,
+            outcome_name=outcome_name,
+        )
+
+    def _parse_group_markets(self, group_data: dict) -> list[Market]:
+        """Parse a group market response into individual outcome markets.
+
+        Group markets have marketType='group' and contain nested 'markets' array
+        with individual outcomes (e.g., team markets for NBA Champion).
+
+        Args:
+            group_data: The group market response from API
+
+        Returns:
+            List of Market objects, one per outcome
+        """
+        nested_markets = group_data.get("markets", [])
+        if not nested_markets:
+            # Not a group market or no nested markets, return empty
+            return []
+
+        group_title = group_data.get("title") or group_data.get("question", "")
+        neg_risk_id = group_data.get("negRiskMarketId") or group_data.get("neg_risk_market_id")
+        total_outcomes = len(nested_markets)
+
+        # Cache the group slug for later lookups
+        group_slug = group_data.get("slug", "")
+        group_id = group_data.get("id")
+        if group_id and group_slug:
+            self._id_to_slug_cache[str(group_id)] = group_slug
+
+        markets = []
+        for item in nested_markets:
+            try:
+                market = self._parse_market(item, parent_group=group_data)
+                # Override with group-level info
+                market.is_multi_outcome = True
+                market.related_market_count = total_outcomes
+                # Use nested market's title as outcome name
+                market.outcome_name = item.get("title") or item.get("question", "")
+                if market.outcome_name and len(market.outcome_name) > 50:
+                    market.outcome_name = market.outcome_name[:47] + "..."
+                # Use group title as the market title
+                market.title = group_title
+                # Use negRiskMarketId for event_id grouping
+                if neg_risk_id:
+                    market.event_id = neg_risk_id
+                markets.append(market)
+            except Exception as e:
+                logger.warning("Failed to parse nested market", error=str(e))
+
+        # Sort by YES price descending (highest probability first)
+        markets.sort(key=lambda m: m.yes_price or Decimal("0"), reverse=True)
+
+        logger.debug(
+            "Parsed group market",
+            group_title=group_title,
+            total_outcomes=total_outcomes,
+            parsed_count=len(markets),
+        )
+
+        return markets
+
+    def _is_group_market(self, data: dict) -> bool:
+        """Check if API response is a group market with nested outcomes."""
+        return (
+            data.get("marketType") == "group" or
+            (data.get("markets") and isinstance(data.get("markets"), list) and len(data.get("markets")) > 1)
         )
 
     async def get_markets(
@@ -642,11 +739,23 @@ class LimitlessPlatform(BasePlatform):
         except Exception as e:
             logger.debug("Market list search failed", error=str(e))
 
-        # Fallback: try direct lookup by slug (won't have multi-outcome info)
+        # Fallback: try direct lookup by slug
+        # This handles group markets with nested outcomes (e.g., NBA Champion)
         if not market:
             try:
                 data = await self._api_request("GET", f"/markets/{lookup_id}")
-                market = self._parse_market(data)
+                # Check if this is a group market with nested outcomes
+                if self._is_group_market(data):
+                    logger.info("Detected group market", slug=lookup_id)
+                    # Cache the raw group data for get_related_markets()
+                    self._group_market_cache = getattr(self, '_group_market_cache', {})
+                    self._group_market_cache[lookup_id] = data
+                    # Parse all nested markets
+                    nested_markets = self._parse_group_markets(data)
+                    if nested_markets:
+                        market = nested_markets[0]  # Return highest probability outcome
+                else:
+                    market = self._parse_market(data)
             except Exception as e:
                 logger.debug("Direct market lookup failed", market_id=lookup_id, error=str(e))
 
@@ -654,7 +763,16 @@ class LimitlessPlatform(BasePlatform):
         if not market and lookup_id != market_id:
             try:
                 data = await self._api_request("GET", f"/markets/{market_id}")
-                market = self._parse_market(data)
+                # Check if this is a group market with nested outcomes
+                if self._is_group_market(data):
+                    logger.info("Detected group market", slug=market_id)
+                    self._group_market_cache = getattr(self, '_group_market_cache', {})
+                    self._group_market_cache[market_id] = data
+                    nested_markets = self._parse_group_markets(data)
+                    if nested_markets:
+                        market = nested_markets[0]
+                else:
+                    market = self._parse_market(data)
             except Exception as e:
                 logger.debug("Fallback market lookup failed", market_id=market_id, error=str(e))
 
@@ -717,7 +835,7 @@ class LimitlessPlatform(BasePlatform):
         """Get all markets related to an event (for multi-outcome NegRisk markets).
 
         Args:
-            event_id: The negRiskMarketId or event identifier
+            event_id: The negRiskMarketId, slug, or event identifier
 
         Returns:
             List of markets belonging to the same NegRisk group, sorted by probability
@@ -725,7 +843,31 @@ class LimitlessPlatform(BasePlatform):
         if not event_id:
             return []
 
-        # Fetch markets and filter by event_id
+        # Check if we have cached group data from get_market()
+        self._group_market_cache = getattr(self, '_group_market_cache', {})
+        if event_id in self._group_market_cache:
+            logger.debug("Using cached group market data", event_id=event_id)
+            return self._parse_group_markets(self._group_market_cache[event_id])
+
+        # Try to fetch directly as a group market (slug lookup)
+        # This handles cases where event_id is the market slug
+        try:
+            data = await self._api_request("GET", f"/markets/{event_id}")
+            if self._is_group_market(data):
+                logger.info("Fetched group market for related markets", event_id=event_id)
+                self._group_market_cache[event_id] = data
+                return self._parse_group_markets(data)
+        except Exception as e:
+            logger.debug("Group market lookup failed", event_id=event_id, error=str(e))
+
+        # Also check by negRiskMarketId in the cache
+        for slug, group_data in self._group_market_cache.items():
+            neg_risk_id = group_data.get("negRiskMarketId") or group_data.get("neg_risk_market_id")
+            if neg_risk_id == event_id:
+                logger.debug("Found group market by negRiskMarketId", neg_risk_id=neg_risk_id)
+                return self._parse_group_markets(group_data)
+
+        # Fallback: fetch markets and filter by event_id
         # Need to fetch enough to find all related markets
         all_markets = await self.get_markets(limit=200, offset=0, active_only=False)
 
@@ -802,10 +944,18 @@ class LimitlessPlatform(BasePlatform):
     ) -> OrderBook:
         """Get order book from Limitless."""
         # Limitless API requires slug for orderbook, numeric IDs don't work
-        # Try slug first if available, then fall back to market_id only if it looks like a slug
+        # Try slug first if available, then look up from cache, then fall back to market_id
         endpoints_to_try = []
         if slug:
             endpoints_to_try.append(slug)
+
+        # If market_id is numeric, try to get slug from cache
+        if market_id and market_id.isdigit():
+            cached_slug = self._id_to_slug_cache.get(market_id)
+            if cached_slug and cached_slug not in endpoints_to_try:
+                endpoints_to_try.append(cached_slug)
+                logger.debug("Using cached slug for orderbook", market_id=market_id, slug=cached_slug)
+
         # Only try market_id if it's not a numeric ID (those always fail)
         if market_id and not market_id.isdigit() and market_id not in endpoints_to_try:
             endpoints_to_try.append(market_id)
