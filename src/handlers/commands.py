@@ -2041,12 +2041,17 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
         # Check if this looks like a player props market (has Over/Under pattern)
         def check_player_prop(rm):
             """Check if a market is a player prop by looking for over/under keywords."""
+            import re
             def has_ou_keywords(text):
-                """Check for over/under patterns including abbreviations."""
+                """Check for over/under patterns as whole words (not substrings like 'thunder')."""
                 if not text:
                     return False
                 t = text.lower()
-                return "over" in t or "under" in t or "o/u" in t or " ou " in t
+                # Use word boundaries to avoid matching "thunder" -> "under"
+                if re.search(r'\bover\b', t) or re.search(r'\bunder\b', t):
+                    return True
+                # Also check abbreviations
+                return "o/u" in t or " ou " in t
 
             # Check title
             if rm.title and has_ou_keywords(rm.title):
@@ -2250,12 +2255,15 @@ Expires: {expiration_text}
             logger.warning("Failed to fetch orderbook prices", market_id=market_id, error=str(e))
 
         # Check if this is a player prop market (contains over/under in title, outcome_name, or question)
+        import re
         def has_ou_keywords(text):
-            """Check for over/under patterns including abbreviations."""
+            """Check for over/under patterns as whole words (not substrings like 'thunder')."""
             if not text:
                 return False
             t = text.lower()
-            return "over" in t or "under" in t or "o/u" in t or " ou " in t
+            if re.search(r'\bover\b', t) or re.search(r'\bunder\b', t):
+                return True
+            return "o/u" in t or " ou " in t
 
         # Check all relevant fields
         question_text = ""
@@ -2368,13 +2376,16 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
     remaining_markets = related_markets[offset:]
 
     # Check if this is a player props market
+    import re
     def check_player_prop(rm):
         """Check if a market is a player prop by looking for over/under keywords."""
         def has_ou_keywords(text):
             if not text:
                 return False
             t = text.lower()
-            return "over" in t or "under" in t or "o/u" in t or " ou " in t
+            if re.search(r'\bover\b', t) or re.search(r'\bunder\b', t):
+                return True
+            return "o/u" in t or " ou " in t
 
         # Check title
         if rm.title and has_ou_keywords(rm.title):
@@ -2771,11 +2782,14 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
     market = await platform.get_market(market_id)
 
     # Check if this is a player prop market
+    import re
     def has_ou_keywords(text):
         if not text:
             return False
         t = text.lower()
-        return "over" in t or "under" in t or "o/u" in t or " ou " in t
+        if re.search(r'\bover\b', t) or re.search(r'\bunder\b', t):
+            return True
+        return "o/u" in t or " ou " in t
 
     is_player_prop = False
     if market:
@@ -5291,12 +5305,15 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 price_warning = f"\n⚠️ <b>Note:</b> Execution price ({format_probability(price)}) differs from displayed mid-price ({format_probability(displayed_price)}) due to orderbook depth.\n"
 
         # Check if this is a player prop market (contains over/under in title, outcome_name, or question)
+        import re
         def has_ou_keywords(text):
-            """Check for over/under patterns including abbreviations."""
+            """Check for over/under patterns as whole words (not substrings like 'thunder')."""
             if not text:
                 return False
             t = text.lower()
-            return "over" in t or "under" in t or "o/u" in t or " ou " in t
+            if re.search(r'\bover\b', t) or re.search(r'\bunder\b', t):
+                return True
+            return "o/u" in t or " ou " in t
 
         # Check all relevant fields
         question_text = ""
@@ -5469,11 +5486,14 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
         market = await platform.get_market(market_id)
 
         # Check if this is a player prop market
+        import re
         def has_ou_keywords(text):
             if not text:
                 return False
             t = text.lower()
-            return "over" in t or "under" in t or "o/u" in t or " ou " in t
+            if re.search(r'\bover\b', t) or re.search(r'\bunder\b', t):
+                return True
+            return "o/u" in t or " ou " in t
 
         is_player_prop = False
         if market:
