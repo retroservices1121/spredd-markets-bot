@@ -980,20 +980,37 @@ class LimitlessPlatform(BasePlatform):
         bids = []
         asks = []
 
-        # Parse orderbook based on outcome
-        outcome_key = "yes" if outcome == Outcome.YES else "no"
+        # Limitless orderbooks are for the YES outcome only (the market itself is binary)
+        # For NO, we need to invert: NO ask = 1 - YES bid, NO bid = 1 - YES ask
+        orderbook_data = data.get("yes") or data.get("orderbook", {}).get("yes") or data
 
-        orderbook_data = data.get(outcome_key) or data.get("orderbook", {}).get(outcome_key) or data
+        raw_bids = orderbook_data.get("bids", [])
+        raw_asks = orderbook_data.get("asks", [])
 
-        for bid in orderbook_data.get("bids", []):
-            price = Decimal(str(bid.get("price", bid[0] if isinstance(bid, list) else 0)))
-            size = Decimal(str(bid.get("size", bid.get("quantity", bid[1] if isinstance(bid, list) else 0))))
-            bids.append((price, size))
+        if outcome == Outcome.YES:
+            # YES orderbook: use as-is
+            for bid in raw_bids:
+                price = Decimal(str(bid.get("price", bid[0] if isinstance(bid, list) else 0)))
+                size = Decimal(str(bid.get("size", bid.get("quantity", bid[1] if isinstance(bid, list) else 0))))
+                bids.append((price, size))
 
-        for ask in orderbook_data.get("asks", []):
-            price = Decimal(str(ask.get("price", ask[0] if isinstance(ask, list) else 0)))
-            size = Decimal(str(ask.get("size", ask.get("quantity", ask[1] if isinstance(ask, list) else 0))))
-            asks.append((price, size))
+            for ask in raw_asks:
+                price = Decimal(str(ask.get("price", ask[0] if isinstance(ask, list) else 0)))
+                size = Decimal(str(ask.get("size", ask.get("quantity", ask[1] if isinstance(ask, list) else 0))))
+                asks.append((price, size))
+        else:
+            # NO orderbook: invert prices (NO ask = 1 - YES bid, NO bid = 1 - YES ask)
+            for bid in raw_bids:
+                price = Decimal(str(bid.get("price", bid[0] if isinstance(bid, list) else 0)))
+                size = Decimal(str(bid.get("size", bid.get("quantity", bid[1] if isinstance(bid, list) else 0))))
+                # YES bid becomes NO ask (inverted)
+                asks.append((Decimal("1") - price, size))
+
+            for ask in raw_asks:
+                price = Decimal(str(ask.get("price", ask[0] if isinstance(ask, list) else 0)))
+                size = Decimal(str(ask.get("size", ask.get("quantity", ask[1] if isinstance(ask, list) else 0))))
+                # YES ask becomes NO bid (inverted)
+                bids.append((Decimal("1") - price, size))
 
         # Sort bids descending, asks ascending
         bids.sort(key=lambda x: x[0], reverse=True)
