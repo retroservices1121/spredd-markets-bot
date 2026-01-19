@@ -39,6 +39,19 @@ class PnLStats:
         return self.total_pnl >= 0
 
 
+@dataclass
+class PositionWinStats:
+    """Data class for individual winning position."""
+    platform: Platform
+    platform_name: str
+    market_title: str
+    outcome: str  # "YES" or "NO"
+    profit_amount: Decimal
+    profit_percent: float
+    entry_price: Decimal
+    exit_price: Decimal
+
+
 class PnLCardGenerator:
     """Generates premium PnL card images."""
 
@@ -384,6 +397,269 @@ class PnLCardGenerator:
         buffer.seek(0)
         return buffer
 
+    def generate_position_win_card(self, stats: PositionWinStats) -> BytesIO:
+        """Generate a winning position card image and return as BytesIO."""
+        theme = self.THEME
+
+        # Use custom background if available, otherwise generate default
+        if self.custom_bg:
+            img = self.custom_bg.copy()
+            draw = ImageDraw.Draw(img)
+            using_custom_bg = True
+        else:
+            # Create base image with default design
+            img = Image.new("RGBA", (self.CARD_WIDTH, self.CARD_HEIGHT), theme["background"])
+            draw = ImageDraw.Draw(img)
+            using_custom_bg = False
+
+            # Draw subtle gradient overlay
+            for i in range(self.CARD_HEIGHT):
+                alpha = int(20 * (1 - abs(i - self.CARD_HEIGHT / 2) / (self.CARD_HEIGHT / 2)))
+                draw.line([(0, i), (self.CARD_WIDTH, i)], fill=(*theme["card_bg"], alpha))
+
+            # Draw main card area with subtle border
+            card_margin = 20
+            self._draw_rounded_rect(
+                draw,
+                (card_margin, card_margin, self.CARD_WIDTH - card_margin, self.CARD_HEIGHT - card_margin),
+                radius=16,
+                fill=theme["card_bg"],
+                outline=theme["stat_box_border"],
+                outline_width=1,
+            )
+
+            # Draw green accent line at top for winning position
+            accent_y = card_margin
+            draw.rounded_rectangle(
+                (card_margin, accent_y, self.CARD_WIDTH - card_margin, accent_y + 4),
+                radius=2,
+                fill=theme["profit"],
+            )
+
+        # Draw logo if not using custom background
+        if not using_custom_bg:
+            logo_x = 45
+            logo_y = 40
+            if self.logo:
+                img.paste(self.logo, (logo_x, logo_y), self.logo if self.logo.mode == "RGBA" else None)
+
+            # Draw "WINNER" badge in top-right
+            badge_font = self._get_font(12, bold=True)
+            badge_text = "WINNER"
+            badge_bbox = badge_font.getbbox(badge_text)
+            badge_width = badge_bbox[2] - badge_bbox[0] + 20
+            badge_height = 24
+            badge_x = self.CARD_WIDTH - 20 - badge_width - 25
+            badge_y = 45
+
+            self._draw_rounded_rect(
+                draw,
+                (badge_x, badge_y, badge_x + badge_width, badge_y + badge_height),
+                radius=4,
+                fill=theme["profit"],
+            )
+            draw.text(
+                (badge_x + badge_width // 2, badge_y + badge_height // 2),
+                badge_text,
+                font=badge_font,
+                fill=theme["text"],
+                anchor="mm",
+            )
+
+        # Draw platform name
+        platform_font = self._get_font(18, bold=True)
+        draw.text(
+            (self.CARD_WIDTH // 2, 100),
+            stats.platform_name.upper(),
+            font=platform_font,
+            fill=theme["muted"],
+            anchor="mm",
+        )
+
+        # Draw market title (wrapped if too long)
+        title_font = self._get_font(24, bold=True)
+        market_title = stats.market_title
+
+        # Wrap title if too long
+        max_chars_per_line = 40
+        if len(market_title) > max_chars_per_line:
+            # Split into multiple lines
+            words = market_title.split()
+            lines = []
+            current_line = ""
+            for word in words:
+                if len(current_line + " " + word) <= max_chars_per_line:
+                    current_line = (current_line + " " + word).strip()
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
+
+            # Limit to 2 lines max
+            if len(lines) > 2:
+                lines = lines[:2]
+                lines[1] = lines[1][:max_chars_per_line - 3] + "..."
+
+            y_offset = 140
+            for line in lines:
+                draw.text(
+                    (self.CARD_WIDTH // 2, y_offset),
+                    line,
+                    font=title_font,
+                    fill=theme["text"],
+                    anchor="mm",
+                )
+                y_offset += 30
+        else:
+            draw.text(
+                (self.CARD_WIDTH // 2, 150),
+                market_title,
+                font=title_font,
+                fill=theme["text"],
+                anchor="mm",
+            )
+
+        # Draw outcome badge (YES/NO)
+        outcome_font = self._get_font(14, bold=True)
+        outcome_text = stats.outcome.upper()
+        outcome_color = theme["profit"] if stats.outcome.upper() == "YES" else theme["loss"]
+
+        outcome_bbox = outcome_font.getbbox(outcome_text)
+        outcome_width = outcome_bbox[2] - outcome_bbox[0] + 16
+        outcome_height = 22
+        outcome_x = (self.CARD_WIDTH - outcome_width) // 2
+        outcome_y = 195
+
+        self._draw_rounded_rect(
+            draw,
+            (outcome_x, outcome_y, outcome_x + outcome_width, outcome_y + outcome_height),
+            radius=4,
+            fill=outcome_color,
+        )
+        draw.text(
+            (outcome_x + outcome_width // 2, outcome_y + outcome_height // 2),
+            outcome_text,
+            font=outcome_font,
+            fill=theme["text"],
+            anchor="mm",
+        )
+
+        # Main profit percentage with glow effect
+        profit_font = self._get_font(72, bold=True)
+        profit_text = f"+{stats.profit_percent:.1f}%"
+
+        # Create and paste glow
+        glow_layer = self._create_glow_layer(profit_text, profit_font, theme["profit"], blur_radius=25)
+        glow_x = (self.CARD_WIDTH - glow_layer.width) // 2
+        glow_y = 240 - glow_layer.height // 2
+
+        img.paste(glow_layer, (glow_x, glow_y), glow_layer)
+
+        # Draw profit text on top
+        draw = ImageDraw.Draw(img)
+        draw.text(
+            (self.CARD_WIDTH // 2, 270),
+            profit_text,
+            font=profit_font,
+            fill=theme["profit"],
+            anchor="mm",
+        )
+
+        # Draw profit amount
+        amount_font = self._get_font(28, bold=True)
+        amount_text = f"+${float(stats.profit_amount):,.2f}"
+        draw.text(
+            (self.CARD_WIDTH // 2, 340),
+            amount_text,
+            font=amount_font,
+            fill=theme["profit"],
+            anchor="mm",
+        )
+
+        # Stats boxes for entry/exit prices
+        if not using_custom_bg:
+            box_width = 160
+            box_height = 65
+            box_y = 380
+            box_spacing = 30
+            total_boxes_width = box_width * 2 + box_spacing
+            box1_x = (self.CARD_WIDTH - total_boxes_width) // 2
+
+            # Entry price box
+            self._draw_rounded_rect(
+                draw,
+                (box1_x, box_y, box1_x + box_width, box_y + box_height),
+                radius=12,
+                fill=theme["stat_box"],
+                outline=theme["stat_box_border"],
+            )
+
+            stat_label_font = self._get_font(11, bold=False)
+            stat_value_font = self._get_font(22, bold=True)
+
+            draw.text(
+                (box1_x + box_width // 2, box_y + 20),
+                "ENTRY",
+                font=stat_label_font,
+                fill=theme["muted"],
+                anchor="mm",
+            )
+            draw.text(
+                (box1_x + box_width // 2, box_y + 45),
+                f"{float(stats.entry_price) * 100:.1f}¢",
+                font=stat_value_font,
+                fill=theme["text"],
+                anchor="mm",
+            )
+
+            # Exit price box
+            box2_x = box1_x + box_width + box_spacing
+            self._draw_rounded_rect(
+                draw,
+                (box2_x, box_y, box2_x + box_width, box_y + box_height),
+                radius=12,
+                fill=theme["stat_box"],
+                outline=theme["stat_box_border"],
+            )
+
+            draw.text(
+                (box2_x + box_width // 2, box_y + 20),
+                "EXIT",
+                font=stat_label_font,
+                fill=theme["muted"],
+                anchor="mm",
+            )
+            draw.text(
+                (box2_x + box_width // 2, box_y + 45),
+                f"{float(stats.exit_price) * 100:.1f}¢",
+                font=stat_value_font,
+                fill=theme["profit"],
+                anchor="mm",
+            )
+
+        # Footer
+        if not using_custom_bg:
+            footer_font = self._get_font(14, bold=False)
+            draw.text(
+                (self.CARD_WIDTH // 2, self.CARD_HEIGHT - 35),
+                "spredd.markets",
+                font=footer_font,
+                fill=theme["muted"],
+                anchor="mm",
+            )
+
+        # Convert to RGB for PNG save
+        img_rgb = Image.new("RGB", img.size, theme["background"])
+        img_rgb.paste(img, mask=img.split()[3] if img.mode == "RGBA" else None)
+
+        # Save to BytesIO
+        buffer = BytesIO()
+        img_rgb.save(buffer, format="PNG", quality=95)
+        buffer.seek(0)
+        return buffer
+
 
 # Singleton instance
 _generator: Optional[PnLCardGenerator] = None
@@ -432,3 +708,45 @@ def generate_pnl_card(
     )
 
     return generator.generate_card(stats)
+
+
+def generate_position_win_card(
+    platform: Platform,
+    platform_name: str,
+    market_title: str,
+    outcome: str,
+    profit_amount: Decimal,
+    profit_percent: float,
+    entry_price: Decimal,
+    exit_price: Decimal,
+) -> BytesIO:
+    """
+    Generate a winning position card for sharing.
+
+    Args:
+        platform: Platform enum value
+        platform_name: Display name of the platform
+        market_title: Title of the market
+        outcome: "YES" or "NO"
+        profit_amount: Profit in USD
+        profit_percent: Profit percentage (e.g., 150.0 for +150%)
+        entry_price: Entry price (0-1 scale)
+        exit_price: Exit price (0-1 scale, typically 1.0 for winners)
+
+    Returns:
+        BytesIO containing the PNG image
+    """
+    generator = get_pnl_card_generator()
+
+    stats = PositionWinStats(
+        platform=platform,
+        platform_name=platform_name,
+        market_title=market_title,
+        outcome=outcome,
+        profit_amount=profit_amount,
+        profit_percent=profit_percent,
+        entry_price=entry_price,
+        exit_price=exit_price,
+    )
+
+    return generator.generate_position_win_card(stats)
