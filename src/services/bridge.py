@@ -216,12 +216,7 @@ class BridgeService:
 
     def initialize(self) -> None:
         """Initialize Web3 clients for supported chains."""
-        # Chains hidden for launch (will enable later for marketing)
-        hidden_chains = {BridgeChain.MONAD}
-
         for chain, config in CHAIN_CONFIG.items():
-            if chain in hidden_chains:
-                continue  # Skip hidden chains
             rpc_url = getattr(settings, config["rpc_env"].lower(), None)
             if rpc_url:
                 try:
