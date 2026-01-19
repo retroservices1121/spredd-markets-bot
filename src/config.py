@@ -223,7 +223,7 @@ class Settings(BaseSettings):
         description="FactsAI API key for AI research features"
     )
     factsai_api_url: str = Field(
-        default="https://deep-research-api.degodmode3-33.workers.dev",
+        default="https://factsai.org",
         description="FactsAI API base URL"
     )
 
