@@ -2087,9 +2087,14 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
                 yes_price = rm.yes_price  # fallback
                 no_price = rm.no_price    # fallback
 
+                # Get slug for orderbook lookup (needed for Limitless with numeric IDs)
+                slug = None
+                if rm.raw_data and isinstance(rm.raw_data, dict):
+                    slug = rm.raw_data.get("slug")
+
                 # Fetch YES orderbook
                 try:
-                    yes_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.YES)
+                    yes_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.YES, slug=slug)
                     if yes_ob and yes_ob.best_ask:
                         yes_price = yes_ob.best_ask
                 except:
@@ -2097,7 +2102,7 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
 
                 # Fetch NO orderbook
                 try:
-                    no_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.NO)
+                    no_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.NO, slug=slug)
                     if no_ob and no_ob.best_ask:
                         no_price = no_ob.best_ask
                 except:
@@ -2226,14 +2231,19 @@ Expires: {expiration_text}
         yes_ask_price = market.yes_price  # fallback to mid-price
         no_ask_price = market.no_price    # fallback to mid-price
 
+        # Get slug for orderbook lookup (needed for Limitless with numeric IDs)
+        slug = None
+        if market.raw_data and isinstance(market.raw_data, dict):
+            slug = market.raw_data.get("slug")
+
         try:
             # Get orderbook for YES - best_ask is what you pay to buy YES
-            yes_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.YES)
+            yes_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.YES, slug=slug)
             if yes_orderbook and yes_orderbook.best_ask:
                 yes_ask_price = yes_orderbook.best_ask
 
             # Get orderbook for NO - best_ask is what you pay to buy NO
-            no_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.NO)
+            no_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.NO, slug=slug)
             if no_orderbook and no_orderbook.best_ask:
                 no_ask_price = no_orderbook.best_ask
         except Exception as e:
@@ -2404,15 +2414,20 @@ async def handle_market_more_options(query, platform_value: str, market_id: str,
             yes_price = rm.yes_price  # fallback
             no_price = rm.no_price    # fallback
 
+            # Get slug for orderbook lookup (needed for Limitless with numeric IDs)
+            slug = None
+            if rm.raw_data and isinstance(rm.raw_data, dict):
+                slug = rm.raw_data.get("slug")
+
             try:
-                yes_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.YES)
+                yes_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.YES, slug=slug)
                 if yes_ob and yes_ob.best_ask:
                     yes_price = yes_ob.best_ask
             except:
                 pass
 
             try:
-                no_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.NO)
+                no_ob = await platform.get_orderbook(rm.market_id, OutcomeEnum.NO, slug=slug)
                 if no_ob and no_ob.best_ask:
                     no_price = no_ob.best_ask
             except:
