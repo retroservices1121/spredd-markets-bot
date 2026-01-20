@@ -86,7 +86,8 @@ class OpinionPlatform(BasePlatform):
 
             # Generate a dummy private key for read-only operations
             # This wallet won't be used for signing transactions
-            dummy_key = "0" * 64
+            # Using a valid hex format that the SDK will accept
+            dummy_key = "0x" + "1" * 64  # Valid 32-byte hex key
             self._readonly_sdk_client = Client(
                 host=settings.opinion_api_url,
                 apikey=(settings.opinion_api_key or "").strip(),
