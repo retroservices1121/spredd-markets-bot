@@ -1901,6 +1901,12 @@ Select which prediction market you want to trade on:
             elif parts[1] == "start":
                 # Legacy: bridge:start:source_chain - assume polygon destination
                 await handle_bridge_start(query, parts[2], update.effective_user.id, context, dest_chain="polygon")
+            elif parts[1] == "swap" and parts[2] == "bsc_usdt":
+                # Swap BSC USDC → USDT for Opinion Labs
+                await handle_bsc_usdc_swap(query, update.effective_user.id, context)
+            elif parts[1] == "swap_exec":
+                # Execute BSC USDC → USDT swap
+                await handle_bsc_swap_execute(query, int(parts[2]), update.effective_user.id, context)
             else:
                 # bridge:source_chain - legacy format
                 logger.info("Using legacy bridge format", chain=parts[1])
@@ -3202,6 +3208,10 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
         # Get balances on all chains
         balances = bridge_service.get_all_usdc_balances(evm_wallet.public_key)
 
+        # Get BSC USDT balance separately (for Opinion Labs)
+        bsc_usdt_balance = bridge_service.get_bsc_usdt_balance(evm_wallet.public_key)
+        bsc_usdc_balance = balances.get(BridgeChain.BSC, Decimal(0))
+
         text = "🌉 <b>Bridge USDC</b>\n\n"
         text += "Bridge USDC between chains for trading.\n\n"
         text += "<b>Your EVM USDC Balances:</b>\n"
@@ -3215,11 +3225,16 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
                 BridgeChain.ETHEREUM: "⚪",
                 BridgeChain.POLYGON: "🟣",
                 BridgeChain.MONAD: "🟢",
+                BridgeChain.BSC: "🟡",
             }.get(chain, "🔹")
 
-            text += f"{chain_emoji} {chain.value.title()}: ${float(balance):.2f}\n"
-            if chain != BridgeChain.POLYGON:  # Count bridgeable balance
+            text += f"{chain_emoji} {chain.value.upper()}: ${float(balance):.2f}\n"
+            if chain not in (BridgeChain.POLYGON, BridgeChain.BSC):  # Count bridgeable balance
                 total_balance += balance
+
+        # Show BSC USDT balance for Opinion Labs
+        if bsc_usdt_balance > 0:
+            text += f"\n<b>BSC USDT (Opinion Labs):</b> ${float(bsc_usdt_balance):.2f}\n"
 
         text += "\n<b>Where do you want to bridge USDC?</b>\n"
 
@@ -3260,6 +3275,15 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
             )
         ])
 
+        # Swap BSC USDC → USDT (if user has BSC USDC)
+        if bsc_usdc_balance > Decimal("0.01"):
+            buttons.append([
+                InlineKeyboardButton(
+                    f"💱 Swap BSC USDC → USDT (${float(bsc_usdc_balance):.2f})",
+                    callback_data="bridge:swap:bsc_usdt"
+                )
+            ])
+
         if total_balance <= 0:
             text += "\n⚠️ <i>No bridgeable USDC balance on other chains.</i>"
 
@@ -3290,6 +3314,179 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
             )
         except Exception:
             pass  # Ignore edit errors
+
+
+async def handle_bsc_usdc_swap(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle BSC USDC → USDT swap for Opinion Labs."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain
+        from src.db.database import get_user_wallets
+        from src.services.wallet import wallet_service
+
+        # Initialize bridge service if needed
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        # Get user's EVM wallet
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        # Get BSC USDC balance
+        bsc_usdc = bridge_service.get_usdc_balance(BridgeChain.BSC, evm_wallet.public_key)
+
+        if bsc_usdc < Decimal("0.01"):
+            await query.edit_message_text(
+                "❌ No BSC USDC to swap.\n\nBridge USDC to BSC first, then swap to USDT.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        text = f"💱 <b>Swap BSC USDC → USDT</b>\n\n"
+        text += f"Balance: <b>${float(bsc_usdc):.2f} USDC</b>\n\n"
+        text += "Opinion Labs uses USDT for trading.\n"
+        text += "Select how much to swap:\n"
+
+        buttons = []
+
+        # Add percentage buttons
+        for percent in [25, 50, 75, 100]:
+            amount = bsc_usdc * Decimal(percent) / Decimal(100)
+            if amount >= Decimal("0.01"):
+                buttons.append(
+                    InlineKeyboardButton(
+                        f"{percent}% (${float(amount):.2f})",
+                        callback_data=f"bridge:swap_exec:{percent}"
+                    )
+                )
+
+        # Arrange buttons in rows of 2
+        button_rows = []
+        for i in range(0, len(buttons), 2):
+            button_rows.append(buttons[i:i+2])
+
+        button_rows.append([InlineKeyboardButton("« Back", callback_data="wallet:bridge")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(button_rows),
+        )
+
+    except Exception as e:
+        logger.error("Failed to show BSC swap menu", error=str(e))
+        await query.edit_message_text(
+            f"❌ Error: {str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+
+
+async def handle_bsc_swap_execute(query, percent: int, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute BSC USDC → USDT swap."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain
+        from src.db.database import get_user_wallets
+        from src.services.wallet import wallet_service
+
+        # Initialize bridge service if needed
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        # Get user's EVM wallet
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        # Get BSC USDC balance
+        bsc_usdc = bridge_service.get_usdc_balance(BridgeChain.BSC, evm_wallet.public_key)
+        swap_amount = bsc_usdc * Decimal(percent) / Decimal(100)
+
+        if swap_amount < Decimal("0.01"):
+            await query.edit_message_text("❌ Amount too small to swap.")
+            return
+
+        # Get private key
+        private_key = await wallet_service.get_evm_account(user.id)
+        if not private_key:
+            await query.edit_message_text("❌ Failed to load wallet.")
+            return
+
+        # Show progress
+        progress_msg = await query.edit_message_text(
+            f"💱 <b>Swapping BSC USDC → USDT</b>\n\n"
+            f"Amount: ${float(swap_amount):.2f}\n\n"
+            f"⏳ Getting swap quote...",
+            parse_mode=ParseMode.HTML,
+        )
+
+        async def update_progress(status: str, current: int, total: int):
+            try:
+                await progress_msg.edit_text(
+                    f"💱 <b>Swapping BSC USDC → USDT</b>\n\n"
+                    f"Amount: ${float(swap_amount):.2f}\n\n"
+                    f"{status}",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+        # Execute swap
+        import asyncio
+        result = await asyncio.to_thread(
+            bridge_service.swap_bsc_usdc_to_usdt,
+            private_key,
+            swap_amount,
+            lambda s, c, t: asyncio.run_coroutine_threadsafe(update_progress(s, c, t), asyncio.get_event_loop()),
+        )
+
+        if result.success:
+            text = f"✅ <b>Swap Successful!</b>\n\n"
+            text += f"Swapped: ${float(swap_amount):.2f} USDC\n"
+            text += f"Received: ~${float(result.received_amount or swap_amount):.2f} USDT\n\n"
+            if result.explorer_url:
+                text += f"<a href='{result.explorer_url}'>View on BscScan</a>"
+        else:
+            text = f"❌ <b>Swap Failed</b>\n\n"
+            text += f"Error: {result.error_message or 'Unknown error'}"
+
+        await progress_msg.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back to Bridge", callback_data="wallet:bridge")],
+            ]),
+            disable_web_page_preview=True,
+        )
+
+    except Exception as e:
+        logger.error("BSC swap failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Swap failed: {str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
 
 
 async def handle_bridge_dest(query, dest_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:

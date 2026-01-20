@@ -90,6 +90,15 @@ CHAIN_CONFIG = {
         "message_transmitter": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",  # MessageTransmitterV2
         "rpc_env": "MONAD_RPC_URL",
     },
+    BridgeChain.BSC: {
+        "chain_id": 56,
+        "domain": None,  # BSC doesn't support CCTP - use LI.FI
+        "usdc": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",  # USDC on BSC
+        "usdt": "0x55d398326f99059fF775485246999027B3197955",  # USDT on BSC (for Opinion)
+        "token_messenger": None,  # No CCTP
+        "message_transmitter": None,  # No CCTP
+        "rpc_env": "BSC_RPC_URL",
+    },
 }
 
 
@@ -325,6 +334,217 @@ class BridgeService:
                     balances[chain] = Decimal(0)
 
         return balances
+
+    def get_bsc_usdt_balance(self, wallet_address: str) -> Decimal:
+        """Get USDT balance on BSC (for Opinion Labs)."""
+        if BridgeChain.BSC not in self._web3_clients:
+            return Decimal(0)
+
+        try:
+            w3 = self._web3_clients[BridgeChain.BSC]
+            config = CHAIN_CONFIG[BridgeChain.BSC]
+
+            usdt_contract = w3.eth.contract(
+                address=Web3.to_checksum_address(config["usdt"]),
+                abi=ERC20_ABI
+            )
+
+            balance_raw = usdt_contract.functions.balanceOf(
+                Web3.to_checksum_address(wallet_address)
+            ).call()
+
+            # USDT on BSC has 18 decimals
+            return Decimal(balance_raw) / Decimal(10 ** 18)
+
+        except Exception as e:
+            logger.warning("Failed to get BSC USDT balance", error=str(e))
+            return Decimal(0)
+
+    def swap_bsc_usdc_to_usdt(
+        self,
+        private_key: LocalAccount,
+        amount: Decimal,
+        progress_callback: ProgressCallback = None,
+    ) -> "BridgeResult":
+        """
+        Swap USDC to USDT on BSC using LI.FI.
+        This is a same-chain swap for Opinion Labs trading.
+        """
+        import httpx
+
+        if BridgeChain.BSC not in self._web3_clients:
+            return BridgeResult(
+                success=False,
+                source_chain=BridgeChain.BSC,
+                dest_chain=BridgeChain.BSC,
+                amount=amount,
+                error_message="BSC not configured"
+            )
+
+        try:
+            source_w3 = self._web3_clients[BridgeChain.BSC]
+            wallet = Web3.to_checksum_address(private_key.address)
+
+            # Check native BNB balance for gas
+            native_balance = source_w3.eth.get_balance(wallet)
+            min_gas_wei = int(0.001 * 10**18)  # 0.001 BNB for swap
+            if native_balance < min_gas_wei:
+                return BridgeResult(
+                    success=False,
+                    source_chain=BridgeChain.BSC,
+                    dest_chain=BridgeChain.BSC,
+                    amount=amount,
+                    error_message="Insufficient BNB for gas. Need at least 0.001 BNB."
+                )
+
+            if progress_callback:
+                progress_callback("💱 Getting swap quote...", 0, 60)
+
+            # USDC on BSC has 18 decimals (not 6 like native USDC!)
+            amount_raw = int(amount * Decimal(10**18))
+
+            # LI.FI Quote for same-chain swap
+            url = "https://li.quest/v1/quote"
+            params = {
+                "fromChain": 56,  # BSC
+                "toChain": 56,  # BSC (same chain)
+                "fromToken": LIFI_USDC[BridgeChain.BSC],  # USDC on BSC
+                "toToken": LIFI_USDT_BSC,  # USDT on BSC
+                "fromAmount": str(amount_raw),
+                "fromAddress": wallet,
+                "toAddress": wallet,
+                "slippage": "0.005",  # 0.5% slippage for same-chain swap
+            }
+
+            headers = {}
+            if settings.lifi_api_key:
+                headers["x-lifi-api-key"] = settings.lifi_api_key
+
+            with httpx.Client(timeout=30) as client:
+                resp = client.get(url, params=params, headers=headers)
+
+                if resp.status_code != 200:
+                    error_msg = resp.text[:300]
+                    return BridgeResult(
+                        success=False,
+                        source_chain=BridgeChain.BSC,
+                        dest_chain=BridgeChain.BSC,
+                        amount=amount,
+                        error_message=f"Swap quote failed: {error_msg}"
+                    )
+
+                quote_data = resp.json()
+
+            estimate = quote_data.get("estimate", {})
+            to_amount_raw = int(estimate.get("toAmount", "0"))
+            output_amount = Decimal(to_amount_raw) / Decimal(10**18)  # USDT has 18 decimals on BSC
+
+            logger.info(
+                "BSC USDC->USDT swap quote",
+                input=f"{amount} USDC",
+                output=f"{output_amount} USDT",
+            )
+
+            if progress_callback:
+                progress_callback(f"📋 Swapping {amount} USDC → {output_amount:.2f} USDT", 10, 60)
+
+            # Execute the swap
+            tx_request = quote_data.get("transactionRequest", {})
+            if not tx_request:
+                return BridgeResult(
+                    success=False,
+                    source_chain=BridgeChain.BSC,
+                    dest_chain=BridgeChain.BSC,
+                    amount=amount,
+                    error_message="No transaction data in quote"
+                )
+
+            # Check and approve USDC if needed
+            usdc_address = LIFI_USDC[BridgeChain.BSC]
+            spender = tx_request.get("to")
+
+            if spender:
+                usdc_contract = source_w3.eth.contract(
+                    address=Web3.to_checksum_address(usdc_address),
+                    abi=ERC20_ABI
+                )
+                allowance = usdc_contract.functions.allowance(
+                    wallet, Web3.to_checksum_address(spender)
+                ).call()
+
+                if allowance < amount_raw:
+                    if progress_callback:
+                        progress_callback("🔐 Approving USDC...", 15, 60)
+
+                    approve_tx = usdc_contract.functions.approve(
+                        Web3.to_checksum_address(spender),
+                        2**256 - 1  # Max approval
+                    ).build_transaction({
+                        "from": wallet,
+                        "nonce": source_w3.eth.get_transaction_count(wallet),
+                        "gas": 100000,
+                        "gasPrice": source_w3.eth.gas_price,
+                        "chainId": 56,
+                    })
+
+                    signed_approve = private_key.sign_transaction(approve_tx)
+                    approve_hash = source_w3.eth.send_raw_transaction(signed_approve.raw_transaction)
+                    source_w3.eth.wait_for_transaction_receipt(approve_hash, timeout=120)
+                    logger.info("USDC approved for swap", tx_hash=approve_hash.hex())
+
+            if progress_callback:
+                progress_callback("💱 Executing swap...", 30, 60)
+
+            # Build and send swap transaction
+            tx = {
+                "from": wallet,
+                "to": Web3.to_checksum_address(tx_request["to"]),
+                "data": tx_request["data"],
+                "value": int(tx_request.get("value", "0"), 16) if isinstance(tx_request.get("value"), str) else int(tx_request.get("value", 0)),
+                "nonce": source_w3.eth.get_transaction_count(wallet),
+                "gas": int(tx_request.get("gasLimit", 500000)),
+                "gasPrice": source_w3.eth.gas_price,
+                "chainId": 56,
+            }
+
+            signed_tx = private_key.sign_transaction(tx)
+            tx_hash = source_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+            if progress_callback:
+                progress_callback("⏳ Waiting for confirmation...", 50, 60)
+
+            receipt = source_w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+            if receipt["status"] == 1:
+                logger.info("BSC USDC->USDT swap completed", tx_hash=tx_hash.hex())
+                return BridgeResult(
+                    success=True,
+                    source_chain=BridgeChain.BSC,
+                    dest_chain=BridgeChain.BSC,
+                    amount=amount,
+                    received_amount=output_amount,
+                    tx_hash=tx_hash.hex(),
+                    explorer_url=f"https://bscscan.com/tx/{tx_hash.hex()}",
+                )
+            else:
+                return BridgeResult(
+                    success=False,
+                    source_chain=BridgeChain.BSC,
+                    dest_chain=BridgeChain.BSC,
+                    amount=amount,
+                    tx_hash=tx_hash.hex(),
+                    error_message="Swap transaction failed",
+                )
+
+        except Exception as e:
+            logger.error("BSC USDC->USDT swap failed", error=str(e))
+            return BridgeResult(
+                success=False,
+                source_chain=BridgeChain.BSC,
+                dest_chain=BridgeChain.BSC,
+                amount=amount,
+                error_message=str(e)
+            )
 
     def find_chain_with_balance(
         self,
