@@ -467,26 +467,40 @@ class OpinionPlatform(BasePlatform):
                     token_id=token_id,
                 )
 
-                if result.errno == 0 and result.result and result.result.data:
-                    orderbook_data = result.result.data
+                if result.errno == 0 and result.result:
+                    # Handle different response structures - try result.result directly first
+                    orderbook_data = result.result
+                    # If result.result has a data attribute, use that instead
+                    if hasattr(orderbook_data, 'data') and orderbook_data.data:
+                        orderbook_data = orderbook_data.data
+
+                    # Get bids and asks from the response
+                    raw_bids = getattr(orderbook_data, 'bids', None) or []
+                    raw_asks = getattr(orderbook_data, 'asks', None) or []
+
                     logger.info(
                         "Opinion SDK orderbook response",
-                        has_bids=len(getattr(orderbook_data, 'bids', []) or []),
-                        has_asks=len(getattr(orderbook_data, 'asks', []) or []),
+                        response_type=type(orderbook_data).__name__,
+                        has_bids=len(raw_bids),
+                        has_asks=len(raw_asks),
                     )
 
-                    for bid in getattr(orderbook_data, 'bids', []) or []:
-                        price = getattr(bid, 'price', None) or bid.get('price', 0) if isinstance(bid, dict) else 0
-                        size = getattr(bid, 'size', None) or getattr(bid, 'quantity', None)
+                    for bid in raw_bids:
                         if isinstance(bid, dict):
+                            price = bid.get('price', 0)
                             size = bid.get('size') or bid.get('quantity', 0)
+                        else:
+                            price = getattr(bid, 'price', 0)
+                            size = getattr(bid, 'size', None) or getattr(bid, 'quantity', 0)
                         bids.append((Decimal(str(price)), Decimal(str(size or 0))))
 
-                    for ask in getattr(orderbook_data, 'asks', []) or []:
-                        price = getattr(ask, 'price', None) or ask.get('price', 0) if isinstance(ask, dict) else 0
-                        size = getattr(ask, 'size', None) or getattr(ask, 'quantity', None)
+                    for ask in raw_asks:
                         if isinstance(ask, dict):
+                            price = ask.get('price', 0)
                             size = ask.get('size') or ask.get('quantity', 0)
+                        else:
+                            price = getattr(ask, 'price', 0)
+                            size = getattr(ask, 'size', None) or getattr(ask, 'quantity', 0)
                         asks.append((Decimal(str(price)), Decimal(str(size or 0))))
                 else:
                     logger.warning(
