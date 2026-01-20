@@ -3427,7 +3427,7 @@ async def handle_bsc_swap_execute(query, percent: int, telegram_id: int, context
             return
 
         # Get private key
-        private_key = await wallet_service.get_evm_account(user.id)
+        private_key = await wallet_service.get_evm_account(user.id, telegram_id)
         if not private_key:
             await query.edit_message_text("❌ Failed to load wallet.")
             return
