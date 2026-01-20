@@ -2435,23 +2435,31 @@ Expires: {expiration_text}
         yes_ask_price = market.yes_price  # fallback to mid-price
         no_ask_price = market.no_price    # fallback to mid-price
 
+        # Check if this is an AMM market (Limitless has both CLOB and AMM)
+        is_amm_market = False
+        if market.raw_data and isinstance(market.raw_data, dict):
+            trade_type = market.raw_data.get("tradeType", "").lower()
+            is_amm_market = trade_type == "amm"
+
         # Get slug for orderbook lookup (needed for Limitless with numeric IDs)
         slug = None
         if market.raw_data and isinstance(market.raw_data, dict):
             slug = market.raw_data.get("slug")
 
-        try:
-            # Get orderbook for YES - best_ask is what you pay to buy YES
-            yes_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.YES, slug=slug)
-            if yes_orderbook and yes_orderbook.best_ask:
-                yes_ask_price = yes_orderbook.best_ask
+        # Skip orderbook fetch for AMM markets (they don't have orderbooks)
+        if not is_amm_market:
+            try:
+                # Get orderbook for YES - best_ask is what you pay to buy YES
+                yes_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.YES, slug=slug)
+                if yes_orderbook and yes_orderbook.best_ask:
+                    yes_ask_price = yes_orderbook.best_ask
 
-            # Get orderbook for NO - best_ask is what you pay to buy NO
-            no_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.NO, slug=slug)
-            if no_orderbook and no_orderbook.best_ask:
-                no_ask_price = no_orderbook.best_ask
-        except Exception as e:
-            logger.warning("Failed to fetch orderbook prices", market_id=market_id, error=str(e))
+                # Get orderbook for NO - best_ask is what you pay to buy NO
+                no_orderbook = await platform.get_orderbook(market_id, OutcomeEnum.NO, slug=slug)
+                if no_orderbook and no_orderbook.best_ask:
+                    no_ask_price = no_orderbook.best_ask
+            except Exception as e:
+                logger.warning("Failed to fetch orderbook prices", market_id=market_id, error=str(e))
 
         # Check if this is a player prop market (contains over/under in title, outcome_name, or question)
         import re
@@ -2490,7 +2498,37 @@ Expires: {expiration_text}
             yes_btn_label = f"🟢 Buy YES ({format_probability(yes_ask_price)})"
             no_btn_label = f"🔴 Buy NO ({format_probability(no_ask_price)})"
 
-        text = f"""
+        # Build the text and keyboard based on market type
+        if is_amm_market:
+            # AMM market - show info but no trading buttons
+            text = f"""
+{info['emoji']} <b>{escape_html(market.title)}</b>
+
+⚠️ <b>AMM Market</b>
+This market uses liquidity pool trading (AMM) which is not yet supported.
+Trading is only available for orderbook (CLOB) markets.
+
+📊 <b>Estimated Prices</b>
+{yes_label}: {format_probability(yes_ask_price)} ({format_price(yes_ask_price)})
+{no_label}: {format_probability(no_ask_price)} ({format_price(no_ask_price)})
+
+📈 <b>Stats</b>
+Volume (24h): {format_usd(market.volume_24h)}
+Liquidity: {format_usd(market.liquidity)}
+Status: {"🟢 Active" if market.is_active else "🔴 Closed"}
+Expires: {expiration_text}
+"""
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🤖 AI Research",
+                        callback_data=f"ai_research:{platform_value}:{short_market_id}"
+                    ),
+                ],
+                [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
+            ])
+        else:
+            text = f"""
 {info['emoji']} <b>{escape_html(market.title)}</b>
 
 📊 <b>Buy Prices</b> (from orderbook)
@@ -2503,35 +2541,35 @@ Liquidity: {format_usd(market.liquidity)}
 Status: {"🟢 Active" if market.is_active else "🔴 Closed"}
 Expires: {expiration_text}
 """
-        # Show resolution criteria if available
-        if market.resolution_criteria:
-            criteria_text = market.resolution_criteria[:400]
-            if len(market.resolution_criteria) > 400:
-                criteria_text += "..."
-            text += f"\n📋 <b>Resolution Rules</b>\n{escape_html(criteria_text)}\n"
+            # Show resolution criteria if available
+            if market.resolution_criteria:
+                criteria_text = market.resolution_criteria[:400]
+                if len(market.resolution_criteria) > 400:
+                    criteria_text += "..."
+                text += f"\n📋 <b>Resolution Rules</b>\n{escape_html(criteria_text)}\n"
 
-        # Buy buttons for binary market with orderbook prices
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    yes_btn_label,
-                    callback_data=f"buy:{platform_value}:{short_market_id}:yes"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    no_btn_label,
-                    callback_data=f"buy:{platform_value}:{short_market_id}:no"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🤖 AI Research",
-                    callback_data=f"ai_research:{platform_value}:{short_market_id}"
-                ),
-            ],
-            [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
-        ])
+            # Buy buttons for binary market with orderbook prices
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        yes_btn_label,
+                        callback_data=f"buy:{platform_value}:{short_market_id}:yes"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        no_btn_label,
+                        callback_data=f"buy:{platform_value}:{short_market_id}:no"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🤖 AI Research",
+                        callback_data=f"ai_research:{platform_value}:{short_market_id}"
+                    ),
+                ],
+                [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
+            ])
 
     await query.edit_message_text(
         text,

@@ -1050,6 +1050,16 @@ class LimitlessPlatform(BasePlatform):
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.LIMITLESS)
 
+        # Check if this is an AMM market (not yet supported)
+        if market.raw_data:
+            trade_type = market.raw_data.get("tradeType", "").lower()
+            if trade_type == "amm":
+                raise PlatformError(
+                    "This market uses AMM (liquidity pool) trading which is not yet supported. "
+                    "Please try a different market with orderbook trading.",
+                    Platform.LIMITLESS,
+                )
+
         # Get token ID
         if not token_id:
             token_id = market.yes_token if outcome == Outcome.YES else market.no_token
