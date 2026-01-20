@@ -1113,13 +1113,21 @@ class BridgeService:
         try:
             amount_raw = int(amount * Decimal(10**6))
 
+            # Determine destination token - BSC uses USDT (for Opinion Labs), others use USDC
+            if dest_chain == BridgeChain.BSC:
+                to_token = LIFI_USDT_BSC
+                to_decimals = 18  # USDT on BSC has 18 decimals
+            else:
+                to_token = LIFI_USDC[dest_chain]
+                to_decimals = 6  # USDC has 6 decimals
+
             # LI.FI Quote API
             url = "https://li.quest/v1/quote"
             params = {
                 "fromChain": LIFI_CHAIN_IDS[source_chain],
                 "toChain": LIFI_CHAIN_IDS[dest_chain],
                 "fromToken": LIFI_USDC[source_chain],
-                "toToken": LIFI_USDC[dest_chain],
+                "toToken": to_token,
                 "fromAmount": str(amount_raw),
                 "fromAddress": from_address,
                 "toAddress": to_address,
@@ -1157,7 +1165,8 @@ class BridgeService:
                 # Parse estimate
                 estimate = data.get("estimate", {})
                 to_amount_raw = int(estimate.get("toAmount", "0"))
-                output_amount = Decimal(to_amount_raw) / Decimal(10**6)
+                # Use correct decimals: BSC USDT has 18 decimals, USDC has 6
+                output_amount = Decimal(to_amount_raw) / Decimal(10**to_decimals)
 
                 fee_costs = estimate.get("feeCosts", [])
                 gas_costs = estimate.get("gasCosts", [])
@@ -1177,14 +1186,16 @@ class BridgeService:
                 # Get bridge tool being used
                 tool_name = data.get("toolDetails", {}).get("name", "unknown")
                 execution_duration = estimate.get("executionDuration", 180)
+                dest_token_symbol = "USDT" if dest_chain == BridgeChain.BSC else "USDC"
 
                 logger.info(
                     "LI.FI quote received",
                     tool=tool_name,
-                    input=str(amount),
-                    output=str(output_amount),
+                    input=f"{amount} USDC",
+                    output=f"{output_amount} {dest_token_symbol}",
                     fee_percent=f"{fee_percent:.2f}%",
-                    duration=execution_duration
+                    duration=execution_duration,
+                    route=f"{source_chain.value} -> {dest_chain.value}"
                 )
 
                 return LiFiBridgeQuote(
