@@ -1389,12 +1389,17 @@ class BridgeService:
             try:
                 gas_estimate = source_w3.eth.estimate_gas(tx)
                 tx["gas"] = int(gas_estimate * 1.3)
+                logger.info("Gas estimated for LI.FI tx", gas=tx["gas"])
             except Exception as e:
-                logger.warning("Gas estimation failed for LI.FI tx, using default", error=str(e))
+                logger.warning("Gas estimation failed for LI.FI tx", error=str(e), error_type=type(e).__name__)
+                # Gas estimation failure often means the tx will revert - log more details
+                logger.warning("TX details for failed estimation", to=tx.get("to"), value=tx.get("value"), data_len=len(tx.get("data", "")) if tx.get("data") else 0)
                 tx["gas"] = int(tx_request.get("gasLimit", 500000))
 
             # Sign and send
+            logger.info("Signing LI.FI tx", nonce=tx["nonce"], gas=tx["gas"], gas_price=tx["gasPrice"])
             signed_tx = source_w3.eth.account.sign_transaction(tx, private_key.key)
+            logger.info("Sending LI.FI tx...")
             tx_hash = source_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             tx_hash_hex = tx_hash.hex()
 
@@ -1451,13 +1456,9 @@ class BridgeService:
         except Exception as e:
             import traceback
             error_msg = str(e) if str(e) else type(e).__name__
-            logger.error(
-                "LI.FI bridge failed",
-                source=source_chain.value,
-                dest=dest_chain.value,
-                error=error_msg,
-                traceback=traceback.format_exc()
-            )
+            tb = traceback.format_exc()
+            logger.error(f"LI.FI bridge failed: {error_msg}")
+            logger.error(f"LI.FI bridge traceback: {tb}")
             return BridgeResult(
                 success=False,
                 source_chain=source_chain,
