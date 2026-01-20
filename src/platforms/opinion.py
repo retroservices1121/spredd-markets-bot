@@ -220,9 +220,72 @@ class OpinionPlatform(BasePlatform):
         )
     
     # ===================
+    # Orderbook Price Enrichment
+    # ===================
+
+    async def _fetch_orderbook_price(self, market: Market) -> tuple[str, Decimal | None, Decimal | None]:
+        """Fetch best bid/ask prices for a single market from orderbook."""
+        try:
+            if not market.yes_token:
+                return (market.market_id, None, None)
+
+            # Fetch YES orderbook
+            yes_orderbook = await self.get_orderbook(market.market_id, Outcome.YES)
+            yes_price = yes_orderbook.best_ask  # Price to buy YES
+
+            # Calculate NO price as 1 - YES price (for binary markets)
+            no_price = Decimal("1") - yes_price if yes_price else None
+
+            return (market.market_id, yes_price, no_price)
+        except Exception as e:
+            logger.debug("Failed to fetch orderbook price", market_id=market.market_id, error=str(e))
+            return (market.market_id, None, None)
+
+    async def _enrich_markets_with_orderbook_prices(self, markets: list[Market], max_markets: int = 30) -> list[Market]:
+        """
+        Enrich markets with real orderbook prices.
+        Fetches orderbooks in parallel for efficiency.
+
+        Args:
+            markets: List of markets to enrich
+            max_markets: Maximum number of markets to fetch orderbooks for (to limit API calls)
+        """
+        if not self._readonly_sdk_client:
+            # SDK not available, return markets as-is
+            return markets
+
+        # Only fetch orderbooks for the first N markets to limit API calls
+        markets_to_enrich = markets[:max_markets]
+
+        # Fetch orderbook prices in parallel
+        tasks = [self._fetch_orderbook_price(m) for m in markets_to_enrich]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Build a map of market_id -> (yes_price, no_price)
+        price_map: dict[str, tuple[Decimal | None, Decimal | None]] = {}
+        for result in results:
+            if isinstance(result, tuple) and len(result) == 3:
+                market_id, yes_price, no_price = result
+                if yes_price is not None:
+                    price_map[market_id] = (yes_price, no_price)
+
+        # Update market prices
+        enriched_count = 0
+        for market in markets:
+            if market.market_id in price_map:
+                yes_price, no_price = price_map[market.market_id]
+                if yes_price is not None:
+                    market.yes_price = yes_price
+                    market.no_price = no_price or Decimal("1") - yes_price
+                    enriched_count += 1
+
+        logger.info("Enriched markets with orderbook prices", total=len(markets), enriched=enriched_count)
+        return markets
+
+    # ===================
     # Market Discovery
     # ===================
-    
+
     async def get_markets(
         self,
         limit: int = 100,
@@ -263,12 +326,15 @@ class OpinionPlatform(BasePlatform):
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
 
+            # Enrich with orderbook prices
+            markets = await self._enrich_markets_with_orderbook_prices(markets)
+
             return markets
 
         except Exception as e:
             logger.error("Failed to get markets", error=str(e))
             return []
-    
+
     async def search_markets(
         self,
         query: str,
@@ -296,6 +362,9 @@ class OpinionPlatform(BasePlatform):
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
 
+            # Enrich with orderbook prices
+            markets = await self._enrich_markets_with_orderbook_prices(markets)
+
             return markets
 
         except Exception as e:
@@ -308,7 +377,7 @@ class OpinionPlatform(BasePlatform):
                 if query_lower in m.title.lower() or
                    (m.description and query_lower in m.description.lower())
             ][:limit]
-    
+
     async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
         """Get a specific market by ID.
 
@@ -355,6 +424,9 @@ class OpinionPlatform(BasePlatform):
                     markets.append(self._parse_market(item))
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
+
+            # Enrich with orderbook prices
+            markets = await self._enrich_markets_with_orderbook_prices(markets)
 
             return markets
 
