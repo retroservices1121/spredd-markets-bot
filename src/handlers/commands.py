@@ -1869,24 +1869,42 @@ Select which prediction market you want to trade on:
                 await handle_wallet_setup(query, update.effective_user.id, context)
 
         elif action == "bridge":
-            # Format: bridge:start:source_chain, bridge:amount:chain:percent, bridge:custom:chain, bridge:speed:chain:mode
+            # New format: bridge:dest:chain, bridge:source:source:dest, bridge:amount:source:dest:percent
+            # Legacy format: bridge:start:source, bridge:amount:source:percent, bridge:custom:source
             logger.info("Bridge callback received", callback_data=data, parts=parts)
-            if parts[1] == "start":
-                # bridge:start:source_chain - user selected a chain to bridge from
-                await handle_bridge_start(query, parts[2], update.effective_user.id, context)
+            if parts[1] == "dest":
+                # bridge:dest:chain - user selected destination chain
+                await handle_bridge_dest(query, parts[2], update.effective_user.id, context)
+            elif parts[1] == "source":
+                # bridge:source:source_chain:dest_chain - user selected source chain
+                await handle_bridge_start(query, parts[2], update.effective_user.id, context, dest_chain=parts[3])
             elif parts[1] == "amount":
-                # bridge:amount:chain:percentage - user selected preset amount
-                await handle_bridge_amount(query, parts[2], int(parts[3]), update.effective_user.id, context)
+                # New: bridge:amount:source:dest:percent or Legacy: bridge:amount:source:percent
+                if len(parts) == 5:
+                    # New format with destination
+                    await handle_bridge_amount(query, parts[2], parts[3], int(parts[4]), update.effective_user.id, context)
+                else:
+                    # Legacy format - assume polygon destination
+                    await handle_bridge_amount(query, parts[2], "polygon", int(parts[3]), update.effective_user.id, context)
             elif parts[1] == "custom":
-                # bridge:custom:chain - user wants to enter custom amount
-                await handle_bridge_custom(query, parts[2], update.effective_user.id, context)
+                # New: bridge:custom:source:dest or Legacy: bridge:custom:source
+                if len(parts) == 4:
+                    await handle_bridge_custom(query, parts[2], parts[3], update.effective_user.id, context)
+                else:
+                    await handle_bridge_custom(query, parts[2], "polygon", update.effective_user.id, context)
             elif parts[1] == "speed":
-                # bridge:speed:chain:mode - user selected fast or standard
-                await handle_bridge_speed(query, parts[2], parts[3], update.effective_user.id, context)
+                # bridge:speed:source:dest:mode or legacy bridge:speed:source:mode
+                if len(parts) == 5:
+                    await handle_bridge_speed(query, parts[2], parts[3], parts[4], update.effective_user.id, context)
+                else:
+                    await handle_bridge_speed(query, parts[2], "polygon", parts[3], update.effective_user.id, context)
+            elif parts[1] == "start":
+                # Legacy: bridge:start:source_chain - assume polygon destination
+                await handle_bridge_start(query, parts[2], update.effective_user.id, context, dest_chain="polygon")
             else:
                 # bridge:source_chain - legacy format
                 logger.info("Using legacy bridge format", chain=parts[1])
-                await handle_bridge_start(query, parts[1], update.effective_user.id, context)
+                await handle_bridge_start(query, parts[1], update.effective_user.id, context, dest_chain="polygon")
 
         elif action == "export":
             await handle_export_key(query, parts[1], update.effective_user.id, context)
@@ -3155,7 +3173,7 @@ You haven't created your wallets yet.
 
 
 async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show bridge menu with available source chains."""
+    """Show bridge menu - select destination chain first."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
@@ -3172,6 +3190,7 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
         # Get user's EVM wallet
         wallets = await get_user_wallets(user.id)
         evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+        solana_wallet = next((w for w in wallets if w.chain_family == ChainFamily.SOLANA), None)
 
         if not evm_wallet:
             await query.edit_message_text(
@@ -3183,11 +3202,11 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
         # Get balances on all chains
         balances = bridge_service.get_all_usdc_balances(evm_wallet.public_key)
 
-        text = "🌉 <b>Bridge USDC to Polygon</b>\n\n"
-        text += "Bridge USDC from other chains to Polygon for trading.\n\n"
-        text += "<b>Your USDC Balances:</b>\n"
+        text = "🌉 <b>Bridge USDC</b>\n\n"
+        text += "Bridge USDC between chains for trading.\n\n"
+        text += "<b>Your EVM USDC Balances:</b>\n"
 
-        buttons = []
+        total_balance = Decimal(0)
         for chain, balance in balances.items():
             chain_emoji = {
                 BridgeChain.BASE: "🔵",
@@ -3199,20 +3218,52 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
             }.get(chain, "🔹")
 
             text += f"{chain_emoji} {chain.value.title()}: ${float(balance):.2f}\n"
+            if chain != BridgeChain.POLYGON:  # Count bridgeable balance
+                total_balance += balance
 
-            # Only show bridge button for chains with balance (excluding Polygon)
-            if chain != BridgeChain.POLYGON and balance > 0:
-                buttons.append([
-                    InlineKeyboardButton(
-                        f"{chain_emoji} Bridge from {chain.value.title()} (${float(balance):.2f})",
-                        callback_data=f"bridge:start:{chain.value}"
-                    )
-                ])
+        text += "\n<b>Where do you want to bridge USDC?</b>\n"
 
-        if not buttons:
-            text += "\n<i>No bridgeable balance found on other chains.</i>"
+        buttons = []
 
-        text += "\n\n<i>Bridging uses Circle CCTP (native USDC, ~10-15 min)</i>"
+        # Bridge to Polygon (for Polymarket)
+        buttons.append([
+            InlineKeyboardButton(
+                "🟣 Bridge to Polygon (Polymarket)",
+                callback_data="bridge:dest:polygon"
+            )
+        ])
+
+        # Bridge to Solana (for Kalshi) - only if they have a Solana wallet
+        if solana_wallet:
+            buttons.append([
+                InlineKeyboardButton(
+                    "🟠 Bridge to Solana (Kalshi)",
+                    callback_data="bridge:dest:solana"
+                )
+            ])
+        else:
+            text += "\n<i>💡 Create a Solana wallet to bridge to Kalshi</i>"
+
+        # Bridge to Base (for Limitless)
+        buttons.append([
+            InlineKeyboardButton(
+                "🔵 Bridge to Base (Limitless)",
+                callback_data="bridge:dest:base"
+            )
+        ])
+
+        # Bridge to BSC (for Opinion Labs)
+        buttons.append([
+            InlineKeyboardButton(
+                "🟡 Bridge to BSC (Opinion Labs)",
+                callback_data="bridge:dest:bsc"
+            )
+        ])
+
+        if total_balance <= 0:
+            text += "\n⚠️ <i>No bridgeable USDC balance on other chains.</i>"
+
+        text += "\n\n<i>EVM bridges: ~30s (fast) or ~15min (standard)\nSolana/BSC bridges: ~1-3min (via LI.FI)</i>"
 
         buttons.append([InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")])
 
@@ -3241,9 +3292,118 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
             pass  # Ignore edit errors
 
 
-async def handle_bridge_start(query, source_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_bridge_dest(query, dest_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle destination chain selection - show source chains with balance."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain
+        from src.db.database import get_user_wallets
+
+        # Initialize bridge service if needed
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        # Get user's EVM wallet
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+        solana_wallet = next((w for w in wallets if w.chain_family == ChainFamily.SOLANA), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        # Parse destination chain
+        dest_chain_lower = dest_chain.lower()
+        try:
+            dest = BridgeChain(dest_chain_lower)
+        except ValueError:
+            await query.edit_message_text(f"Invalid destination chain: {dest_chain}")
+            return
+
+        # For Solana destination, ensure we have Solana wallet
+        if dest == BridgeChain.SOLANA and not solana_wallet:
+            await query.edit_message_text(
+                "❌ No Solana wallet found. Please /start to create one.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        # Get balances on all chains
+        balances = bridge_service.get_all_usdc_balances(evm_wallet.public_key)
+
+        dest_emoji = {
+            BridgeChain.POLYGON: "🟣",
+            BridgeChain.SOLANA: "🟠",
+            BridgeChain.BASE: "🔵",
+        }.get(dest, "🔹")
+
+        text = f"🌉 <b>Bridge to {dest.value.title()}</b> {dest_emoji}\n\n"
+        text += "Select source chain:\n\n"
+
+        buttons = []
+        for chain, balance in balances.items():
+            # Skip the destination chain
+            if chain == dest:
+                continue
+
+            chain_emoji = {
+                BridgeChain.BASE: "🔵",
+                BridgeChain.ARBITRUM: "🔷",
+                BridgeChain.OPTIMISM: "🔴",
+                BridgeChain.ETHEREUM: "⚪",
+                BridgeChain.POLYGON: "🟣",
+                BridgeChain.MONAD: "🟢",
+            }.get(chain, "🔹")
+
+            text += f"{chain_emoji} {chain.value.title()}: ${float(balance):.2f}\n"
+
+            # Only show bridge button for chains with balance
+            if balance > 0:
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{chain_emoji} From {chain.value.title()} (${float(balance):.2f})",
+                        callback_data=f"bridge:source:{chain.value}:{dest_chain_lower}"
+                    )
+                ])
+
+        if not buttons:
+            text += "\n⚠️ <i>No bridgeable USDC balance on other chains.</i>"
+
+        buttons.append([InlineKeyboardButton("« Back", callback_data="wallet:bridge")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        error_str = str(e)
+        if "Message is not modified" in error_str:
+            return
+        logger.error("Bridge dest selection failed", error=error_str)
+        try:
+            await query.edit_message_text(
+                f"❌ Error: {friendly_error(error_str)}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+        except Exception:
+            pass
+
+
+async def handle_bridge_start(query, source_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE, dest_chain: str = "polygon") -> None:
     """Start manual bridge - show amount selection."""
-    logger.info("Bridge start called", source_chain=source_chain, telegram_id=telegram_id)
+    logger.info("Bridge start called", source_chain=source_chain, dest_chain=dest_chain, telegram_id=telegram_id)
 
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
@@ -3254,30 +3414,43 @@ async def handle_bridge_start(query, source_chain: str, telegram_id: int, contex
         from src.services.bridge import bridge_service, BridgeChain
         from src.db.database import get_user_wallets
 
-        # Get chain enum
+        # Get chain enums
         try:
-            chain = BridgeChain(source_chain.lower())
-        except ValueError:
-            await query.edit_message_text(f"Invalid chain: {source_chain}")
+            source = BridgeChain(source_chain.lower())
+            dest = BridgeChain(dest_chain.lower())
+        except ValueError as e:
+            await query.edit_message_text(f"Invalid chain: {e}")
             return
 
         # Get user's wallet
         wallets = await get_user_wallets(user.id)
         evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+        solana_wallet = next((w for w in wallets if w.chain_family == ChainFamily.SOLANA), None)
 
         if not evm_wallet:
             await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        # For Solana destination, ensure we have Solana wallet
+        if dest == BridgeChain.SOLANA and not solana_wallet:
+            await query.edit_message_text(
+                "❌ No Solana wallet found. Please /start to create one.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
             return
 
         # Get balance on source chain
         if not bridge_service._initialized:
             bridge_service.initialize()
 
-        balance = bridge_service.get_usdc_balance(chain, evm_wallet.public_key)
+        balance = bridge_service.get_usdc_balance(source, evm_wallet.public_key)
 
         if balance <= 0:
             await query.edit_message_text(
-                f"❌ No USDC balance on {chain.value.title()}.",
+                f"❌ No USDC balance on {source.value.title()}.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
@@ -3288,6 +3461,7 @@ async def handle_bridge_start(query, source_chain: str, telegram_id: int, contex
         # Store pending bridge info for amount selection
         context.user_data["pending_bridge"] = {
             "source_chain": source_chain,
+            "dest_chain": dest_chain,
             "max_balance": str(balance),
             "awaiting_amount": True,
         }
@@ -3300,26 +3474,42 @@ async def handle_bridge_start(query, source_chain: str, telegram_id: int, contex
             "100%": balance,
         }
 
-        text = f"""
-🌉 <b>Bridge USDC to Polygon</b>
+        dest_emoji = {
+            BridgeChain.POLYGON: "🟣",
+            BridgeChain.SOLANA: "🟠",
+            BridgeChain.BASE: "🔵",
+        }.get(dest, "🔹")
 
-Source: {chain.value.title()}
+        # Determine bridge method
+        bridge_method = bridge_service.get_best_bridge_method(source, dest)
+        if bridge_method == "lifi":
+            speed_note = "via LI.FI (~1-3 min)"
+        else:
+            speed_note = "fast (~30s) or standard (~15min)"
+
+        text = f"""
+🌉 <b>Bridge USDC to {dest.value.title()}</b> {dest_emoji}
+
+Source: {source.value.title()}
+Destination: {dest.value.title()}
 Available: <b>${float(balance):.2f} USDC</b>
 
-Select amount to bridge or enter a custom amount:
+<i>Bridge: {speed_note}</i>
+
+Select amount to bridge:
 """
 
         buttons = [
             [
-                InlineKeyboardButton(f"25% (${float(amounts['25%']):.2f})", callback_data=f"bridge:amount:{source_chain}:25"),
-                InlineKeyboardButton(f"50% (${float(amounts['50%']):.2f})", callback_data=f"bridge:amount:{source_chain}:50"),
+                InlineKeyboardButton(f"25% (${float(amounts['25%']):.2f})", callback_data=f"bridge:amount:{source_chain}:{dest_chain}:25"),
+                InlineKeyboardButton(f"50% (${float(amounts['50%']):.2f})", callback_data=f"bridge:amount:{source_chain}:{dest_chain}:50"),
             ],
             [
-                InlineKeyboardButton(f"75% (${float(amounts['75%']):.2f})", callback_data=f"bridge:amount:{source_chain}:75"),
-                InlineKeyboardButton(f"100% (${float(amounts['100%']):.2f})", callback_data=f"bridge:amount:{source_chain}:100"),
+                InlineKeyboardButton(f"75% (${float(amounts['75%']):.2f})", callback_data=f"bridge:amount:{source_chain}:{dest_chain}:75"),
+                InlineKeyboardButton(f"100% (${float(amounts['100%']):.2f})", callback_data=f"bridge:amount:{source_chain}:{dest_chain}:100"),
             ],
-            [InlineKeyboardButton("✏️ Custom Amount", callback_data=f"bridge:custom:{source_chain}")],
-            [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            [InlineKeyboardButton("✏️ Custom Amount", callback_data=f"bridge:custom:{source_chain}:{dest_chain}")],
+            [InlineKeyboardButton("« Back", callback_data=f"bridge:dest:{dest_chain}")],
         ]
 
         await query.edit_message_text(
@@ -3346,8 +3536,8 @@ Select amount to bridge or enter a custom amount:
             pass
 
 
-async def handle_bridge_amount(query, source_chain: str, percentage: int, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle bridge amount selection - show speed options."""
+async def handle_bridge_amount(query, source_chain: str, dest_chain: str, percentage: int, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle bridge amount selection - show speed options or execute for LI.FI."""
     pending = context.user_data.get("pending_bridge")
     if not pending:
         await query.edit_message_text("No pending bridge. Please start again.")
@@ -3363,18 +3553,88 @@ async def handle_bridge_amount(query, source_chain: str, percentage: int, telegr
 
     # Update pending bridge with amount
     context.user_data["pending_bridge"]["amount"] = str(amount)
+    context.user_data["pending_bridge"]["dest_chain"] = dest_chain
     context.user_data["pending_bridge"]["awaiting_amount"] = False
 
     from src.services.bridge import BridgeChain, bridge_service
     from src.db.database import get_wallet
-    chain = BridgeChain(source_chain.lower())
+    source = BridgeChain(source_chain.lower())
+    dest = BridgeChain(dest_chain.lower())
 
-    # Get fast bridge quote for fee display
+    # Determine bridge method
+    bridge_method = bridge_service.get_best_bridge_method(source, dest)
+
+    # For LI.FI (Solana/BSC routes), skip speed selection and show confirmation
+    if bridge_method == "lifi":
+        evm_wallet = await get_wallet(user.id, ChainFamily.EVM)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ EVM wallet not found. Please /start first.")
+            return
+
+        # Determine destination address based on chain
+        if dest == BridgeChain.SOLANA:
+            solana_wallet = await get_wallet(user.id, ChainFamily.SOLANA)
+            if not solana_wallet:
+                await query.edit_message_text("❌ Solana wallet not found. Please /start first.")
+                return
+            to_address = solana_wallet.public_key
+            dest_label = "Solana (for Kalshi)"
+        else:
+            # BSC or other EVM chains - use same EVM wallet
+            to_address = evm_wallet.public_key
+            platform_name = {"bsc": "Opinion Labs", "base": "Limitless"}.get(dest_chain, "")
+            dest_label = f"{dest.value.title()}" + (f" (for {platform_name})" if platform_name else "")
+
+        # Get LI.FI quote
+        lifi_quote = bridge_service.get_lifi_quote(
+            source, dest, amount, evm_wallet.public_key, to_address
+        )
+
+        if lifi_quote.error:
+            await query.edit_message_text(
+                f"❌ Failed to get bridge quote: {lifi_quote.error}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        fee_display = f"${float(lifi_quote.fee_amount):.2f}" if lifi_quote.fee_amount > Decimal("0.01") else f"{lifi_quote.fee_percent:.1f}%"
+        est_time = lifi_quote.estimated_time_seconds
+
+        dest_emoji_display = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
+
+        text = f"""
+🌉 <b>Bridge USDC to {dest.value.title()}</b> {dest_emoji_display}
+
+From: {source.value.title()}
+To: {dest_label}
+Amount: <b>${float(amount):.2f} USDC</b>
+
+<b>Bridge Details (LI.FI via {lifi_quote.tool_name}):</b>
+• You receive: ~${float(lifi_quote.output_amount):.2f} USDC
+• Fee: {fee_display}
+• Time: ~{est_time // 60}m {est_time % 60}s
+
+<b>Confirm bridge?</b>
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm Bridge", callback_data=f"bridge:speed:{source_chain}:{dest_chain}:lifi")],
+            [InlineKeyboardButton("« Back", callback_data=f"bridge:source:{source_chain}:{dest_chain}")],
+        ])
+
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        return
+
+    # For EVM-to-EVM bridges, show speed selection
     evm_wallet = await get_wallet(user.id, ChainFamily.EVM)
     fast_quote = None
     if evm_wallet:
         fast_quote = bridge_service.get_fast_bridge_quote(
-            chain, BridgeChain.POLYGON, amount, evm_wallet.public_key
+            source, dest, amount, evm_wallet.public_key
         )
 
     # Show speed selection
@@ -3386,11 +3646,13 @@ async def handle_bridge_amount(query, source_chain: str, percentage: int, telegr
     else:
         fee_text = "\n<b>🚀 Fast:</b> ~30 seconds (small fee)"
 
+    dest_emoji = {"polygon": "🟣", "base": "🔵", "arbitrum": "🔷"}.get(dest_chain, "🔹")
+
     text = f"""
 🌉 <b>Bridge USDC - Select Speed</b>
 
-From: {chain.value.title()}
-To: Polygon
+From: {source.value.title()}
+To: {dest.value.title()} {dest_emoji}
 Amount: <b>${float(amount):.2f} USDC</b>
 
 <b>Choose bridge speed:</b>
@@ -3399,15 +3661,15 @@ Amount: <b>${float(amount):.2f} USDC</b>
 """
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🚀 Fast (~30s)", callback_data=f"bridge:speed:{source_chain}:fast")],
-        [InlineKeyboardButton("🐢 Standard (Free)", callback_data=f"bridge:speed:{source_chain}:standard")],
-        [InlineKeyboardButton("« Back", callback_data=f"bridge:start:{source_chain}")],
+        [InlineKeyboardButton(f"🚀 Fast (~30s)", callback_data=f"bridge:speed:{source_chain}:{dest_chain}:fast")],
+        [InlineKeyboardButton("🐢 Standard (Free)", callback_data=f"bridge:speed:{source_chain}:{dest_chain}:standard")],
+        [InlineKeyboardButton("« Back", callback_data=f"bridge:source:{source_chain}:{dest_chain}")],
     ])
 
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
-async def handle_bridge_custom(query, source_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_bridge_custom(query, source_chain: str, dest_chain: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Prompt user to enter custom bridge amount."""
     pending = context.user_data.get("pending_bridge")
     if not pending:
@@ -3417,14 +3679,19 @@ async def handle_bridge_custom(query, source_chain: str, telegram_id: int, conte
     max_balance = Decimal(pending["max_balance"])
 
     from src.services.bridge import BridgeChain
-    chain = BridgeChain(source_chain.lower())
+    source = BridgeChain(source_chain.lower())
+    dest = BridgeChain(dest_chain.lower())
 
     context.user_data["pending_bridge"]["awaiting_custom_amount"] = True
+    context.user_data["pending_bridge"]["dest_chain"] = dest_chain
+
+    dest_emoji = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
 
     text = f"""
 🌉 <b>Bridge USDC - Custom Amount</b>
 
-Source: {chain.value.title()}
+Source: {source.value.title()}
+Destination: {dest.value.title()} {dest_emoji}
 Available: <b>${float(max_balance):.2f} USDC</b>
 
 <b>Enter the amount in USDC to bridge:</b>
@@ -3434,7 +3701,7 @@ Available: <b>${float(max_balance):.2f} USDC</b>
 
 
 async def handle_bridge_custom_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE, amount_str: str) -> None:
-    """Handle custom bridge amount input from user - show speed selection."""
+    """Handle custom bridge amount input from user - show speed selection or LI.FI confirmation."""
     pending = context.user_data.get("pending_bridge")
     if not pending:
         await update.message.reply_text("No pending bridge. Please start again.")
@@ -3465,6 +3732,7 @@ async def handle_bridge_custom_amount_input(update: Update, context: ContextType
         return
 
     source_chain = pending["source_chain"]
+    dest_chain = pending.get("dest_chain", "polygon")
 
     # Update pending bridge with amount
     context.user_data["pending_bridge"]["amount"] = str(amount)
@@ -3472,14 +3740,80 @@ async def handle_bridge_custom_amount_input(update: Update, context: ContextType
 
     from src.services.bridge import BridgeChain, bridge_service
     from src.db.database import get_wallet
-    chain = BridgeChain(source_chain.lower())
+    source = BridgeChain(source_chain.lower())
+    dest = BridgeChain(dest_chain.lower())
 
-    # Get fast bridge quote for fee display
+    # Determine bridge method
+    bridge_method = bridge_service.get_best_bridge_method(source, dest)
+
+    # For LI.FI (Solana/BSC routes), show confirmation
+    if bridge_method == "lifi":
+        evm_wallet = await get_wallet(user.id, ChainFamily.EVM)
+
+        if not evm_wallet:
+            await update.message.reply_text("❌ EVM wallet not found. Please /start first.")
+            return
+
+        # Determine destination address based on chain
+        if dest == BridgeChain.SOLANA:
+            solana_wallet = await get_wallet(user.id, ChainFamily.SOLANA)
+            if not solana_wallet:
+                await update.message.reply_text("❌ Solana wallet not found. Please /start first.")
+                return
+            to_address = solana_wallet.public_key
+            dest_label = "Solana (for Kalshi)"
+        else:
+            # BSC or other EVM chains - use same EVM wallet
+            to_address = evm_wallet.public_key
+            platform_name = {"bsc": "Opinion Labs", "base": "Limitless"}.get(dest_chain, "")
+            dest_label = f"{dest.value.title()}" + (f" (for {platform_name})" if platform_name else "")
+
+        # Get LI.FI quote
+        lifi_quote = bridge_service.get_lifi_quote(
+            source, dest, amount, evm_wallet.public_key, to_address
+        )
+
+        if lifi_quote.error:
+            await update.message.reply_text(
+                f"❌ Failed to get bridge quote: {lifi_quote.error}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        fee_display = f"${float(lifi_quote.fee_amount):.2f}" if lifi_quote.fee_amount > Decimal("0.01") else f"{lifi_quote.fee_percent:.1f}%"
+        est_time = lifi_quote.estimated_time_seconds
+
+        dest_emoji_display = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
+
+        text = f"""
+🌉 <b>Bridge USDC to {dest.value.title()}</b> {dest_emoji_display}
+
+From: {source.value.title()}
+To: {dest_label}
+Amount: <b>${float(amount):.2f} USDC</b>
+
+<b>Bridge Details (LI.FI via {lifi_quote.tool_name}):</b>
+• You receive: ~${float(lifi_quote.output_amount):.2f} USDC
+• Fee: {fee_display}
+• Time: ~{est_time // 60}m {est_time % 60}s
+
+<b>Confirm bridge?</b>
+"""
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Confirm Bridge", callback_data=f"bridge:speed:{source_chain}:{dest_chain}:lifi")],
+            [InlineKeyboardButton("« Back", callback_data=f"bridge:source:{source_chain}:{dest_chain}")],
+        ])
+
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        return
+
+    # For EVM-to-EVM bridges, show speed selection
     evm_wallet = await get_wallet(user.id, ChainFamily.EVM)
     fast_quote = None
     if evm_wallet:
         fast_quote = bridge_service.get_fast_bridge_quote(
-            chain, BridgeChain.POLYGON, amount, evm_wallet.public_key
+            source, dest, amount, evm_wallet.public_key
         )
 
     # Show speed selection
@@ -3491,11 +3825,13 @@ async def handle_bridge_custom_amount_input(update: Update, context: ContextType
     else:
         fee_text = "\n<b>🚀 Fast:</b> ~30 seconds (small fee)"
 
+    dest_emoji = {"polygon": "🟣", "base": "🔵", "solana": "🟠"}.get(dest_chain, "🔹")
+
     text = f"""
 🌉 <b>Bridge USDC - Select Speed</b>
 
-From: {chain.value.title()}
-To: Polygon
+From: {source.value.title()}
+To: {dest.value.title()} {dest_emoji}
 Amount: <b>${float(amount):.2f} USDC</b>
 
 <b>Choose bridge speed:</b>
@@ -3504,16 +3840,16 @@ Amount: <b>${float(amount):.2f} USDC</b>
 """
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🚀 Fast (~30s)", callback_data=f"bridge:speed:{source_chain}:fast")],
-        [InlineKeyboardButton("🐢 Standard (Free)", callback_data=f"bridge:speed:{source_chain}:standard")],
-        [InlineKeyboardButton("« Back", callback_data=f"bridge:start:{source_chain}")],
+        [InlineKeyboardButton(f"🚀 Fast (~30s)", callback_data=f"bridge:speed:{source_chain}:{dest_chain}:fast")],
+        [InlineKeyboardButton("🐢 Standard (Free)", callback_data=f"bridge:speed:{source_chain}:{dest_chain}:standard")],
+        [InlineKeyboardButton("« Back", callback_data=f"bridge:source:{source_chain}:{dest_chain}")],
     ])
 
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
-async def handle_bridge_speed(query, source_chain: str, speed: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle bridge speed selection (fast or standard)."""
+async def handle_bridge_speed(query, source_chain: str, dest_chain: str, speed: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle bridge speed selection (fast, standard, or lifi)."""
     pending = context.user_data.get("pending_bridge")
     if not pending:
         await query.edit_message_text("No pending bridge. Please start again.")
@@ -3526,25 +3862,30 @@ async def handle_bridge_speed(query, source_chain: str, speed: str, telegram_id:
 
     amount = Decimal(pending["amount"])
 
-    # Store the speed choice
+    # Store the speed choice and destination
     context.user_data["pending_bridge"]["speed"] = speed
+    context.user_data["pending_bridge"]["dest_chain"] = dest_chain
 
     # Execute bridge directly (no PIN required)
-    await execute_bridge(query, user.id, telegram_id, source_chain, amount, context)
+    await execute_bridge(query, user.id, telegram_id, source_chain, dest_chain, amount, context)
 
 
-async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: str, amount: Decimal, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Execute the bridge operation (fast or standard based on pending_bridge settings)."""
+async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: str, dest_chain: str, amount: Decimal, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute the bridge operation (fast, standard, or lifi based on pending_bridge settings)."""
     try:
         from src.services.bridge import bridge_service, BridgeChain
+        from src.db.database import get_wallet
         import asyncio
 
-        chain = BridgeChain(source_chain.lower())
+        source = BridgeChain(source_chain.lower())
+        dest = BridgeChain(dest_chain.lower())
         chain_family = ChainFamily.EVM
 
         # Get speed from pending bridge (default to standard)
         pending = context.user_data.get("pending_bridge", {})
-        use_fast_bridge = pending.get("speed") == "fast"
+        speed = pending.get("speed", "standard")
+        use_lifi = speed == "lifi" or bridge_service.requires_lifi(source, dest)
+        use_fast_bridge = speed == "fast" and not use_lifi
 
         # Get private key directly (no PIN required)
         private_key = await wallet_service.get_private_key(user_id, telegram_id, chain_family)
@@ -3558,12 +3899,40 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
             )
             return
 
+        # For Solana destination, get Solana wallet address
+        # For EVM destinations (including BSC), use EVM wallet
+        to_address = None
+        if dest == BridgeChain.SOLANA:
+            solana_wallet = await get_wallet(user_id, ChainFamily.SOLANA)
+            if not solana_wallet:
+                await query.edit_message_text(
+                    "❌ No Solana wallet found. Please /start first.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                    ]),
+                )
+                return
+            to_address = solana_wallet.public_key
+        elif use_lifi:
+            # For BSC and other LI.FI routes, destination is EVM wallet
+            evm_wallet_obj = await get_wallet(user_id, ChainFamily.EVM)
+            to_address = evm_wallet_obj.public_key if evm_wallet_obj else private_key.address
+
         # Show progress message
-        speed_label = "🚀 Fast" if use_fast_bridge else "🐢 Standard"
+        if use_lifi:
+            speed_label = "🔗 LI.FI"
+        elif use_fast_bridge:
+            speed_label = "🚀 Fast"
+        else:
+            speed_label = "🐢 Standard"
+
+        dest_emoji = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
+
         await query.edit_message_text(
             f"🌉 <b>Bridging USDC ({speed_label})</b>\n\n"
-            f"From: {chain.value.title()}\n"
-            f"To: Polygon\n"
+            f"From: {source.value.title()}\n"
+            f"To: {dest.value.title()} {dest_emoji}\n"
             f"Amount: ${float(amount):.2f}\n\n"
             f"⏳ Initiating transfer...",
             parse_mode=ParseMode.HTML,
@@ -3601,13 +3970,23 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
             except Exception:
                 pass
 
-        # Execute bridge in thread (fast or standard)
-        if use_fast_bridge:
+        # Execute bridge in thread (lifi, fast, or standard)
+        if use_lifi:
+            result = await asyncio.to_thread(
+                bridge_service.bridge_usdc_lifi,
+                private_key,
+                source,
+                dest,
+                amount,
+                to_address,
+                sync_progress_callback,
+            )
+        elif use_fast_bridge:
             result = await asyncio.to_thread(
                 bridge_service.bridge_usdc_fast,
                 private_key,
-                chain,
-                BridgeChain.POLYGON,
+                source,
+                dest,
                 amount,
                 sync_progress_callback,
             )
@@ -3615,40 +3994,53 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
             result = await asyncio.to_thread(
                 bridge_service.bridge_usdc,
                 private_key,
-                chain,
-                BridgeChain.POLYGON,
+                source,
+                dest,
                 amount,
                 sync_progress_callback,
             )
 
         if result.success:
-            if use_fast_bridge:
+            if use_lifi:
+                text = f"""
+✅ <b>LI.FI Bridge Complete!</b>
+
+From: {source.value.title()}
+To: {dest.value.title()} {dest_emoji}
+Amount: ~${float(result.amount):.2f} USDC (after fees)
+
+TX: <code>{result.burn_tx_hash[:16] if result.burn_tx_hash else 'pending'}...</code>
+
+🔗 Funds are being delivered to your {dest.value.title()} wallet!
+<i>Usually arrives in 1-3 minutes.</i>
+"""
+            elif use_fast_bridge:
                 text = f"""
 ✅ <b>Fast Bridge Complete!</b>
 
-From: {chain.value.title()}
-To: Polygon
+From: {source.value.title()}
+To: {dest.value.title()} {dest_emoji}
 Amount: ${float(result.amount):.2f} USDC (after fees)
 
 TX: <code>{result.burn_tx_hash[:16] if result.burn_tx_hash else 'pending'}...</code>
 
-🚀 Funds are arriving on Polygon now!
+🚀 Funds are arriving on {dest.value.title()} now!
 """
             else:
                 text = f"""
 ✅ <b>Bridge Initiated!</b>
 
-From: {chain.value.title()}
-To: Polygon
+From: {source.value.title()}
+To: {dest.value.title()} {dest_emoji}
 Amount: ${float(amount):.2f} USDC
 
 Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
 """
                 if result.mint_tx_hash:
                     text += f"Mint TX: <code>{result.mint_tx_hash[:16]}...</code>\n"
-                    text += "\n✅ Bridge complete! Funds are now on Polygon."
+                    text += f"\n✅ Bridge complete! Funds are now on {dest.value.title()}."
                 else:
-                    text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
+                    text += f"\n⏳ Waiting for Circle attestation. Funds will arrive on {dest.value.title()} in ~10-15 minutes."
 
         else:
             text = f"❌ <b>Bridge Failed</b>\n\n{friendly_error(result.error_message or 'Unknown error')}"
@@ -3687,7 +4079,7 @@ Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
 
 
 async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, pin: str) -> None:
-    """Handle PIN entry for bridge operation (fast or standard)."""
+    """Handle PIN entry for bridge operation (fast, standard, or lifi)."""
     pending = context.user_data.get("pending_bridge")
     if not pending:
         await update.message.reply_text("No pending bridge operation.")
@@ -3714,9 +4106,28 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
 
     # Get bridge info from pending (before deleting)
     source_chain = pending["source_chain"]
+    dest_chain = pending.get("dest_chain", "polygon")
     amount = Decimal(pending["amount"])
-    use_fast_bridge = pending.get("speed") == "fast"
-    speed_label = "🚀 Fast" if use_fast_bridge else "🐢 Standard"
+    speed = pending.get("speed", "standard")
+
+    from src.services.bridge import bridge_service, BridgeChain
+    from src.db.database import get_wallet
+    import asyncio
+
+    source = BridgeChain(source_chain.lower())
+    dest = BridgeChain(dest_chain.lower())
+
+    use_lifi = speed == "lifi" or bridge_service.requires_lifi(source, dest)
+    use_fast_bridge = speed == "fast" and not use_lifi
+
+    if use_lifi:
+        speed_label = "🔗 LI.FI"
+    elif use_fast_bridge:
+        speed_label = "🚀 Fast"
+    else:
+        speed_label = "🐢 Standard"
+
+    dest_emoji = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
 
     # Send initial status
     status_msg = await update.message.reply_text(
@@ -3729,10 +4140,6 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
 
     # Execute the bridge using the status message as query
     try:
-        from src.services.bridge import bridge_service, BridgeChain
-        import asyncio
-
-        chain = BridgeChain(source_chain.lower())
         chain_family = ChainFamily.EVM
 
         # Get private key
@@ -3754,11 +4161,25 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
             await status_msg.edit_text("❌ Failed to get wallet key.")
             return
 
+        # For Solana destination, get Solana wallet address
+        # For EVM destinations (including BSC), use EVM wallet
+        to_address = None
+        if dest == BridgeChain.SOLANA:
+            solana_wallet = await get_wallet(user.id, ChainFamily.SOLANA)
+            if not solana_wallet:
+                await status_msg.edit_text("❌ No Solana wallet found.")
+                return
+            to_address = solana_wallet.public_key
+        elif use_lifi:
+            # For BSC and other LI.FI routes, destination is EVM wallet
+            evm_wallet_obj = await get_wallet(user.id, ChainFamily.EVM)
+            to_address = evm_wallet_obj.public_key if evm_wallet_obj else private_key.address
+
         # Show progress message
         await status_msg.edit_text(
             f"🌉 <b>Bridging USDC ({speed_label})</b>\n\n"
-            f"From: {chain.value.title()}\n"
-            f"To: Polygon\n"
+            f"From: {source.value.title()}\n"
+            f"To: {dest.value.title()} {dest_emoji}\n"
             f"Amount: ${float(amount):.2f}\n\n"
             f"⏳ Initiating transfer...",
             parse_mode=ParseMode.HTML,
@@ -3796,13 +4217,23 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
             except Exception:
                 pass
 
-        # Execute bridge in thread (fast or standard)
-        if use_fast_bridge:
+        # Execute bridge in thread (lifi, fast, or standard)
+        if use_lifi:
+            result = await asyncio.to_thread(
+                bridge_service.bridge_usdc_lifi,
+                private_key,
+                source,
+                dest,
+                amount,
+                to_address,
+                sync_progress_callback,
+            )
+        elif use_fast_bridge:
             result = await asyncio.to_thread(
                 bridge_service.bridge_usdc_fast,
                 private_key,
-                chain,
-                BridgeChain.POLYGON,
+                source,
+                dest,
                 amount,
                 sync_progress_callback,
             )
@@ -3810,40 +4241,53 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
             result = await asyncio.to_thread(
                 bridge_service.bridge_usdc,
                 private_key,
-                chain,
-                BridgeChain.POLYGON,
+                source,
+                dest,
                 amount,
                 sync_progress_callback,
             )
 
         if result.success:
-            if use_fast_bridge:
+            if use_lifi:
+                text = f"""
+✅ <b>LI.FI Bridge Complete!</b>
+
+From: {source.value.title()}
+To: {dest.value.title()} {dest_emoji}
+Amount: ~${float(result.amount):.2f} USDC (after fees)
+
+TX: <code>{result.burn_tx_hash[:16] if result.burn_tx_hash else 'pending'}...</code>
+
+🔗 Funds are being delivered to your {dest.value.title()} wallet!
+<i>Usually arrives in 1-3 minutes.</i>
+"""
+            elif use_fast_bridge:
                 text = f"""
 ✅ <b>Fast Bridge Complete!</b>
 
-From: {chain.value.title()}
-To: Polygon
+From: {source.value.title()}
+To: {dest.value.title()} {dest_emoji}
 Amount: ${float(result.amount):.2f} USDC (after fees)
 
 TX: <code>{result.burn_tx_hash[:16] if result.burn_tx_hash else 'pending'}...</code>
 
-🚀 Funds are arriving on Polygon now!
+🚀 Funds are arriving on {dest.value.title()} now!
 """
             else:
                 text = f"""
 ✅ <b>Bridge Initiated!</b>
 
-From: {chain.value.title()}
-To: Polygon
+From: {source.value.title()}
+To: {dest.value.title()} {dest_emoji}
 Amount: ${float(amount):.2f} USDC
 
 Burn TX: <code>{result.burn_tx_hash[:16]}...</code>
 """
                 if result.mint_tx_hash:
                     text += f"Mint TX: <code>{result.mint_tx_hash[:16]}...</code>\n"
-                    text += "\n✅ Bridge complete! Funds are now on Polygon."
+                    text += f"\n✅ Bridge complete! Funds are now on {dest.value.title()}."
                 else:
-                    text += "\n⏳ Waiting for Circle attestation. Funds will arrive on Polygon in ~10-15 minutes."
+                    text += f"\n⏳ Waiting for Circle attestation. Funds will arrive on {dest.value.title()} in ~10-15 minutes."
 
         else:
             text = f"❌ <b>Bridge Failed</b>\n\n{friendly_error(result.error_message or 'Unknown error')}"

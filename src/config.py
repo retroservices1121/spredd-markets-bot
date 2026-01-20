@@ -205,7 +205,12 @@ class Settings(BaseSettings):
     )
     opinion_api_key: Optional[str] = Field(default=None, description="Opinion Labs API key")
     opinion_multi_sig_addr: Optional[str] = Field(default=None, description="Opinion Labs multi-sig address")
-    
+
+    # ===================
+    # LI.FI Bridge Configuration
+    # ===================
+    lifi_api_key: Optional[str] = Field(default=None, description="LI.FI API key for cross-chain bridging")
+
     # ===================
     # Mini App Configuration
     # ===================

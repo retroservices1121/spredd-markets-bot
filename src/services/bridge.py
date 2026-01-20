@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 
 
 class BridgeChain(Enum):
-    """Supported chains for CCTP bridging."""
+    """Supported chains for bridging."""
     ETHEREUM = "ethereum"
     POLYGON = "polygon"
     BASE = "base"
@@ -28,6 +28,8 @@ class BridgeChain(Enum):
     OPTIMISM = "optimism"
     AVALANCHE = "avalanche"
     MONAD = "monad"
+    BSC = "bsc"  # Binance Smart Chain (for Opinion Labs)
+    SOLANA = "solana"  # Supported via LI.FI only
 
 
 # Chain configurations for CCTP
@@ -179,6 +181,19 @@ class FastBridgeQuote:
     error: Optional[str] = None
 
 
+@dataclass
+class LiFiBridgeQuote:
+    """Quote for LI.FI bridge (supports Solana)."""
+    input_amount: Decimal
+    output_amount: Decimal
+    fee_amount: Decimal
+    fee_percent: float
+    estimated_time_seconds: int
+    tool_name: str  # Bridge being used (e.g., "allbridge", "meson")
+    quote_data: Optional[dict] = None  # Full quote for execution
+    error: Optional[str] = None
+
+
 # Chain ID mapping for Relay
 RELAY_CHAIN_IDS = {
     BridgeChain.ETHEREUM: 1,
@@ -198,6 +213,35 @@ RELAY_USDC = {
     BridgeChain.OPTIMISM: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
     BridgeChain.MONAD: "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",
 }
+
+
+# LI.FI Configuration for cross-chain bridging
+# LI.FI uses chain names/IDs differently
+LIFI_CHAIN_IDS = {
+    BridgeChain.ETHEREUM: 1,
+    BridgeChain.POLYGON: 137,
+    BridgeChain.BASE: 8453,
+    BridgeChain.ARBITRUM: 42161,
+    BridgeChain.OPTIMISM: 10,
+    BridgeChain.AVALANCHE: 43114,
+    BridgeChain.BSC: 56,  # Binance Smart Chain
+    BridgeChain.SOLANA: 1151111081099710,  # LI.FI's Solana chain ID
+}
+
+# USDC/stablecoin addresses for LI.FI
+LIFI_USDC = {
+    BridgeChain.ETHEREUM: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    BridgeChain.POLYGON: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    BridgeChain.BASE: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    BridgeChain.ARBITRUM: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    BridgeChain.OPTIMISM: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+    BridgeChain.AVALANCHE: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+    BridgeChain.BSC: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",  # USDC on BSC
+    BridgeChain.SOLANA: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # Native USDC on Solana
+}
+
+# USDT address for BSC (Opinion Labs uses USDT)
+LIFI_USDT_BSC = "0x55d398326f99059fF775485246999027B3197955"
 
 
 # Type alias for progress callback
@@ -1033,6 +1077,420 @@ class BridgeService:
                 amount=amount,
                 error_message=error_msg
             )
+
+    def get_lifi_quote(
+        self,
+        source_chain: BridgeChain,
+        dest_chain: BridgeChain,
+        amount: Decimal,
+        from_address: str,
+        to_address: str,
+    ) -> LiFiBridgeQuote:
+        """
+        Get a quote for bridging via LI.FI.
+        Supports EVM <-> Solana routes.
+
+        Args:
+            source_chain: Source chain
+            dest_chain: Destination chain
+            amount: Amount of USDC to bridge
+            from_address: Source wallet address (EVM or Solana)
+            to_address: Destination wallet address (EVM or Solana)
+        """
+        import httpx
+
+        if source_chain not in LIFI_CHAIN_IDS or dest_chain not in LIFI_CHAIN_IDS:
+            return LiFiBridgeQuote(
+                input_amount=amount,
+                output_amount=Decimal(0),
+                fee_amount=Decimal(0),
+                fee_percent=0,
+                estimated_time_seconds=0,
+                tool_name="",
+                error=f"LI.FI bridge not supported for {source_chain.value} -> {dest_chain.value}"
+            )
+
+        try:
+            amount_raw = int(amount * Decimal(10**6))
+
+            # LI.FI Quote API
+            url = "https://li.quest/v1/quote"
+            params = {
+                "fromChain": LIFI_CHAIN_IDS[source_chain],
+                "toChain": LIFI_CHAIN_IDS[dest_chain],
+                "fromToken": LIFI_USDC[source_chain],
+                "toToken": LIFI_USDC[dest_chain],
+                "fromAmount": str(amount_raw),
+                "fromAddress": from_address,
+                "toAddress": to_address,
+                "slippage": "0.005",  # 0.5% slippage
+                "allowBridges": "allbridge,meson,across,stargate",  # Reliable bridges for USDC
+            }
+
+            # Add API key header if configured
+            headers = {}
+            if settings.lifi_api_key:
+                headers["x-lifi-api-key"] = settings.lifi_api_key
+
+            with httpx.Client(timeout=30) as client:
+                resp = client.get(url, params=params, headers=headers)
+
+                if resp.status_code != 200:
+                    error_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                    error_msg = error_data.get("message", resp.text[:200])
+                    logger.warning("LI.FI quote failed", status=resp.status_code, error=error_msg)
+                    return LiFiBridgeQuote(
+                        input_amount=amount,
+                        output_amount=Decimal(0),
+                        fee_amount=Decimal(0),
+                        fee_percent=0,
+                        estimated_time_seconds=0,
+                        tool_name="",
+                        error=f"Quote failed: {error_msg}"
+                    )
+
+                data = resp.json()
+
+                # Parse estimate
+                estimate = data.get("estimate", {})
+                to_amount_raw = int(estimate.get("toAmount", "0"))
+                output_amount = Decimal(to_amount_raw) / Decimal(10**6)
+
+                fee_costs = estimate.get("feeCosts", [])
+                gas_costs = estimate.get("gasCosts", [])
+
+                # Calculate total fees
+                total_fee = Decimal(0)
+                for fee in fee_costs:
+                    fee_usd = Decimal(str(fee.get("amountUSD", "0")))
+                    total_fee += fee_usd
+                for gas in gas_costs:
+                    gas_usd = Decimal(str(gas.get("amountUSD", "0")))
+                    total_fee += gas_usd
+
+                fee_amount = amount - output_amount
+                fee_percent = float(fee_amount / amount * 100) if amount > 0 else 0
+
+                # Get bridge tool being used
+                tool_name = data.get("toolDetails", {}).get("name", "unknown")
+                execution_duration = estimate.get("executionDuration", 180)
+
+                logger.info(
+                    "LI.FI quote received",
+                    tool=tool_name,
+                    input=str(amount),
+                    output=str(output_amount),
+                    fee_percent=f"{fee_percent:.2f}%",
+                    duration=execution_duration
+                )
+
+                return LiFiBridgeQuote(
+                    input_amount=amount,
+                    output_amount=output_amount,
+                    fee_amount=fee_amount,
+                    fee_percent=fee_percent,
+                    estimated_time_seconds=execution_duration,
+                    tool_name=tool_name,
+                    quote_data=data,
+                )
+
+        except Exception as e:
+            logger.error("Failed to get LI.FI quote", error=str(e))
+            return LiFiBridgeQuote(
+                input_amount=amount,
+                output_amount=Decimal(0),
+                fee_amount=Decimal(0),
+                fee_percent=0,
+                estimated_time_seconds=0,
+                tool_name="",
+                error=str(e)
+            )
+
+    def bridge_usdc_lifi(
+        self,
+        private_key: LocalAccount,
+        source_chain: BridgeChain,
+        dest_chain: BridgeChain,
+        amount: Decimal,
+        to_address: str,
+        progress_callback: ProgressCallback = None,
+    ) -> BridgeResult:
+        """
+        Bridge USDC via LI.FI. Supports EVM -> Solana routes.
+
+        Args:
+            private_key: EVM account (source must be EVM chain)
+            source_chain: Source chain (must be EVM for now)
+            dest_chain: Destination chain (can be Solana)
+            amount: Amount of USDC to bridge
+            to_address: Destination address (Solana address if dest is Solana)
+            progress_callback: Optional callback for progress updates
+        """
+        import httpx
+
+        # Validate source is EVM (we can only sign EVM transactions)
+        if source_chain == BridgeChain.SOLANA:
+            return BridgeResult(
+                success=False,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=amount,
+                error_message="Bridging FROM Solana not yet supported. Only EVM -> Solana is available."
+            )
+
+        if source_chain not in self._web3_clients:
+            return BridgeResult(
+                success=False,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=amount,
+                error_message=f"Source chain {source_chain.value} not configured"
+            )
+
+        try:
+            source_w3 = self._web3_clients[source_chain]
+            wallet = Web3.to_checksum_address(private_key.address)
+
+            # Check native balance for gas
+            native_balance = source_w3.eth.get_balance(wallet)
+            min_gas_wei = int(0.0005 * 10**18)  # 0.0005 ETH for LI.FI bridge
+            if native_balance < min_gas_wei:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=amount,
+                    error_message=f"Insufficient ETH for gas. Need at least 0.0005 ETH."
+                )
+
+            if progress_callback:
+                progress_callback("🔗 Getting LI.FI bridge quote...", 0, 120)
+
+            # Step 1: Get quote from LI.FI
+            quote = self.get_lifi_quote(
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=amount,
+                from_address=wallet,
+                to_address=to_address,
+            )
+
+            if quote.error:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=amount,
+                    error_message=quote.error
+                )
+
+            if not quote.quote_data:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=amount,
+                    error_message="No quote data received from LI.FI"
+                )
+
+            if progress_callback:
+                progress_callback(
+                    f"📋 Using {quote.tool_name} bridge (~{quote.estimated_time_seconds}s)",
+                    10, 120
+                )
+
+            # Step 2: Extract transaction data from quote
+            tx_request = quote.quote_data.get("transactionRequest", {})
+            if not tx_request:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=amount,
+                    error_message="No transaction data in LI.FI quote"
+                )
+
+            # Step 3: Check if approval is needed
+            action = quote.quote_data.get("action", {})
+            approval_address = action.get("fromToken", {}).get("address")
+
+            if approval_address and approval_address.lower() != "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee":
+                # Check allowance for LI.FI contract
+                usdc_contract = source_w3.eth.contract(
+                    address=Web3.to_checksum_address(approval_address),
+                    abi=ERC20_ABI
+                )
+
+                lifi_contract = tx_request.get("to")
+                if lifi_contract:
+                    allowance = usdc_contract.functions.allowance(
+                        wallet, Web3.to_checksum_address(lifi_contract)
+                    ).call()
+
+                    amount_raw = int(amount * Decimal(10**6))
+
+                    if allowance < amount_raw:
+                        if progress_callback:
+                            progress_callback("✍️ Approving USDC for LI.FI...", 15, 120)
+
+                        logger.info("Approving LI.FI contract for USDC", contract=lifi_contract)
+
+                        nonce = source_w3.eth.get_transaction_count(wallet, 'pending')
+                        gas_price = int(source_w3.eth.gas_price * 1.5)
+
+                        approve_tx = usdc_contract.functions.approve(
+                            Web3.to_checksum_address(lifi_contract),
+                            2 ** 256 - 1  # Max approval
+                        ).build_transaction({
+                            "from": wallet,
+                            "nonce": nonce,
+                            "gasPrice": gas_price,
+                            "gas": 100000,
+                            "chainId": LIFI_CHAIN_IDS[source_chain],
+                        })
+
+                        signed_approve = source_w3.eth.account.sign_transaction(
+                            approve_tx, private_key.key
+                        )
+                        approve_hash = source_w3.eth.send_raw_transaction(
+                            signed_approve.raw_transaction
+                        )
+                        source_w3.eth.wait_for_transaction_receipt(approve_hash, timeout=120)
+                        logger.info("LI.FI approval confirmed", tx_hash=approve_hash.hex())
+
+            if progress_callback:
+                progress_callback("🚀 Executing bridge transaction...", 30, 120)
+
+            # Step 4: Build and send the bridge transaction
+            nonce = source_w3.eth.get_transaction_count(wallet, 'pending')
+            gas_price = int(source_w3.eth.gas_price * 1.8)
+
+            # Parse value (might be string)
+            value_raw = tx_request.get("value", "0")
+            try:
+                value = int(value_raw, 16) if isinstance(value_raw, str) and value_raw.startswith("0x") else int(value_raw)
+            except (ValueError, TypeError):
+                value = 0
+
+            tx = {
+                "from": wallet,
+                "to": Web3.to_checksum_address(tx_request["to"]),
+                "data": tx_request["data"],
+                "value": value,
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "chainId": LIFI_CHAIN_IDS[source_chain],
+            }
+
+            # Estimate gas
+            try:
+                gas_estimate = source_w3.eth.estimate_gas(tx)
+                tx["gas"] = int(gas_estimate * 1.3)
+            except Exception as e:
+                logger.warning("Gas estimation failed for LI.FI tx, using default", error=str(e))
+                tx["gas"] = int(tx_request.get("gasLimit", 500000))
+
+            # Sign and send
+            signed_tx = source_w3.eth.account.sign_transaction(tx, private_key.key)
+            tx_hash = source_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            tx_hash_hex = tx_hash.hex()
+
+            logger.info(
+                "LI.FI bridge transaction sent",
+                source=source_chain.value,
+                dest=dest_chain.value,
+                tool=quote.tool_name,
+                tx_hash=tx_hash_hex
+            )
+
+            if progress_callback:
+                progress_callback("⏳ Waiting for confirmation...", 50, 120)
+
+            # Wait for confirmation
+            receipt = source_w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+
+            if receipt.status != 1:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=amount,
+                    burn_tx_hash=tx_hash_hex,
+                    error_message="Bridge transaction failed on-chain"
+                )
+
+            if progress_callback:
+                est_time = quote.estimated_time_seconds
+                progress_callback(
+                    f"✅ Bridge initiated! Funds arriving in ~{est_time//60}m {est_time%60}s",
+                    120, 120
+                )
+
+            logger.info(
+                "LI.FI bridge completed",
+                source=source_chain.value,
+                dest=dest_chain.value,
+                input=str(amount),
+                output=str(quote.output_amount),
+                tool=quote.tool_name,
+                tx_hash=tx_hash_hex
+            )
+
+            return BridgeResult(
+                success=True,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=quote.output_amount,
+                burn_tx_hash=tx_hash_hex,
+                mint_tx_hash=None,  # LI.FI handles the cross-chain delivery
+            )
+
+        except Exception as e:
+            import traceback
+            error_msg = str(e) if str(e) else type(e).__name__
+            logger.error(
+                "LI.FI bridge failed",
+                source=source_chain.value,
+                dest=dest_chain.value,
+                error=error_msg,
+                traceback=traceback.format_exc()
+            )
+            return BridgeResult(
+                success=False,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=amount,
+                error_message=error_msg
+            )
+
+    def requires_lifi(self, source_chain: BridgeChain, dest_chain: BridgeChain) -> bool:
+        """Check if the bridge route requires LI.FI (Solana or BSC)."""
+        lifi_only_chains = {BridgeChain.SOLANA, BridgeChain.BSC}
+        return source_chain in lifi_only_chains or dest_chain in lifi_only_chains
+
+    def involves_solana(self, source_chain: BridgeChain, dest_chain: BridgeChain) -> bool:
+        """Check if the bridge route involves Solana."""
+        return source_chain == BridgeChain.SOLANA or dest_chain == BridgeChain.SOLANA
+
+    def get_best_bridge_method(
+        self,
+        source_chain: BridgeChain,
+        dest_chain: BridgeChain,
+    ) -> str:
+        """
+        Determine the best bridge method for a given route.
+
+        Returns:
+            "lifi" - For Solana/BSC routes (no CCTP support)
+            "relay" - For fast EVM-to-EVM
+            "cctp" - For standard EVM-to-EVM
+        """
+        if self.requires_lifi(source_chain, dest_chain):
+            return "lifi"
+        elif source_chain in RELAY_CHAIN_IDS and dest_chain in RELAY_CHAIN_IDS:
+            return "relay"  # Default to fast bridge for EVM
+        else:
+            return "cctp"
 
 
 # Singleton instance
