@@ -1123,9 +1123,9 @@ class BridgeService:
                 "fromAmount": str(amount_raw),
                 "fromAddress": from_address,
                 "toAddress": to_address,
-                "slippage": "0.005",  # 0.5% slippage
-                "allowBridges": "allbridge,meson,across,stargate",  # Reliable bridges for USDC
+                "slippage": "0.01",  # 1% slippage for cross-chain
             }
+            # Don't filter bridges - let LI.FI find the best route
 
             # Add API key header if configured
             headers = {}
@@ -1136,9 +1136,12 @@ class BridgeService:
                 resp = client.get(url, params=params, headers=headers)
 
                 if resp.status_code != 200:
-                    error_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-                    error_msg = error_data.get("message", resp.text[:200])
-                    logger.warning("LI.FI quote failed", status=resp.status_code, error=error_msg)
+                    try:
+                        error_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                        error_msg = error_data.get("message", resp.text[:500])
+                    except Exception:
+                        error_msg = resp.text[:500]
+                    logger.warning("LI.FI quote failed", status=resp.status_code, error=error_msg, url=str(resp.url))
                     return LiFiBridgeQuote(
                         input_amount=amount,
                         output_amount=Decimal(0),
