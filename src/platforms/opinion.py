@@ -84,17 +84,18 @@ class OpinionPlatform(BasePlatform):
         try:
             from opinion_clob_sdk import Client
 
-            # Generate a dummy private key for read-only operations
-            # This wallet won't be used for signing transactions
-            # Using a valid hex format that the SDK will accept
+            # Generate dummy values for read-only operations
+            # These won't be used for signing transactions
             dummy_key = "0x" + "1" * 64  # Valid 32-byte hex key
+            # Use configured multi_sig_addr or a dummy address if not set
+            multi_sig = settings.opinion_multi_sig_addr or "0x" + "0" * 40
             self._readonly_sdk_client = Client(
                 host=settings.opinion_api_url,
                 apikey=(settings.opinion_api_key or "").strip(),
                 chain_id=56,  # BNB Chain mainnet
                 rpc_url=settings.bsc_rpc_url,
                 private_key=dummy_key,
-                multi_sig_addr=settings.opinion_multi_sig_addr or "",
+                multi_sig_addr=multi_sig,
             )
             logger.info("Opinion SDK read-only client initialized")
         except ImportError:
