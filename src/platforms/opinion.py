@@ -414,6 +414,7 @@ class OpinionPlatform(BasePlatform):
         self,
         market_id: str,
         outcome: Outcome,
+        slug: str = None,  # Accepted for API compatibility, not used
     ) -> OrderBook:
         """Get order book from Opinion API."""
         market = await self.get_market(market_id)
