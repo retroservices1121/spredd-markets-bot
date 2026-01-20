@@ -489,9 +489,18 @@ async def get_user_orders(
             query = query.where(Order.platform == platform)
         
         query = query.order_by(Order.created_at.desc()).limit(limit)
-        
+
         result = await session.execute(query)
         return list(result.scalars().all())
+
+
+async def get_order_by_id(order_id: str) -> Optional[Order]:
+    """Get a specific order by ID."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(Order).where(Order.id == order_id)
+        )
+        return result.scalar_one_or_none()
 
 
 # ===================
