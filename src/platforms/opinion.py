@@ -3,6 +3,7 @@ Opinion Labs platform implementation using CLOB SDK.
 AI-oracle powered prediction market on BNB Chain.
 """
 
+import asyncio
 from decimal import Decimal
 from typing import Any, Optional
 from datetime import datetime
@@ -34,21 +35,23 @@ class OpinionPlatform(BasePlatform):
     Opinion Labs prediction market platform.
     Uses CLOB SDK on BNB Chain with AI oracles.
     """
-    
+
     platform = Platform.OPINION
     chain = Chain.BSC
-    
+
     name = "Opinion Labs"
     description = "AI-oracle powered prediction markets on BNB Chain"
     website = "https://opinion.trade"
-    
+
     collateral_symbol = "USDT"
     collateral_decimals = 18  # USDT on BSC has 18 decimals
-    
+
     def __init__(self):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._web3: Optional[AsyncWeb3] = None
         self._sdk_client: Any = None
+        # Read-only SDK client for orderbook queries (no trading)
+        self._readonly_sdk_client: Any = None
         # Cache SDK clients per wallet address for faster repeat trades
         self._sdk_client_cache: dict[str, Any] = {}
         # Track wallets that have already enabled trading
@@ -69,13 +72,37 @@ class OpinionPlatform(BasePlatform):
             timeout=30.0,
             headers=headers,
         )
-        
+
         # Web3 for BSC
         self._web3 = AsyncWeb3(
             AsyncWeb3.AsyncHTTPProvider(settings.bsc_rpc_url)
         )
         self._web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-        
+
+        # Initialize read-only SDK client for orderbook queries
+        # Uses a dummy key since we only need read access
+        try:
+            from opinion_clob_sdk import Client
+
+            # Generate a dummy private key for read-only operations
+            # This wallet won't be used for signing transactions
+            dummy_key = "0" * 64
+            self._readonly_sdk_client = Client(
+                host=settings.opinion_api_url,
+                apikey=(settings.opinion_api_key or "").strip(),
+                chain_id=56,  # BNB Chain mainnet
+                rpc_url=settings.bsc_rpc_url,
+                private_key=dummy_key,
+                multi_sig_addr=settings.opinion_multi_sig_addr or "",
+            )
+            logger.info("Opinion SDK read-only client initialized")
+        except ImportError:
+            logger.warning("opinion-clob-sdk not installed, orderbook queries will use fallback")
+            self._readonly_sdk_client = None
+        except Exception as e:
+            logger.warning("Failed to initialize Opinion SDK read-only client", error=str(e))
+            self._readonly_sdk_client = None
+
         logger.info("Opinion Labs platform initialized")
     
     async def close(self) -> None:
@@ -416,7 +443,7 @@ class OpinionPlatform(BasePlatform):
         outcome: Outcome,
         slug: str = None,  # Accepted for API compatibility, not used
     ) -> OrderBook:
-        """Get order book from Opinion API."""
+        """Get order book from Opinion SDK or API."""
         market = await self.get_market(market_id)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.OPINION)
@@ -426,27 +453,65 @@ class OpinionPlatform(BasePlatform):
             raise PlatformError(f"Token not found for {outcome.value}", Platform.OPINION)
 
         try:
-            # Opinion uses /openapi/orderbook/{token_id}
-            logger.info("Fetching Opinion orderbook", token_id=token_id, market_id=market_id, outcome=outcome.value)
-            data = await self._api_request("GET", f"/openapi/orderbook/{token_id}")
-
-            orderbook_data = data.get("result", data)
-            logger.info("Opinion orderbook response", has_bids=len(orderbook_data.get("bids", [])), has_asks=len(orderbook_data.get("asks", [])))
-
             bids = []
             asks = []
 
-            for bid in orderbook_data.get("bids", []):
-                bids.append((
-                    Decimal(str(bid.get("price", 0))),
-                    Decimal(str(bid.get("size") or bid.get("quantity", 0))),
-                ))
+            # Try SDK method first (preferred)
+            if self._readonly_sdk_client:
+                logger.info("Fetching Opinion orderbook via SDK", token_id=token_id[:20] + "...", market_id=market_id, outcome=outcome.value)
+                # Run synchronous SDK call in thread pool to avoid blocking
+                result = await asyncio.to_thread(
+                    self._readonly_sdk_client.get_orderbook,
+                    token_id=token_id,
+                )
 
-            for ask in orderbook_data.get("asks", []):
-                asks.append((
-                    Decimal(str(ask.get("price", 0))),
-                    Decimal(str(ask.get("size") or ask.get("quantity", 0))),
-                ))
+                if result.errno == 0 and result.result and result.result.data:
+                    orderbook_data = result.result.data
+                    logger.info(
+                        "Opinion SDK orderbook response",
+                        has_bids=len(getattr(orderbook_data, 'bids', []) or []),
+                        has_asks=len(getattr(orderbook_data, 'asks', []) or []),
+                    )
+
+                    for bid in getattr(orderbook_data, 'bids', []) or []:
+                        price = getattr(bid, 'price', None) or bid.get('price', 0) if isinstance(bid, dict) else 0
+                        size = getattr(bid, 'size', None) or getattr(bid, 'quantity', None)
+                        if isinstance(bid, dict):
+                            size = bid.get('size') or bid.get('quantity', 0)
+                        bids.append((Decimal(str(price)), Decimal(str(size or 0))))
+
+                    for ask in getattr(orderbook_data, 'asks', []) or []:
+                        price = getattr(ask, 'price', None) or ask.get('price', 0) if isinstance(ask, dict) else 0
+                        size = getattr(ask, 'size', None) or getattr(ask, 'quantity', None)
+                        if isinstance(ask, dict):
+                            size = ask.get('size') or ask.get('quantity', 0)
+                        asks.append((Decimal(str(price)), Decimal(str(size or 0))))
+                else:
+                    logger.warning(
+                        "Opinion SDK orderbook returned error",
+                        errno=result.errno,
+                        errmsg=getattr(result, 'errmsg', 'unknown'),
+                    )
+                    raise PlatformError(f"SDK error: {getattr(result, 'errmsg', 'unknown')}", Platform.OPINION)
+            else:
+                # Fallback to REST API
+                logger.info("Fetching Opinion orderbook via REST API", token_id=token_id[:20] + "...", market_id=market_id)
+                data = await self._api_request("GET", f"/openapi/orderbook/{token_id}")
+
+                orderbook_data = data.get("result", data)
+                logger.info("Opinion REST orderbook response", has_bids=len(orderbook_data.get("bids", [])), has_asks=len(orderbook_data.get("asks", [])))
+
+                for bid in orderbook_data.get("bids", []):
+                    bids.append((
+                        Decimal(str(bid.get("price", 0))),
+                        Decimal(str(bid.get("size") or bid.get("quantity", 0))),
+                    ))
+
+                for ask in orderbook_data.get("asks", []):
+                    asks.append((
+                        Decimal(str(ask.get("price", 0))),
+                        Decimal(str(ask.get("size") or ask.get("quantity", 0))),
+                    ))
 
             # Sort bids descending (highest first) - best_bid = highest price buyers will pay
             bids.sort(key=lambda x: x[0], reverse=True)
