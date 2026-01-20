@@ -426,9 +426,11 @@ class OpinionPlatform(BasePlatform):
 
         try:
             # Opinion uses /openapi/orderbook/{token_id}
+            logger.info("Fetching Opinion orderbook", token_id=token_id, market_id=market_id, outcome=outcome.value)
             data = await self._api_request("GET", f"/openapi/orderbook/{token_id}")
 
             orderbook_data = data.get("result", data)
+            logger.info("Opinion orderbook response", has_bids=len(orderbook_data.get("bids", [])), has_asks=len(orderbook_data.get("asks", [])))
 
             bids = []
             asks = []
@@ -450,6 +452,16 @@ class OpinionPlatform(BasePlatform):
             # Sort asks ascending (lowest first) - best_ask = lowest price sellers will accept
             asks.sort(key=lambda x: x[0])
 
+            logger.info(
+                "Opinion orderbook parsed",
+                market_id=market_id,
+                outcome=outcome.value,
+                num_bids=len(bids),
+                num_asks=len(asks),
+                best_bid=str(bids[0][0]) if bids else "none",
+                best_ask=str(asks[0][0]) if asks else "none",
+            )
+
             return OrderBook(
                 market_id=market_id,
                 outcome=outcome,
@@ -458,13 +470,14 @@ class OpinionPlatform(BasePlatform):
             )
 
         except Exception as e:
-            logger.warning("Failed to get orderbook", error=str(e))
+            logger.warning("Failed to get Opinion orderbook, using market prices", error=str(e), market_id=market_id)
             # Return empty orderbook with market prices
+            fallback_price = market.yes_price if outcome == Outcome.YES else market.no_price
             return OrderBook(
                 market_id=market_id,
                 outcome=outcome,
-                bids=[(market.yes_price if outcome == Outcome.YES else market.no_price, Decimal(100))] if market.yes_price else [],
-                asks=[(market.yes_price if outcome == Outcome.YES else market.no_price, Decimal(100))] if market.yes_price else [],
+                bids=[(fallback_price, Decimal(100))] if fallback_price else [],
+                asks=[(fallback_price, Decimal(100))] if fallback_price else [],
             )
     
     # ===================
@@ -494,20 +507,36 @@ class OpinionPlatform(BasePlatform):
         
         # Get current price from orderbook
         orderbook = await self.get_orderbook(market_id, outcome)
-        
+
         # USDT on BSC
         usdt_address = "0x55d398326f99059fF775485246999027B3197955"
-        
+
         if side == "buy":
             price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
             expected_output = amount / price
             input_token = usdt_address
             output_token = token_id
+            logger.info(
+                "Opinion quote (buy)",
+                market_id=market_id,
+                outcome=outcome.value,
+                orderbook_best_ask=str(orderbook.best_ask) if orderbook.best_ask else "none",
+                market_price=str(market.yes_price if outcome == Outcome.YES else market.no_price),
+                final_price=str(price),
+            )
         else:
             price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
             expected_output = amount * price
             input_token = token_id
             output_token = usdt_address
+            logger.info(
+                "Opinion quote (sell)",
+                market_id=market_id,
+                outcome=outcome.value,
+                orderbook_best_bid=str(orderbook.best_bid) if orderbook.best_bid else "none",
+                market_price=str(market.yes_price if outcome == Outcome.YES else market.no_price),
+                final_price=str(price),
+            )
         
         return Quote(
             platform=Platform.OPINION,
