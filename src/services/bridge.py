@@ -306,8 +306,9 @@ class BridgeService:
                 Web3.to_checksum_address(wallet_address)
             ).call()
 
-            # USDC has 6 decimals
-            return Decimal(balance_raw) / Decimal(10 ** 6)
+            # BSC USDC has 18 decimals, others have 6
+            decimals = 18 if chain == BridgeChain.BSC else 6
+            return Decimal(balance_raw) / Decimal(10 ** decimals)
 
         except Exception as e:
             logger.warning(f"Failed to get balance on {chain.value}", error=str(e))
