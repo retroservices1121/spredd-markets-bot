@@ -1001,25 +1001,40 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 continue
 
             # Check market resolution status
-            resolution = await platform.get_market_resolution(lookup_id)
+            # IMPORTANT: Always use market_id (specific outcome) for resolution, not event_id (group)
+            # For multi-outcome markets, event_id is the group slug but each outcome has its own resolution
+            resolution = await platform.get_market_resolution(pos.market_id)
 
             if resolution.is_resolved:
                 # Auto-close resolved positions
                 outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
-                if resolution.winning_outcome and resolution.winning_outcome.upper() == outcome_str:
+                winning_str = resolution.winning_outcome.upper() if resolution.winning_outcome else None
+
+                logger.debug(
+                    f"Checking resolution for position {pos.id}: "
+                    f"market={pos.market_id}, user_outcome={outcome_str}, winning={winning_str}"
+                )
+
+                if winning_str and winning_str == outcome_str:
                     # Won - mark as redeemable but still show for redemption
+                    logger.info(f"Position {pos.id} won! market={pos.market_id}")
                     active_positions.append(pos)
-                else:
-                    # Lost - auto-close the position
+                elif winning_str and winning_str != outcome_str:
+                    # Lost - auto-close the position (only if we KNOW they lost)
                     await update_position(pos.id, status=PositionStatus.CLOSED, token_amount="0")
-                    logger.info(f"Auto-closed losing position {pos.id} for resolved market {pos.market_id}")
+                    logger.info(f"Auto-closed losing position {pos.id} for resolved market {pos.market_id} (won={winning_str}, user={outcome_str})")
+                else:
+                    # Could not determine winner - keep position open for manual handling
+                    logger.warning(f"Position {pos.id} resolved but winner unknown - keeping open for manual review")
+                    active_positions.append(pos)
             else:
                 # Market still active
                 active_positions.append(pos)
         except Exception as e:
-            # If we can't check, skip the position to avoid errors
-            logger.debug(f"Could not verify position {pos.id}: {e}")
-            continue
+            # If we can't check, KEEP the position rather than hiding it
+            # This is more conservative - users can still see and manage their positions
+            logger.warning(f"Could not verify position {pos.id} (keeping it visible): {e}")
+            active_positions.append(pos)
 
     all_positions = active_positions
 
@@ -1104,10 +1119,10 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         short_title = pos.market_title[:20] + "..." if len(pos.market_title) > 20 else pos.market_title
         outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
 
-        # Check if market is resolved for redemption - try event_id (slug) first for Limitless
+        # Check if market is resolved for redemption
+        # IMPORTANT: Use market_id (specific outcome) not event_id (group) for multi-outcome markets
         try:
-            resolution_market_id = pos.event_id if pos.event_id else pos.market_id
-            resolution = await platform.get_market_resolution(resolution_market_id)
+            resolution = await platform.get_market_resolution(pos.market_id)
             if resolution.is_resolved:
                 # Show Redeem button for resolved markets
                 if resolution.winning_outcome and resolution.winning_outcome.upper() == outcome_str:
