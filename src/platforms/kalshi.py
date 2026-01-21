@@ -579,6 +579,35 @@ class KalshiPlatform(BasePlatform):
 
         return filtered[:limit]
 
+    async def get_15m_markets(self, limit: int = 50) -> list[Market]:
+        """Get 15-minute interval Kalshi markets.
+
+        These are fast-expiring crypto price markets with tickers like:
+        - KXBTC15M (Bitcoin 15-minute)
+        - KXETH15M (Ethereum 15-minute)
+        - KXSOL15M (Solana 15-minute)
+
+        Returns:
+            List of active 15-minute markets sorted by expiration time
+        """
+        # Get all markets (uses cache if available)
+        all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
+
+        # 15-minute market ticker patterns
+        patterns_15m = ["KXBTC15M", "KXETH15M", "KXSOL15M"]
+
+        # Filter for 15-minute markets
+        filtered = []
+        for market in all_markets:
+            ticker = market.market_id.upper()
+            if any(ticker.startswith(pattern) for pattern in patterns_15m):
+                filtered.append(market)
+
+        # Sort by expiration time (soonest first)
+        filtered.sort(key=lambda m: m.close_time or "", reverse=False)
+
+        return filtered[:limit]
+
     # ===================
     # Order Book
     # ===================
