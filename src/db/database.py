@@ -1637,3 +1637,359 @@ async def get_all_config() -> dict[str, str]:
         result = await session.execute(select(SystemConfig))
         configs = result.scalars().all()
         return {c.key: c.value for c in configs}
+
+
+# ===================
+# ACP (Agent Commerce Protocol) Functions
+# ===================
+
+async def get_acp_agent_balance(agent_id: str, chain: str) -> Optional[Decimal]:
+    """Get an ACP agent's balance on a specific chain."""
+    from src.db.models import ACPAgentBalance
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ACPAgentBalance).where(
+                ACPAgentBalance.agent_id == agent_id,
+                ACPAgentBalance.chain == chain,
+            )
+        )
+        balance = result.scalar_one_or_none()
+        if balance:
+            return Decimal(balance.balance)
+        return None
+
+
+async def get_acp_agent_wallet(agent_id: str) -> Optional[str]:
+    """Get an ACP agent's wallet address."""
+    from src.db.models import ACPAgentBalance
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ACPAgentBalance.agent_wallet).where(
+                ACPAgentBalance.agent_id == agent_id
+            ).limit(1)
+        )
+        wallet = result.scalar_one_or_none()
+        return wallet
+
+
+async def upsert_acp_agent_balance(
+    agent_id: str,
+    agent_wallet: str,
+    chain: str,
+    balance: Decimal,
+) -> None:
+    """Create or update an ACP agent's balance."""
+    from src.db.models import ACPAgentBalance
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ACPAgentBalance).where(
+                ACPAgentBalance.agent_id == agent_id,
+                ACPAgentBalance.chain == chain,
+            )
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            existing.balance = str(balance)
+            existing.agent_wallet = agent_wallet
+        else:
+            new_balance = ACPAgentBalance(
+                id=str(uuid.uuid4()),
+                agent_id=agent_id,
+                agent_wallet=agent_wallet,
+                chain=chain,
+                balance=str(balance),
+            )
+            session.add(new_balance)
+
+        await session.commit()
+
+
+async def get_all_acp_agent_balances(agent_id: str) -> dict[str, Decimal]:
+    """Get all balances for an ACP agent across chains."""
+    from src.db.models import ACPAgentBalance
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ACPAgentBalance).where(ACPAgentBalance.agent_id == agent_id)
+        )
+        balances = result.scalars().all()
+        return {b.chain: Decimal(b.balance) for b in balances}
+
+
+async def get_acp_agent_positions(agent_id: str) -> list[dict]:
+    """Get all open positions for an ACP agent."""
+    from src.db.models import ACPAgentPosition, PositionStatus
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ACPAgentPosition).where(
+                ACPAgentPosition.agent_id == agent_id,
+                ACPAgentPosition.status == PositionStatus.OPEN,
+            )
+        )
+        positions = result.scalars().all()
+
+        return [
+            {
+                "platform": pos.platform.value,
+                "market_id": pos.market_id,
+                "market_title": pos.market_title,
+                "outcome": pos.outcome.value,
+                "amount": pos.token_amount,
+                "entry_price": float(pos.entry_price),
+                "current_price": float(pos.current_price) if pos.current_price else float(pos.entry_price),
+            }
+            for pos in positions
+        ]
+
+
+async def create_acp_position(
+    agent_id: str,
+    platform: str,
+    market_id: str,
+    market_title: str,
+    outcome: str,
+    amount: Decimal,
+    entry_price: Decimal,
+) -> str:
+    """Create a new position for an ACP agent."""
+    from src.db.models import ACPAgentPosition, Platform, Outcome, PositionStatus
+
+    async with get_session() as session:
+        position = ACPAgentPosition(
+            id=str(uuid.uuid4()),
+            agent_id=agent_id,
+            platform=Platform(platform),
+            market_id=market_id,
+            market_title=market_title,
+            outcome=Outcome(outcome),
+            token_id="",  # Set later
+            token_amount=str(amount),
+            entry_price=entry_price,
+            status=PositionStatus.OPEN,
+        )
+        session.add(position)
+        await session.commit()
+        return position.id
+
+
+async def log_acp_job(
+    job_id: str,
+    job_type: str,
+    agent_id: str,
+    agent_wallet: Optional[str],
+    service_requirements: Optional[dict],
+    deliverable: Optional[dict],
+    success: bool,
+    error_message: Optional[str] = None,
+    fee_amount: Optional[Decimal] = None,
+) -> None:
+    """Log an ACP job for audit trail."""
+    from src.db.models import ACPJobLog
+    import json
+    from datetime import datetime, timezone
+
+    async with get_session() as session:
+        log = ACPJobLog(
+            id=str(uuid.uuid4()),
+            job_id=job_id,
+            job_type=job_type,
+            agent_id=agent_id,
+            agent_wallet=agent_wallet,
+            service_requirements=json.dumps(service_requirements) if service_requirements else None,
+            deliverable=json.dumps(deliverable) if deliverable else None,
+            success=success,
+            error_message=error_message,
+            fee_amount=str(fee_amount) if fee_amount else None,
+            completed_at=datetime.now(timezone.utc) if success else None,
+        )
+        session.add(log)
+        await session.commit()
+
+
+async def record_acp_trade_volume(
+    agent_id: str,
+    platform: str,
+    amount: Decimal,
+    side: str,
+    tx_hash: Optional[str] = None,
+) -> None:
+    """Record a trade for ACP volume analytics."""
+    from src.db.models import ACPTradeVolume
+
+    async with get_session() as session:
+        trade = ACPTradeVolume(
+            id=str(uuid.uuid4()),
+            agent_id=agent_id,
+            platform=platform,
+            side=side,
+            amount_usdc=str(amount),
+            tx_hash=tx_hash,
+        )
+        session.add(trade)
+        await session.commit()
+
+
+async def record_acp_bridge_volume(
+    agent_id: str,
+    source_chain: str,
+    dest_chain: str,
+    amount: Decimal,
+    tx_hash: Optional[str] = None,
+) -> None:
+    """Record a bridge for ACP volume analytics."""
+    from src.db.models import ACPBridgeVolume
+
+    async with get_session() as session:
+        bridge = ACPBridgeVolume(
+            id=str(uuid.uuid4()),
+            agent_id=agent_id,
+            source_chain=source_chain,
+            dest_chain=dest_chain,
+            amount_usdc=str(amount),
+            tx_hash=tx_hash,
+        )
+        session.add(bridge)
+        await session.commit()
+
+
+async def get_acp_analytics(
+    days: int = 30,
+) -> dict:
+    """
+    Get ACP analytics for the specified period.
+    Returns volume, trade counts, unique agents, etc.
+    """
+    from src.db.models import ACPTradeVolume, ACPBridgeVolume, ACPJobLog
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import func as sql_func
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    async with get_session() as session:
+        # Trade volume by platform
+        trade_result = await session.execute(
+            select(
+                ACPTradeVolume.platform,
+                sql_func.sum(sql_func.cast(ACPTradeVolume.amount_usdc, Numeric)),
+                sql_func.count(ACPTradeVolume.id),
+            )
+            .where(ACPTradeVolume.created_at >= cutoff)
+            .group_by(ACPTradeVolume.platform)
+        )
+        trade_by_platform = {}
+        total_trade_volume = Decimal(0)
+        total_trade_count = 0
+
+        for platform, volume, count in trade_result:
+            vol = Decimal(str(volume or 0))
+            trade_by_platform[platform] = {
+                "volume": float(vol),
+                "count": count,
+            }
+            total_trade_volume += vol
+            total_trade_count += count
+
+        # Bridge volume
+        bridge_result = await session.execute(
+            select(
+                sql_func.sum(sql_func.cast(ACPBridgeVolume.amount_usdc, Numeric)),
+                sql_func.count(ACPBridgeVolume.id),
+            )
+            .where(ACPBridgeVolume.created_at >= cutoff)
+        )
+        bridge_row = bridge_result.one()
+        total_bridge_volume = Decimal(str(bridge_row[0] or 0))
+        total_bridge_count = bridge_row[1] or 0
+
+        # Unique agents (from trades)
+        agents_result = await session.execute(
+            select(sql_func.count(sql_func.distinct(ACPTradeVolume.agent_id)))
+            .where(ACPTradeVolume.created_at >= cutoff)
+        )
+        unique_agents = agents_result.scalar() or 0
+
+        # Job counts by type
+        jobs_result = await session.execute(
+            select(
+                ACPJobLog.job_type,
+                sql_func.count(ACPJobLog.id),
+                sql_func.sum(sql_func.case((ACPJobLog.success == True, 1), else_=0)),
+            )
+            .where(ACPJobLog.created_at >= cutoff)
+            .group_by(ACPJobLog.job_type)
+        )
+        jobs_by_type = {}
+        for job_type, total, successful in jobs_result:
+            jobs_by_type[job_type] = {
+                "total": total,
+                "successful": successful or 0,
+                "success_rate": round((successful or 0) / total * 100, 1) if total > 0 else 0,
+            }
+
+        # All-time stats
+        all_time_trade = await session.execute(
+            select(
+                sql_func.sum(sql_func.cast(ACPTradeVolume.amount_usdc, Numeric)),
+                sql_func.count(ACPTradeVolume.id),
+            )
+        )
+        all_time_row = all_time_trade.one()
+        all_time_volume = Decimal(str(all_time_row[0] or 0))
+        all_time_count = all_time_row[1] or 0
+
+        all_time_agents = await session.execute(
+            select(sql_func.count(sql_func.distinct(ACPTradeVolume.agent_id)))
+        )
+        all_time_unique_agents = all_time_agents.scalar() or 0
+
+        return {
+            "period_days": days,
+            "trade_volume": {
+                "by_platform": trade_by_platform,
+                "total": float(total_trade_volume),
+                "count": total_trade_count,
+            },
+            "bridge_volume": {
+                "total": float(total_bridge_volume),
+                "count": total_bridge_count,
+            },
+            "unique_agents": unique_agents,
+            "jobs_by_type": jobs_by_type,
+            "all_time": {
+                "trade_volume": float(all_time_volume),
+                "trade_count": all_time_count,
+                "unique_agents": all_time_unique_agents,
+            },
+        }
+
+
+async def get_acp_top_agents(limit: int = 10) -> list[dict]:
+    """Get top ACP agents by trading volume."""
+    from src.db.models import ACPTradeVolume
+    from sqlalchemy import func as sql_func
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(
+                ACPTradeVolume.agent_id,
+                sql_func.sum(sql_func.cast(ACPTradeVolume.amount_usdc, Numeric)).label("volume"),
+                sql_func.count(ACPTradeVolume.id).label("trades"),
+            )
+            .group_by(ACPTradeVolume.agent_id)
+            .order_by(sql_func.sum(sql_func.cast(ACPTradeVolume.amount_usdc, Numeric)).desc())
+            .limit(limit)
+        )
+
+        return [
+            {
+                "agent_id": row.agent_id[:16] + "...",  # Truncate for display
+                "volume": float(row.volume or 0),
+                "trades": row.trades,
+            }
+            for row in result
+        ]

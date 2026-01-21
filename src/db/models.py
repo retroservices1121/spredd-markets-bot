@@ -574,3 +574,243 @@ class SystemConfig(Base):
         server_default=func.now(),
         onupdate=func.now()
     )
+
+
+# ===================
+# Virtuals ACP (Agent Commerce Protocol)
+# ===================
+
+class ACPAgentBalance(Base):
+    """
+    Tracks per-agent balances for ACP fund-transfer jobs.
+    Each AI agent that uses Spredd's services has isolated balance tracking.
+    """
+
+    __tablename__ = "acp_agent_balances"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+
+    # Agent identification
+    agent_id: Mapped[str] = mapped_column(String(255), index=True)  # ACP agent identifier
+    agent_wallet: Mapped[str] = mapped_column(String(255))  # Agent's wallet address
+
+    # Chain for this balance
+    chain: Mapped[str] = mapped_column(String(32))  # solana, polygon, bsc, base
+
+    # Current deposited balance (USDC, stored as string for precision)
+    balance: Mapped[str] = mapped_column(String(78), default="0")
+
+    # Lifetime stats
+    total_deposited: Mapped[str] = mapped_column(String(78), default="0")
+    total_withdrawn: Mapped[str] = mapped_column(String(78), default="0")
+    total_traded: Mapped[str] = mapped_column(String(78), default="0")
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_acp_balance_agent_chain", "agent_id", "chain", unique=True),
+    )
+
+
+class ACPAgentPosition(Base):
+    """
+    Tracks prediction market positions held by ACP agents.
+    """
+
+    __tablename__ = "acp_agent_positions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+
+    # Agent identification
+    agent_id: Mapped[str] = mapped_column(String(255), index=True)
+
+    # Platform and market
+    platform: Mapped[Platform] = mapped_column(SQLEnum(Platform))
+    market_id: Mapped[str] = mapped_column(String(255))
+    market_title: Mapped[str] = mapped_column(Text)
+
+    # Position details
+    outcome: Mapped[Outcome] = mapped_column(SQLEnum(Outcome))
+    token_id: Mapped[str] = mapped_column(String(255))
+    token_amount: Mapped[str] = mapped_column(String(78))
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    current_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 8), nullable=True)
+
+    # Status
+    status: Mapped[PositionStatus] = mapped_column(
+        SQLEnum(PositionStatus),
+        default=PositionStatus.OPEN
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_acp_position_agent_status", "agent_id", "status"),
+        Index("ix_acp_position_market", "market_id"),
+    )
+
+
+class ACPJobLog(Base):
+    """
+    Audit log for all ACP jobs processed by Spredd.
+    """
+
+    __tablename__ = "acp_job_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+
+    # Job identification
+    job_id: Mapped[str] = mapped_column(String(255), index=True)  # ACP job ID
+    job_type: Mapped[str] = mapped_column(String(64))  # execute_trade, get_quote, etc.
+
+    # Agent info
+    agent_id: Mapped[str] = mapped_column(String(255), index=True)
+    agent_wallet: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Request and response (JSON as string)
+    service_requirements: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    deliverable: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Status
+    success: Mapped[bool] = mapped_column(Boolean, default=False)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Fee charged (USDC)
+    fee_amount: Mapped[Optional[str]] = mapped_column(String(78), nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_acp_job_agent", "agent_id"),
+        Index("ix_acp_job_type", "job_type"),
+        Index("ix_acp_job_created", "created_at"),
+    )
+
+
+class ACPTradeVolume(Base):
+    """
+    Tracks individual trades for ACP volume analytics.
+    Separate from main Order table to keep ACP metrics isolated.
+    """
+
+    __tablename__ = "acp_trade_volume"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+
+    # Agent info
+    agent_id: Mapped[str] = mapped_column(String(255), index=True)
+
+    # Trade details
+    platform: Mapped[str] = mapped_column(String(32))  # kalshi, polymarket, etc.
+    side: Mapped[str] = mapped_column(String(8))  # buy, sell
+    amount_usdc: Mapped[str] = mapped_column(String(78))  # Trade amount
+    tx_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Timestamp
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True,
+    )
+
+    __table_args__ = (
+        Index("ix_acp_trade_platform", "platform"),
+        Index("ix_acp_trade_agent_platform", "agent_id", "platform"),
+    )
+
+
+class ACPBridgeVolume(Base):
+    """
+    Tracks bridge transactions for ACP volume analytics.
+    """
+
+    __tablename__ = "acp_bridge_volume"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+
+    # Agent info
+    agent_id: Mapped[str] = mapped_column(String(255), index=True)
+
+    # Bridge details
+    source_chain: Mapped[str] = mapped_column(String(32))
+    dest_chain: Mapped[str] = mapped_column(String(32))
+    amount_usdc: Mapped[str] = mapped_column(String(78))
+    tx_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Timestamp
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True,
+    )
+
+
+class ACPDailyStats(Base):
+    """
+    Daily aggregated ACP statistics for fast dashboard queries.
+    Updated periodically or on-demand.
+    """
+
+    __tablename__ = "acp_daily_stats"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+
+    # Date (YYYY-MM-DD)
+    date: Mapped[str] = mapped_column(String(10), index=True)
+
+    # Trade volume by platform
+    trade_volume_kalshi: Mapped[str] = mapped_column(String(78), default="0")
+    trade_volume_polymarket: Mapped[str] = mapped_column(String(78), default="0")
+    trade_volume_opinion: Mapped[str] = mapped_column(String(78), default="0")
+    trade_volume_limitless: Mapped[str] = mapped_column(String(78), default="0")
+    trade_volume_total: Mapped[str] = mapped_column(String(78), default="0")
+
+    # Trade counts
+    trade_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Bridge volume
+    bridge_volume: Mapped[str] = mapped_column(String(78), default="0")
+    bridge_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Unique agents
+    unique_agents: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Fees earned
+    fees_earned: Mapped[str] = mapped_column(String(78), default="0")
+
+    # Timestamp
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_acp_daily_date", "date", unique=True),
+    )

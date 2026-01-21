@@ -51,6 +51,8 @@ from src.handlers.commands import (
     delete_position_command,
     verify_position_command,
     analytics_command,
+    acpstats_command,
+    acpwallet_command,
     getfees_command,
     setfee_command,
     resetfees_command,
@@ -76,16 +78,24 @@ async def post_init(application: Application) -> None:
 async def post_shutdown(application: Application) -> None:
     """Cleanup on shutdown."""
     logger.info("Shutting down services...")
-    
+
+    # Stop ACP service if running
+    if settings.acp_enabled:
+        try:
+            from src.services.acp import acp_service
+            await acp_service.stop_listening()
+        except Exception as e:
+            logger.warning("ACP shutdown error", error=str(e))
+
     # Close platforms
     await platform_registry.close()
-    
+
     # Close wallet service
     await wallet_service.close()
-    
+
     # Close database
     await close_db()
-    
+
     logger.info("Shutdown complete")
 
 
@@ -132,6 +142,8 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("delete_position", delete_position_command))
     application.add_handler(CommandHandler("verify_position", verify_position_command))
     application.add_handler(CommandHandler("analytics", analytics_command))
+    application.add_handler(CommandHandler("acpstats", acpstats_command))
+    application.add_handler(CommandHandler("acpwallet", acpwallet_command))
     application.add_handler(CommandHandler("getfees", getfees_command))
     application.add_handler(CommandHandler("setfee", setfee_command))
     application.add_handler(CommandHandler("resetfees", resetfees_command))
@@ -228,6 +240,21 @@ async def run_bot() -> None:
 
     logger.info("Initializing platforms...")
     await platform_registry.initialize()
+
+    # Initialize ACP service if enabled
+    if settings.acp_enabled:
+        logger.info("Initializing ACP service...")
+        try:
+            from src.services.acp import acp_service
+            initialized = await acp_service.initialize()
+            if initialized:
+                # Start listening for ACP jobs in background
+                asyncio.create_task(acp_service.start_listening())
+                logger.info("ACP service started")
+            else:
+                logger.warning("ACP service initialization failed - check configuration")
+        except Exception as e:
+            logger.error("Failed to initialize ACP service", error=str(e))
 
     app = create_application()
 

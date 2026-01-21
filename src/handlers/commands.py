@@ -3353,9 +3353,20 @@ async def handle_bsc_usdc_swap(query, telegram_id: int, context: ContextTypes.DE
             )
             return
 
+        # Check BNB balance for gas
+        bnb_balance = bridge_service.get_native_balance(BridgeChain.BSC, evm_wallet.public_key)
+        has_bnb = bnb_balance >= Decimal("0.001")
+
         text = f"💱 <b>Swap BSC USDC → USDT</b>\n\n"
         text += f"Balance: <b>${float(bsc_usdc):.2f} USDC</b>\n\n"
-        text += "Opinion Labs uses USDT for trading.\n"
+
+        if not has_bnb:
+            text += "⚠️ <b>You need BNB for gas fees!</b>\n"
+            text += f"Send ~$0.50 worth of BNB to:\n"
+            text += f"<code>{evm_wallet.public_key}</code>\n\n"
+        else:
+            text += "Opinion Labs uses USDT for trading.\n"
+
         text += "Select how much to swap:\n"
 
         buttons = []
@@ -3467,8 +3478,18 @@ async def handle_bsc_swap_execute(query, percent: int, telegram_id: int, context
             if result.explorer_url:
                 text += f"<a href='{result.explorer_url}'>View on BscScan</a>"
         else:
+            error_msg = result.error_message or 'Unknown error'
             text = f"❌ <b>Swap Failed</b>\n\n"
-            text += f"Error: {result.error_message or 'Unknown error'}"
+
+            # Check if it's a gas-related error
+            if "bnb" in error_msg.lower() or "gas" in error_msg.lower():
+                text += f"⛽ <b>Insufficient BNB for gas fees</b>\n\n"
+                text += f"You need a small amount of BNB (~$0.50) to pay for transaction fees on BSC.\n\n"
+                text += f"<b>Your BSC wallet address:</b>\n"
+                text += f"<code>{evm_wallet.public_key}</code>\n\n"
+                text += f"💡 Send a small amount of BNB to this address from an exchange (Binance, Coinbase, etc.) and try again."
+            else:
+                text += f"Error: {error_msg}"
 
         await progress_msg.edit_text(
             text,
@@ -8642,6 +8663,189 @@ async def handle_analytics_platforms(query, telegram_id: int, period: str = "all
             f"❌ Failed to load platform analytics: {str(e)[:100]}",
             parse_mode=ParseMode.HTML,
         )
+
+
+# ===================
+# ACP Analytics (Admin)
+# ===================
+
+async def acpstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to view ACP (Agent Commerce Protocol) analytics.
+    Usage: /acpstats [days]
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("This command is admin-only.")
+        return
+
+    # Parse days argument
+    days = 30
+    if context.args:
+        try:
+            days = int(context.args[0])
+            days = max(1, min(365, days))  # Clamp to 1-365
+        except ValueError:
+            pass
+
+    try:
+        from src.db.database import get_acp_analytics, get_acp_top_agents
+
+        stats = await get_acp_analytics(days=days)
+        top_agents = await get_acp_top_agents(limit=5)
+
+        # Format platform breakdown
+        platform_lines = []
+        for platform, data in stats["trade_volume"]["by_platform"].items():
+            platform_lines.append(
+                f"  {platform.capitalize()}: ${data['volume']:,.2f} ({data['count']} trades)"
+            )
+
+        platform_text = "\n".join(platform_lines) if platform_lines else "  No trades yet"
+
+        # Format top agents
+        agent_lines = []
+        for i, agent in enumerate(top_agents, 1):
+            agent_lines.append(
+                f"  {i}. {agent['agent_id']}: ${agent['volume']:,.2f} ({agent['trades']} trades)"
+            )
+
+        agents_text = "\n".join(agent_lines) if agent_lines else "  No agents yet"
+
+        # Format jobs breakdown
+        job_lines = []
+        for job_type, data in stats.get("jobs_by_type", {}).items():
+            job_lines.append(
+                f"  {job_type}: {data['total']} ({data['success_rate']}% success)"
+            )
+
+        jobs_text = "\n".join(job_lines) if job_lines else "  No jobs yet"
+
+        text = f"""<b>ACP Analytics - Last {days} Days</b>
+
+<b>Trade Volume</b>
+{platform_text}
+Total: <code>${stats['trade_volume']['total']:,.2f}</code>
+Trades: <code>{stats['trade_volume']['count']:,}</code>
+
+<b>Bridge Volume</b>
+Total: <code>${stats['bridge_volume']['total']:,.2f}</code>
+Transactions: <code>{stats['bridge_volume']['count']:,}</code>
+
+<b>Agents</b>
+Unique Agents: <code>{stats['unique_agents']:,}</code>
+
+<b>Jobs by Type</b>
+{jobs_text}
+
+<b>Top Agents</b>
+{agents_text}
+
+<b>All-Time Stats</b>
+Total Volume: <code>${stats['all_time']['trade_volume']:,.2f}</code>
+Total Trades: <code>{stats['all_time']['trade_count']:,}</code>
+Total Agents: <code>{stats['all_time']['unique_agents']:,}</code>
+"""
+
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+        )
+
+    except Exception as e:
+        logger.error("Failed to get ACP stats", error=str(e))
+        await update.message.reply_text(f"Failed to get ACP stats: {str(e)[:100]}")
+
+
+async def acpwallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to view ACP wallet balances and liquidity status.
+    Usage: /acpwallet
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("This command is admin-only.")
+        return
+
+    try:
+        from src.services.acp.wallet_manager import acp_wallet_manager
+
+        acp_wallet_manager.initialize()
+
+        if not acp_wallet_manager.acp_wallet_address:
+            await update.message.reply_text(
+                "<b>ACP Wallet Not Configured</b>\n\n"
+                "Set ACP_AGENT_WALLET_PRIVATE_KEY in .env",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        status = acp_wallet_manager.get_supported_chains_status()
+
+        lines = [
+            f"<b>ACP Wallet Status</b>\n",
+        ]
+
+        # Show EVM wallet
+        if acp_wallet_manager.acp_wallet_address:
+            lines.append(f"<b>EVM:</b> <code>{acp_wallet_manager.acp_wallet_address}</code>")
+        else:
+            lines.append("<b>EVM:</b> Not configured")
+
+        # Show Solana wallet
+        if acp_wallet_manager.acp_solana_address:
+            lines.append(f"<b>Solana:</b> <code>{acp_wallet_manager.acp_solana_address}</code>")
+        else:
+            lines.append("<b>Solana:</b> Not configured")
+
+        chain_names = {
+            "base": ("Base (Limitless)", "ETH"),
+            "polygon": ("Polygon (Polymarket)", "MATIC"),
+            "bsc": ("BSC (Opinion)", "BNB"),
+            "solana": ("Solana (Kalshi)", "SOL"),
+        }
+
+        for chain, data in status.items():
+            name, gas_token = chain_names.get(chain, (chain, "ETH"))
+
+            if not data.get("configured", False):
+                lines.append(f"\n<b>⚪ {name}</b>")
+                lines.append(f"  Not configured")
+                continue
+
+            ready_icon = "✅" if data["ready"] else "❌"
+
+            if chain == "bsc":
+                lines.append(f"\n<b>{ready_icon} {name}</b>")
+                lines.append(f"  USDT: <code>${data['usdt']:,.2f}</code>")
+            else:
+                lines.append(f"\n<b>{ready_icon} {name}</b>")
+                lines.append(f"  USDC: <code>${data['usdc']:,.2f}</code>")
+
+            lines.append(f"  {gas_token}: <code>{data['gas']:.6f}</code>")
+
+        lines.append("\n\n<b>Recommended Minimums:</b>")
+        lines.append("  Base: 0.001 ETH + $100 USDC")
+        lines.append("  Polygon: 1 MATIC + $100 USDC")
+        lines.append("  BSC: 0.01 BNB + $100 USDT")
+        lines.append("  Solana: 0.1 SOL + $100 USDC")
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.HTML,
+        )
+
+    except Exception as e:
+        logger.error("Failed to get ACP wallet status", error=str(e))
+        await update.message.reply_text(f"Error: {str(e)[:100]}")
 
 
 # ===================

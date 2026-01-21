@@ -247,6 +247,34 @@ class Settings(BaseSettings):
     )
 
     # ===================
+    # Virtuals ACP Configuration (Agent Commerce Protocol)
+    # ===================
+    acp_enabled: bool = Field(
+        default=False,
+        description="Enable Virtuals ACP service for AI agent commerce"
+    )
+    acp_agent_wallet_private_key: Optional[str] = Field(
+        default=None,
+        description="Private key for ACP EVM wallet (hex without 0x prefix)"
+    )
+    acp_agent_wallet_address: Optional[str] = Field(
+        default=None,
+        description="ACP EVM wallet address"
+    )
+    acp_solana_private_key: Optional[str] = Field(
+        default=None,
+        description="Private key for ACP Solana wallet (base58 format) for Kalshi trades"
+    )
+    acp_entity_id: Optional[str] = Field(
+        default=None,
+        description="ACP entity ID from registration"
+    )
+    acp_environment: str = Field(
+        default="sandbox",
+        description="ACP environment: sandbox or production"
+    )
+
+    # ===================
     # Rate Limiting
     # ===================
     max_requests_per_minute: int = Field(default=30, ge=1, le=100)

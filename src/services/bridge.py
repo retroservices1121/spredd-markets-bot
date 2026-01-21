@@ -314,6 +314,19 @@ class BridgeService:
             logger.warning(f"Failed to get balance on {chain.value}", error=str(e))
             return Decimal(0)
 
+    def get_native_balance(self, chain: BridgeChain, wallet_address: str) -> Decimal:
+        """Get native token balance (ETH/BNB/MATIC) on a specific chain."""
+        if chain not in self._web3_clients:
+            return Decimal(0)
+
+        try:
+            w3 = self._web3_clients[chain]
+            balance_raw = w3.eth.get_balance(Web3.to_checksum_address(wallet_address))
+            return Decimal(balance_raw) / Decimal(10**18)
+        except Exception as e:
+            logger.warning(f"Failed to get native balance on {chain.value}", error=str(e))
+            return Decimal(0)
+
     def get_all_usdc_balances(self, wallet_address: str) -> dict[BridgeChain, Decimal]:
         """Get USDC balances across all supported chains in parallel."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
