@@ -4826,9 +4826,6 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
             buttons.append(nav_buttons)
 
         buttons.append([
-            InlineKeyboardButton("⏱️ 15m Markets", callback_data="markets:15m"),
-        ])
-        buttons.append([
             InlineKeyboardButton("📂 Categories", callback_data="categories"),
             InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh"),
         ])
@@ -4887,6 +4884,8 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
                 ))
         buttons.append(row)
 
+    # Add 15-minute markets button (Kalshi only)
+    buttons.append([InlineKeyboardButton("⏱️ 15m Markets (Kalshi)", callback_data="markets:15m")])
     buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
 
     await query.edit_message_text(
