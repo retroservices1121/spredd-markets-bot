@@ -1,0 +1,107 @@
+{
+  "jobs": [
+    {
+      "name": "executeTrade",
+      "description": "Execute a prediction market trade on Kalshi, Polymarket, Opinion Labs, or Limitless. Supports buy/sell orders for YES/NO outcomes with slippage protection. Returns transaction hash, execution price, and explorer link.",
+      "requiredFunds": true,
+      "slaMinutes": 5,
+      "price": {
+        "type": "fixed",
+        "value": 0.01
+      },
+      "requirement": {
+        "type": "object",
+        "properties": {
+          "platform": {"type": "string", "description": "Trading platform: kalshi, polymarket, opinion, or limitless"},
+          "market_id": {"type": "string", "description": "Platform-specific market identifier"},
+          "outcome": {"type": "string", "description": "Outcome to trade: yes or no"},
+          "side": {"type": "string", "description": "Order side: buy or sell"},
+          "amount": {"type": "number", "description": "USDC amount to trade"},
+          "max_slippage_bps": {"type": "number", "description": "Maximum slippage in basis points (optional, default 100)"}
+        },
+        "required": ["platform", "market_id", "outcome", "side", "amount"]
+      },
+      "deliverable": "Trade execution result with success status, transaction hash, input/output amounts, execution price, and block explorer URL"
+    },
+    {
+      "name": "getQuote",
+      "description": "Get a real-time trade quote without executing. Returns expected output amount, price per token, price impact, and platform fees. Use this to evaluate trades before committing funds.",
+      "requiredFunds": false,
+      "slaMinutes": 1,
+      "price": {
+        "type": "fixed",
+        "value": 0.001
+      },
+      "requirement": {
+        "type": "object",
+        "properties": {
+          "platform": {"type": "string", "description": "Trading platform: kalshi, polymarket, opinion, or limitless"},
+          "market_id": {"type": "string", "description": "Platform-specific market identifier"},
+          "outcome": {"type": "string", "description": "Outcome to quote: yes or no"},
+          "side": {"type": "string", "description": "Order side: buy or sell"},
+          "amount": {"type": "number", "description": "USDC amount to quote"}
+        },
+        "required": ["platform", "market_id", "outcome", "side", "amount"]
+      },
+      "deliverable": "Quote with input amount, expected output tokens, price per token, price impact in basis points, fee amount, and expiration timestamp"
+    },
+    {
+      "name": "searchMarkets",
+      "description": "Search prediction markets across Kalshi, Polymarket, Opinion Labs, and Limitless. Returns market ID, title, current YES/NO prices, 24h volume, and expiration date. Filter by platform or search all.",
+      "requiredFunds": false,
+      "slaMinutes": 2,
+      "price": {
+        "type": "fixed",
+        "value": 0.001
+      },
+      "requirement": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "Search query (e.g., bitcoin price, super bowl)"},
+          "platforms": {"type": "array", "description": "Optional filter: [kalshi, polymarket, opinion, limitless]"},
+          "limit": {"type": "number", "description": "Maximum results to return (default 10, max 50)"}
+        },
+        "required": ["query"]
+      },
+      "deliverable": "Array of matching markets with platform, market_id, title, yes_price, no_price, volume_24h, and end_date"
+    },
+    {
+      "name": "getPortfolio",
+      "description": "Retrieve your agent's current prediction market positions held with Spredd. Returns position details including platform, market, outcome, entry price, current price, and unrealized P&L.",
+      "requiredFunds": false,
+      "slaMinutes": 1,
+      "price": {
+        "type": "fixed",
+        "value": 0.001
+      },
+      "requirement": {
+        "type": "object",
+        "properties": {
+          "platforms": {"type": "array", "description": "Optional filter by platforms: [kalshi, polymarket, opinion, limitless]"}
+        },
+        "required": []
+      },
+      "deliverable": "Portfolio with positions array (platform, market_id, market_title, outcome, amount, entry_price, current_price, pnl), total_value, and total_pnl"
+    },
+    {
+      "name": "bridgeUsdc",
+      "description": "Bridge USDC between supported chains: Base, Polygon, Arbitrum, Optimism, and Ethereum. Uses LI.FI and Circle CCTP for secure, fast cross-chain transfers with minimal slippage.",
+      "requiredFunds": true,
+      "slaMinutes": 15,
+      "price": {
+        "type": "fixed",
+        "value": 0.50
+      },
+      "requirement": {
+        "type": "object",
+        "properties": {
+          "source_chain": {"type": "string", "description": "Source chain: base, polygon, arbitrum, optimism, or ethereum"},
+          "dest_chain": {"type": "string", "description": "Destination chain: base, polygon, arbitrum, optimism, or ethereum"},
+          "amount": {"type": "number", "description": "USDC amount to bridge"}
+        },
+        "required": ["source_chain", "dest_chain", "amount"]
+      },
+      "deliverable": "Bridge result with success status, source_tx_hash, dest_tx_hash, amount_sent, amount_received, and explorer_url"
+    }
+  ]
+}

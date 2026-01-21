@@ -12,6 +12,12 @@ from typing import Any, Optional
 from src.db.models import Chain, Outcome, Platform
 
 
+class OrderSide(str, Enum):
+    """Order side for trading."""
+    BUY = "buy"
+    SELL = "sell"
+
+
 @dataclass
 class Market:
     """Unified market representation across platforms."""
