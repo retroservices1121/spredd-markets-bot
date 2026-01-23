@@ -6342,6 +6342,13 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             if diff > 0.05:  # More than 5% difference
                 price_warning = f"\n⚠️ <b>Note:</b> Execution price ({format_probability(price)}) differs from displayed mid-price ({format_probability(displayed_price)}) due to orderbook depth.\n"
 
+        # Check for liquidity warning from Limitless
+        liquidity_warning = ""
+        if quote.quote_data:
+            warning_msg = quote.quote_data.get("liquidity_warning")
+            if warning_msg:
+                liquidity_warning = f"\n⚠️ <b>Warning:</b> {warning_msg}\n"
+
         # Check if this is a player prop market (contains over/under in title, outcome_name, or question)
         import re
         def has_ou_keywords(text):
@@ -6385,7 +6392,7 @@ Side: BUY {side_label}
 💸 <b>Fee (2%):</b> {fee_display}
 📦 <b>You Receive:</b> ~{expected_tokens:.2f} {token_label} tokens
 📊 <b>Execution Price:</b> {format_probability(price)} per token
-{price_warning}"""
+{price_warning}{liquidity_warning}"""
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_buy")],

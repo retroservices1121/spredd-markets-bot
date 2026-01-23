@@ -1074,11 +1074,25 @@ class LimitlessPlatform(BasePlatform):
             expected_output = amount / price
             input_token = USDC_BASE
             output_token = token_id or "outcome_token"
+            available_liquidity = orderbook.asks
         else:
             price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
             expected_output = amount * price
             input_token = token_id or "outcome_token"
             output_token = USDC_BASE
+            available_liquidity = orderbook.bids
+
+        # Calculate total available liquidity for user feedback
+        total_liquidity = sum(size for _, size in available_liquidity[:5]) if available_liquidity else Decimal("0")
+        has_liquidity = bool(available_liquidity) and total_liquidity > 0
+
+        # Warn if low liquidity (less than 50% of what user wants)
+        needed_tokens = amount / price if side == "buy" else amount
+        liquidity_warning = None
+        if not has_liquidity:
+            liquidity_warning = "No orderbook liquidity - market orders may fail. Consider using a limit order."
+        elif total_liquidity < needed_tokens * Decimal("0.5"):
+            liquidity_warning = f"Low liquidity ({total_liquidity:.1f} tokens available). Order may partially fill or fail."
 
         return Quote(
             platform=Platform.LIMITLESS,
@@ -1101,6 +1115,9 @@ class LimitlessPlatform(BasePlatform):
                 "price": str(price),
                 "market": market.raw_data,
                 "order_type": order_type,  # "market" or "limit"
+                "has_liquidity": has_liquidity,
+                "available_liquidity": str(total_liquidity),
+                "liquidity_warning": liquidity_warning,
             },
         )
 
@@ -1562,6 +1579,72 @@ class LimitlessPlatform(BasePlatform):
             order_type = quote.quote_data.get("order_type", "market")  # Default to market
             is_market_order = order_type == "market"
 
+            # For FOK (market) orders, check orderbook liquidity BEFORE submitting
+            # FOK orders fail with cryptic errors when there's no matching liquidity
+            if is_market_order:
+                try:
+                    orderbook = await self.get_orderbook(
+                        market_slug, quote.outcome,
+                        token_id=token_id, slug=market_slug
+                    )
+
+                    # For buy orders, check asks; for sell orders, check bids
+                    if quote.side == "buy":
+                        available_liquidity = orderbook.asks
+                        best_price = orderbook.best_ask
+                    else:
+                        available_liquidity = orderbook.bids
+                        best_price = orderbook.best_bid
+
+                    if not available_liquidity or not best_price:
+                        logger.warning(
+                            "No liquidity for FOK order",
+                            market_slug=market_slug,
+                            side=quote.side,
+                            outcome=quote.outcome.value,
+                        )
+                        return TradeResult(
+                            success=False,
+                            tx_hash=None,
+                            input_amount=quote.input_amount,
+                            output_amount=None,
+                            error_message=(
+                                f"No liquidity available for market orders on this market. "
+                                f"The orderbook has no {'asks' if quote.side == 'buy' else 'bids'} "
+                                f"for {quote.outcome.value.upper()}. "
+                                f"Try using a limit order instead, or try a different market."
+                            ),
+                            explorer_url=None,
+                        )
+
+                    # Calculate total available liquidity at reasonable prices
+                    total_available = sum(size for _, size in available_liquidity[:5])  # Top 5 levels
+                    needed_tokens = quote.input_amount / price if quote.side == "buy" else quote.input_amount
+
+                    if total_available < needed_tokens * Decimal("0.5"):  # Less than 50% of needed
+                        logger.warning(
+                            "Insufficient liquidity for FOK order",
+                            market_slug=market_slug,
+                            needed=str(needed_tokens),
+                            available=str(total_available),
+                        )
+                        return TradeResult(
+                            success=False,
+                            tx_hash=None,
+                            input_amount=quote.input_amount,
+                            output_amount=None,
+                            error_message=(
+                                f"Insufficient liquidity for market order. "
+                                f"Available: ~{total_available:.2f} tokens, needed: ~{needed_tokens:.2f}. "
+                                f"Try a smaller amount or use a limit order."
+                            ),
+                            explorer_url=None,
+                        )
+
+                except Exception as ob_err:
+                    logger.warning("Could not check orderbook liquidity", error=str(ob_err))
+                    # Continue anyway - the order might still work
+
             logger.info(
                 "Building order",
                 order_type=order_type,
@@ -1620,6 +1703,28 @@ class LimitlessPlatform(BasePlatform):
                     break  # Success
                 except Exception as api_err:
                     error_str = str(api_err).lower()
+
+                    # Handle specific Limitless API errors with better messages
+                    if "order_id" in error_str and "null" in error_str:
+                        # FOK order failed due to no matching liquidity
+                        logger.warning(
+                            "FOK order rejected - no matching liquidity",
+                            market_slug=market_slug,
+                            error=str(api_err),
+                        )
+                        return TradeResult(
+                            success=False,
+                            tx_hash=None,
+                            input_amount=quote.input_amount,
+                            output_amount=None,
+                            error_message=(
+                                "Market order could not be filled - no matching orders in the orderbook. "
+                                "This often happens with hourly markets near expiration. "
+                                "Try using a limit order instead, or try a different market."
+                            ),
+                            explorer_url=None,
+                        )
+
                     if "allowance" in error_str and attempt < max_retries - 1:
                         # Allowance not yet visible to API, wait and retry
                         logger.info(
@@ -1629,7 +1734,7 @@ class LimitlessPlatform(BasePlatform):
                         )
                         await asyncio.sleep(3)
                         continue
-                    raise  # Re-raise if not allowance error or max retries
+                    raise  # Re-raise if not handled error or max retries
 
             order_id = result.get("orderId") or result.get("id") or result.get("transactionHash", "")
 
