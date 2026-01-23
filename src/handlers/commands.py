@@ -2039,6 +2039,12 @@ Select which prediction market you want to trade on:
                 # Time period selection (daily, weekly, monthly, all)
                 await handle_analytics_callback(query, parts[1], update.effective_user.id)
 
+        elif action == "arbitrage":
+            await handle_arbitrage_callback(query, parts[1], update.effective_user.id)
+
+        elif action == "alerts":
+            await handle_alerts_callback(query, parts[1], update.effective_user.id)
+
     except Exception as e:
         error_str = str(e)
         # Silently ignore "message not modified" errors (happens on refresh with no changes)
@@ -9301,3 +9307,295 @@ async def clearuserrate_command(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error("Failed to clear user rate", error=str(e))
         await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+
+
+# ===================
+# Price Alerts Commands
+# ===================
+
+async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    View and manage price alerts.
+    Usage: /alerts
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    from src.services.alerts import alerts_service
+
+    user_alerts = await alerts_service.get_user_alerts(telegram_id)
+
+    if not user_alerts:
+        text = """
+🔔 <b>Price Alerts</b>
+
+You have no active price alerts.
+
+<b>Create an alert:</b>
+Use the "Set Alert" button on any market page, or:
+<code>/setalert [platform] [market_id] [yes/no] [above/below] [price]</code>
+
+Example:
+<code>/setalert polymarket abc123 yes above 0.75</code>
+"""
+    else:
+        text = f"🔔 <b>Your Price Alerts</b> ({len(user_alerts)})\n\n"
+
+        for alert in user_alerts[:10]:  # Show max 10
+            price_cents = int(alert.target_price * 100)
+            current_cents = int(alert.current_price * 100) if alert.current_price else "?"
+            text += f"• <b>{alert.market_title[:40]}...</b>\n"
+            text += f"  {alert.outcome.upper()} {alert.condition} {price_cents}¢ (now: {current_cents}¢)\n"
+            text += f"  <code>/deletealert {alert.id}</code>\n\n"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑️ Clear All Alerts", callback_data="alerts:clear_all")],
+    ]) if user_alerts else None
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def setalert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Create a price alert.
+    Usage: /setalert [platform] [market_id] [yes/no] [above/below] [price]
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+    args = context.args
+
+    if not args or len(args) < 5:
+        await update.message.reply_text(
+            "❌ <b>Usage:</b>\n"
+            "<code>/setalert [platform] [market_id] [yes/no] [above/below] [price]</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/setalert polymarket abc123 yes above 0.75</code>\n\n"
+            "<b>Platforms:</b> polymarket, kalshi, limitless, opinion",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        platform_str = args[0].lower()
+        market_id = args[1]
+        outcome = args[2].lower()
+        condition = args[3].lower()
+        target_price = Decimal(args[4])
+
+        # Validate inputs
+        if platform_str not in ["polymarket", "kalshi", "limitless", "opinion"]:
+            await update.message.reply_text("❌ Invalid platform. Use: polymarket, kalshi, limitless, opinion")
+            return
+
+        if outcome not in ["yes", "no"]:
+            await update.message.reply_text("❌ Outcome must be 'yes' or 'no'")
+            return
+
+        if condition not in ["above", "below"]:
+            await update.message.reply_text("❌ Condition must be 'above' or 'below'")
+            return
+
+        if target_price < 0 or target_price > 1:
+            await update.message.reply_text("❌ Price must be between 0 and 1 (e.g., 0.75 for 75¢)")
+            return
+
+        # Get platform and market
+        platform_enum = Platform(platform_str)
+        platform = get_platform(platform_enum)
+        market = await platform.get_market(market_id)
+
+        if not market:
+            await update.message.reply_text(f"❌ Market not found: {market_id}")
+            return
+
+        # Create alert
+        from src.services.alerts import alerts_service
+
+        alert = await alerts_service.create_alert(
+            user_telegram_id=telegram_id,
+            platform=platform_enum,
+            market_id=market_id,
+            market_title=market.title,
+            outcome=outcome,
+            condition=condition,
+            target_price=target_price,
+        )
+
+        price_cents = int(target_price * 100)
+        current_price = market.yes_price if outcome == "yes" else market.no_price
+        current_cents = int(current_price * 100) if current_price else "?"
+
+        await update.message.reply_text(
+            f"✅ <b>Alert Created!</b>\n\n"
+            f"<b>Market:</b> {market.title[:50]}...\n"
+            f"<b>Condition:</b> {outcome.upper()} {condition} {price_cents}¢\n"
+            f"<b>Current:</b> {current_cents}¢\n\n"
+            f"Alert ID: <code>{alert.id}</code>\n"
+            f"Delete with: <code>/deletealert {alert.id}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    except Exception as e:
+        logger.error("Failed to create alert", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+
+
+async def deletealert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Delete a price alert.
+    Usage: /deletealert [alert_id]
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+    args = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "❌ <b>Usage:</b> <code>/deletealert [alert_id]</code>\n\n"
+            "Use /alerts to see your alert IDs.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    alert_id = args[0]
+
+    from src.services.alerts import alerts_service
+
+    deleted = await alerts_service.delete_alert(alert_id, telegram_id)
+
+    if deleted:
+        await update.message.reply_text(f"✅ Alert {alert_id} deleted.")
+    else:
+        await update.message.reply_text(f"❌ Alert not found or not yours: {alert_id}")
+
+
+# ===================
+# Arbitrage Commands
+# ===================
+
+async def arbitrage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Subscribe/unsubscribe to cross-platform arbitrage alerts.
+    Usage: /arbitrage
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    from src.services.alerts import alerts_service
+
+    is_subscribed = alerts_service.is_subscribed_arbitrage(telegram_id)
+
+    text = """
+⚡ <b>Cross-Platform Arbitrage Alerts</b>
+
+Get notified when the same market has significantly different prices on Polymarket vs Kalshi (3%+ spread).
+
+<b>How it works:</b>
+• We monitor matching markets across platforms
+• Alert you when prices diverge significantly
+• You can profit by buying low on one platform, selling high on another
+
+<b>Note:</b> Consider fees, slippage, and settlement times.
+"""
+
+    if is_subscribed:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔕 Unsubscribe", callback_data="arbitrage:unsubscribe")],
+            [InlineKeyboardButton("🔍 Check Now", callback_data="arbitrage:check")],
+        ])
+        text += "\n✅ <b>You are subscribed to arbitrage alerts.</b>"
+    else:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔔 Subscribe", callback_data="arbitrage:subscribe")],
+            [InlineKeyboardButton("🔍 Check Now", callback_data="arbitrage:check")],
+        ])
+        text += "\n❌ <b>You are not subscribed.</b>"
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def handle_arbitrage_callback(query, action: str, telegram_id: int) -> None:
+    """Handle arbitrage-related callback queries."""
+    from src.services.alerts import alerts_service
+
+    if action == "subscribe":
+        await alerts_service.subscribe_arbitrage(telegram_id)
+        await query.edit_message_text(
+            "✅ <b>Subscribed to Arbitrage Alerts!</b>\n\n"
+            "You'll receive notifications when we detect price differences "
+            "of 3% or more between Polymarket and Kalshi.\n\n"
+            "Use /arbitrage to manage your subscription.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    elif action == "unsubscribe":
+        await alerts_service.unsubscribe_arbitrage(telegram_id)
+        await query.edit_message_text(
+            "🔕 <b>Unsubscribed from Arbitrage Alerts</b>\n\n"
+            "You won't receive arbitrage notifications anymore.\n\n"
+            "Use /arbitrage to subscribe again.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    elif action == "check":
+        await query.edit_message_text(
+            "🔍 <b>Scanning for arbitrage opportunities...</b>",
+            parse_mode=ParseMode.HTML,
+        )
+
+        opportunities = await alerts_service.find_arbitrage_opportunities()
+
+        if not opportunities:
+            await query.edit_message_text(
+                "📊 <b>Arbitrage Scan Complete</b>\n\n"
+                "No significant arbitrage opportunities found right now.\n\n"
+                "We check for price differences of 3% or more between platforms.",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            text = f"⚡ <b>Found {len(opportunities)} Opportunities!</b>\n\n"
+
+            for opp in opportunities[:5]:  # Show max 5
+                price_a = int(opp.price_a * 100)
+                price_b = int(opp.price_b * 100)
+                text += f"<b>{opp.market_title[:40]}...</b>\n"
+                text += f"• Polymarket: {price_a}¢ | Kalshi: {price_b}¢\n"
+                text += f"• Spread: {opp.spread_percent:.1f}%\n\n"
+
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+            )
+
+
+async def handle_alerts_callback(query, action: str, telegram_id: int) -> None:
+    """Handle alerts-related callback queries."""
+    from src.services.alerts import alerts_service
+
+    if action == "clear_all":
+        # Clear all user alerts
+        user_alerts = await alerts_service.get_user_alerts(telegram_id)
+        for alert in user_alerts:
+            await alerts_service.delete_alert(alert.id, telegram_id)
+
+        await query.edit_message_text(
+            "🗑️ <b>All alerts cleared!</b>\n\n"
+            "Use /setalert to create new alerts.",
+            parse_mode=ParseMode.HTML,
+        )

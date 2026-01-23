@@ -247,6 +247,22 @@ class Settings(BaseSettings):
     )
 
     # ===================
+    # Dome API Configuration (Market Data & Analytics)
+    # ===================
+    dome_api_key: Optional[str] = Field(
+        default=None,
+        description="Dome API key for market data, charts, and cross-platform matching"
+    )
+    dome_api_url: str = Field(
+        default="https://api.domeapi.io/v1",
+        description="Dome API base URL"
+    )
+    dome_ws_url: str = Field(
+        default="wss://ws.domeapi.io",
+        description="Dome WebSocket URL for real-time data"
+    )
+
+    # ===================
     # Virtuals ACP Configuration (Agent Commerce Protocol)
     # ===================
     acp_enabled: bool = Field(

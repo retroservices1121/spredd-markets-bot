@@ -61,6 +61,11 @@ from src.handlers.commands import (
     clearuserrate_command,
     handle_group_add,
     handle_group_message,
+    # Alert commands
+    alerts_command,
+    setalert_command,
+    deletealert_command,
+    arbitrage_command,
 )
 from src.utils.logging import setup_logging, get_logger
 
@@ -79,6 +84,13 @@ async def post_shutdown(application: Application) -> None:
     """Cleanup on shutdown."""
     logger.info("Shutting down services...")
 
+    # Stop alerts service
+    try:
+        from src.services.alerts import alerts_service
+        await alerts_service.stop_monitoring()
+    except Exception as e:
+        logger.warning("Alerts service shutdown error", error=str(e))
+
     # Stop ACP service if running
     if settings.acp_enabled:
         try:
@@ -86,6 +98,13 @@ async def post_shutdown(application: Application) -> None:
             await acp_service.stop_listening()
         except Exception as e:
             logger.warning("ACP shutdown error", error=str(e))
+
+    # Close Dome API client
+    try:
+        from src.services.dome import dome_client
+        await dome_client.close()
+    except Exception as e:
+        logger.warning("Dome API shutdown error", error=str(e))
 
     # Close platforms
     await platform_registry.close()
@@ -150,6 +169,12 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("checkuser", checkuser_command))
     application.add_handler(CommandHandler("setuserrate", setuserrate_command))
     application.add_handler(CommandHandler("clearuserrate", clearuserrate_command))
+
+    # Alert commands
+    application.add_handler(CommandHandler("alerts", alerts_command))
+    application.add_handler(CommandHandler("setalert", setalert_command))
+    application.add_handler(CommandHandler("deletealert", deletealert_command))
+    application.add_handler(CommandHandler("arbitrage", arbitrage_command))
 
     # Callback query handler for inline buttons
     application.add_handler(CallbackQueryHandler(callback_handler))
@@ -256,7 +281,26 @@ async def run_bot() -> None:
         except Exception as e:
             logger.error("Failed to initialize ACP service", error=str(e))
 
+    # Initialize Dome API client (for charts, analytics, arbitrage)
+    logger.info("Initializing Dome API client...")
+    try:
+        from src.services.dome import dome_client
+        await dome_client.initialize()
+        logger.info("Dome API client ready")
+    except Exception as e:
+        logger.warning("Dome API initialization failed (optional)", error=str(e))
+
     app = create_application()
+
+    # Initialize alerts service and set bot reference
+    logger.info("Initializing alerts service...")
+    try:
+        from src.services.alerts import alerts_service
+        alerts_service.set_bot(app.bot)
+        await alerts_service.start_monitoring()
+        logger.info("Alerts service started")
+    except Exception as e:
+        logger.warning("Alerts service initialization failed", error=str(e))
 
     # Setup signal handlers for graceful shutdown
     loop = asyncio.get_event_loop()
@@ -290,6 +334,8 @@ async def run_bot() -> None:
             BotCommand("pnl", "View profit & loss"),
             BotCommand("pnlcard", "Generate shareable PnL card"),
             BotCommand("orders", "View order history"),
+            BotCommand("alerts", "Manage price alerts"),
+            BotCommand("arbitrage", "Cross-platform arbitrage alerts"),
             BotCommand("referral", "Referral Space & earnings"),
             BotCommand("platform", "Switch trading platform"),
             BotCommand("faq", "Frequently asked questions"),
