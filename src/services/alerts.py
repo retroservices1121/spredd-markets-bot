@@ -12,7 +12,6 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from src.config import settings
-from src.db.database import async_session_factory
 from src.db.models import Platform
 from src.platforms import get_platform
 from src.services.dome import dome_client
