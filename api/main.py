@@ -1076,7 +1076,7 @@ async def get_all_markets(
     if platform and platform != "all":
         platforms_to_fetch = [platform]
     else:
-        platforms_to_fetch = ["polymarket", "kalshi", "opinion"]
+        platforms_to_fetch = ["polymarket", "kalshi", "opinion", "limitless"]
 
     async with httpx.AsyncClient(timeout=20.0) as client:
         # Fetch Polymarket markets
@@ -1273,6 +1273,35 @@ async def get_all_markets(
                         ))
             except Exception as e:
                 print(f"Error fetching Opinion markets: {e}")
+
+        # Fetch Limitless markets
+        if "limitless" in platforms_to_fetch:
+            try:
+                markets = await limitless_platform.get_markets(limit=100, active_only=True)
+                print(f"Got {len(markets)} Limitless markets from platform")
+
+                for m in markets:
+                    results.append(MarketResponse(
+                        id=m.market_id,
+                        question=m.title or "",
+                        description=m.description,
+                        image=getattr(m, 'image', None),
+                        icon=None,
+                        category=m.category or "Prediction",
+                        outcomes=["Yes", "No"],
+                        outcomePrices=[str(float(m.yes_price or 0)), str(float(m.no_price or 0))],
+                        clobTokenIds=[m.yes_token or "", m.no_token or ""],
+                        volume=float(m.volume_24h) if m.volume_24h else None,
+                        volume24hr=float(m.volume_24h) if m.volume_24h else None,
+                        liquidity=float(m.liquidity) if m.liquidity else None,
+                        endDate=m.close_time,
+                        active=m.is_active,
+                        closed=not m.is_active,
+                        slug=m.market_id,
+                        platform="limitless",
+                    ))
+            except Exception as e:
+                print(f"Error fetching Limitless markets: {e}")
 
     # Sort by volume24hr descending
     results.sort(key=lambda x: x.volume24hr or 0, reverse=True)
@@ -1540,6 +1569,115 @@ async def get_market_by_id(market_id: str = Path(...)):
             except Exception as e:
                 print(f"Error fetching Polymarket market: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===================
+# Trading Routes
+# ===================
+
+from pydantic import BaseModel
+from typing import Literal
+
+class QuoteRequest(BaseModel):
+    platform: str
+    market_id: str
+    outcome: Literal["yes", "no"]
+    side: Literal["buy", "sell"]
+    amount: str
+
+
+class QuoteResponse(BaseModel):
+    platform: str
+    market_id: str
+    outcome: str
+    side: str
+    input_amount: str
+    expected_output: str
+    price_per_token: float
+    price_impact: Optional[float] = None
+    platform_fee: Optional[str] = None
+    network_fee_estimate: Optional[str] = None
+
+
+@app.post("/api/v1/trading/quote", response_model=QuoteResponse)
+async def get_trading_quote(request: QuoteRequest):
+    """Get a quote for buying/selling outcome tokens."""
+    from decimal import Decimal
+
+    try:
+        # Get the appropriate platform
+        platform_map = {
+            "polymarket": polymarket_platform,
+            "kalshi": kalshi_platform,
+            "opinion": opinion_platform,
+            "limitless": limitless_platform,
+        }
+
+        platform = platform_map.get(request.platform)
+        if not platform:
+            raise HTTPException(status_code=400, detail=f"Unknown platform: {request.platform}")
+
+        # Get quote from platform
+        amount = Decimal(request.amount)
+        outcome = Outcome.YES if request.outcome.lower() == "yes" else Outcome.NO
+
+        quote = await platform.get_quote(
+            market_id=request.market_id,
+            outcome=outcome,
+            side=request.side,
+            amount=amount,
+        )
+
+        if not quote:
+            raise HTTPException(status_code=400, detail="Could not get quote for this market")
+
+        return QuoteResponse(
+            platform=request.platform,
+            market_id=request.market_id,
+            outcome=request.outcome,
+            side=request.side,
+            input_amount=request.amount,
+            expected_output=str(quote.expected_output),
+            price_per_token=float(quote.price_per_token),
+            price_impact=float(quote.price_impact) if quote.price_impact else None,
+            platform_fee=str(quote.platform_fee) if quote.platform_fee else None,
+            network_fee_estimate=str(quote.network_fee_estimate) if quote.network_fee_estimate else None,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Quote error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class TradeRequest(BaseModel):
+    platform: str
+    market_id: str
+    outcome: Literal["yes", "no"]
+    side: Literal["buy", "sell"]
+    amount: str
+    slippage_bps: int = 100
+
+
+class TradeResponse(BaseModel):
+    success: bool
+    tx_hash: Optional[str] = None
+    input_amount: str
+    output_amount: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+@app.post("/api/v1/trading/execute", response_model=TradeResponse)
+async def execute_trade(request: TradeRequest):
+    """Execute a trade. Note: This requires wallet setup and authentication."""
+    # For now, return a mock response since trading requires wallet infrastructure
+    return TradeResponse(
+        success=False,
+        input_amount=request.amount,
+        error_message="Trading requires wallet setup. Please use the Telegram bot for trading.",
+    )
 
 
 # ===================
