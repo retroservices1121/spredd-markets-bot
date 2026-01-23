@@ -8509,6 +8509,11 @@ async def handle_analytics_callback(query, period: str, telegram_id: int) -> Non
     try:
         stats = await get_analytics_stats(since=since)
 
+        # Get alerts stats
+        from src.services.alerts import alerts_service
+        arb_subscribers = len(alerts_service._arbitrage_subscribers)
+        price_alerts = len([a for a in alerts_service._alerts.values() if not a.triggered])
+
         text = f"""📊 <b>Analytics - {period_name}</b>
 
 👥 <b>Users</b>
@@ -8523,6 +8528,10 @@ async def handle_analytics_callback(query, period: str, telegram_id: int) -> Non
 ├ Fees Collected: <code>${stats['fee_revenue']:,.2f}</code>
 ├ Referral Payouts: <code>${stats['referral_payouts']:,.2f}</code> ({stats['referral_count']} payouts)
 └ Net Revenue: <code>${stats['net_revenue']:,.2f}</code>
+
+🔔 <b>Alerts</b>
+├ Arbitrage Subscribers: <code>{arb_subscribers}</code>
+└ Active Price Alerts: <code>{price_alerts}</code>
 """
 
         keyboard = InlineKeyboardMarkup([
