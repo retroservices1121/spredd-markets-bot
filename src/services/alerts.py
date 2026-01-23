@@ -50,17 +50,16 @@ class ArbitrageOpportunity:
     """Cross-platform arbitrage opportunity."""
     id: str
     market_title: str
-    platform_a: Platform
-    platform_b: Platform
-    market_id_a: str
-    market_id_b: str
-    price_a: Decimal  # YES price on platform A
-    price_b: Decimal  # YES price on platform B
+    buy_platform: Platform  # Platform to buy on (cheaper)
+    sell_platform: Platform  # Platform to sell on (more expensive)
+    buy_market_id: str
+    sell_market_id: str
+    buy_price: Decimal  # YES price on buy platform (lower)
+    sell_price: Decimal  # YES price on sell platform (higher)
     spread_cents: int  # Spread in cents (e.g., 5 = 5¢)
     profit_potential: Decimal  # Estimated profit % after ~4% fees
-    direction: str  # "BUY_A_SELL_B" or "BUY_B_SELL_A"
-    title_a: str = ""  # Market title on platform A
-    title_b: str = ""  # Market title on platform B
+    buy_title: str = ""  # Market title on buy platform
+    sell_title: str = ""  # Market title on sell platform
     detected_at: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -256,106 +255,157 @@ Platform: {alert.platform.value.title()}
 
     async def find_arbitrage_opportunities(self) -> list[ArbitrageOpportunity]:
         """
-        Find arbitrage opportunities between Polymarket and Kalshi.
+        Find arbitrage opportunities across all 4 platforms:
+        Polymarket, Kalshi, Limitless, and Opinion Labs.
         Compares YES prices for matching markets.
         """
         opportunities = []
 
         try:
-            # Get Polymarket sports markets
+            # Fetch markets from all platforms concurrently
             from src.platforms.polymarket import polymarket_platform
-            poly_markets = await polymarket_platform.get_markets(limit=50, active_only=True)
-
-            # Get Kalshi markets
             from src.platforms.kalshi import kalshi_platform
-            kalshi_markets = await kalshi_platform.get_markets(limit=50, active_only=True)
+            from src.platforms.limitless import limitless_platform
+            from src.platforms.opinion import opinion_platform
+
+            # Fetch all markets in parallel
+            results = await asyncio.gather(
+                polymarket_platform.get_markets(limit=50, active_only=True),
+                kalshi_platform.get_markets(limit=50, active_only=True),
+                limitless_platform.get_markets(limit=50, active_only=True),
+                opinion_platform.get_markets(limit=50, active_only=True),
+                return_exceptions=True,
+            )
+
+            # Organize markets by platform
+            platform_markets: dict[Platform, list] = {
+                Platform.POLYMARKET: [],
+                Platform.KALSHI: [],
+                Platform.LIMITLESS: [],
+                Platform.OPINION: [],
+            }
+
+            platforms_list = [Platform.POLYMARKET, Platform.KALSHI, Platform.LIMITLESS, Platform.OPINION]
+
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.warning(f"Failed to fetch {platforms_list[i].value} markets", error=str(result))
+                    continue
+                platform_markets[platforms_list[i]] = result or []
+
+            logger.info(
+                "Fetched markets for arbitrage",
+                polymarket=len(platform_markets[Platform.POLYMARKET]),
+                kalshi=len(platform_markets[Platform.KALSHI]),
+                limitless=len(platform_markets[Platform.LIMITLESS]),
+                opinion=len(platform_markets[Platform.OPINION]),
+            )
 
             # Extract key identifiers from titles for matching
             def extract_match_key(title: str) -> set[str]:
                 """Extract meaningful words for matching."""
                 title_lower = title.lower()
                 # Remove common prediction market phrases
-                for phrase in ["will", "win", "beat", "defeat", "vs", "vs.", "to win", "winner"]:
+                for phrase in ["will", "win", "beat", "defeat", "vs", "vs.", "to win", "winner", "over", "under"]:
                     title_lower = title_lower.replace(phrase, " ")
 
                 words = set(title_lower.split())
                 # Remove stop words and short words
-                stop_words = {"the", "a", "an", "to", "in", "on", "at", "be", "or", "and", "?", "of", "for", "-"}
+                stop_words = {"the", "a", "an", "to", "in", "on", "at", "be", "or", "and", "?", "of", "for", "-", "by"}
                 return {w for w in words if w not in stop_words and len(w) > 2}
 
-            for poly_m in poly_markets:
-                if not poly_m.yes_price:
-                    continue
+            # Pre-compute match keys for all markets
+            market_keys: dict[Platform, list[tuple]] = {}
+            for platform, markets in platform_markets.items():
+                market_keys[platform] = [
+                    (m, extract_match_key(m.title))
+                    for m in markets
+                    if m.yes_price is not None
+                ]
 
-                poly_keys = extract_match_key(poly_m.title)
+            # Compare all platform pairs
+            seen_pairs = set()  # Track seen market pairs to avoid duplicates
 
-                for kalshi_m in kalshi_markets:
-                    if not kalshi_m.yes_price:
-                        continue
+            for i, platform_a in enumerate(platforms_list):
+                for platform_b in platforms_list[i + 1:]:  # Only compare each pair once
+                    markets_a = market_keys.get(platform_a, [])
+                    markets_b = market_keys.get(platform_b, [])
 
-                    kalshi_keys = extract_match_key(kalshi_m.title)
+                    for market_a, keys_a in markets_a:
+                        if not keys_a:
+                            continue
 
-                    # Calculate Jaccard similarity (intersection over union)
-                    if not poly_keys or not kalshi_keys:
-                        continue
+                        for market_b, keys_b in markets_b:
+                            if not keys_b:
+                                continue
 
-                    common = poly_keys & kalshi_keys
-                    union = poly_keys | kalshi_keys
-                    similarity = len(common) / len(union) if union else 0
+                            # Calculate Jaccard similarity
+                            common = keys_a & keys_b
+                            union = keys_a | keys_b
+                            similarity = len(common) / len(union) if union else 0
 
-                    # Require at least 40% similarity AND 3+ common meaningful words
-                    if similarity < 0.4 or len(common) < 3:
-                        continue
+                            # Require at least 40% similarity AND 3+ common words
+                            if similarity < 0.4 or len(common) < 3:
+                                continue
 
-                    # Get prices and calculate spread in cents
-                    poly_yes = poly_m.yes_price
-                    kalshi_yes = kalshi_m.yes_price
-                    spread_decimal = abs(poly_yes - kalshi_yes)
-                    spread_cents = int(spread_decimal * 100)
+                            # Get prices and calculate spread
+                            price_a = market_a.yes_price
+                            price_b = market_b.yes_price
+                            spread_decimal = abs(price_a - price_b)
+                            spread_cents = int(spread_decimal * 100)
 
-                    # Skip if spread is too small (less than min_arbitrage_spread)
-                    if spread_decimal < self.min_arbitrage_spread:
-                        continue
+                            # Skip if spread is too small
+                            if spread_decimal < self.min_arbitrage_spread:
+                                continue
 
-                    # Calculate realistic profit potential after fees
-                    # Typical fees: ~2% per trade on each platform = ~4% total round-trip
-                    estimated_fees = Decimal("0.04")  # 4% total fees
-                    profit_potential = spread_decimal - estimated_fees
-                    profit_percent = (profit_potential * 100) if profit_potential > 0 else Decimal("0")
+                            # Determine buy/sell direction (buy low, sell high)
+                            if price_a < price_b:
+                                buy_platform, sell_platform = platform_a, platform_b
+                                buy_market, sell_market = market_a, market_b
+                                buy_price, sell_price = price_a, price_b
+                            else:
+                                buy_platform, sell_platform = platform_b, platform_a
+                                buy_market, sell_market = market_b, market_a
+                                buy_price, sell_price = price_b, price_a
 
-                    # Determine direction (buy where cheaper, sell where more expensive)
-                    if poly_yes < kalshi_yes:
-                        direction = "BUY_POLY_SELL_KALSHI"
-                    else:
-                        direction = "BUY_KALSHI_SELL_POLY"
+                            # Calculate profit potential after fees (~4% round-trip)
+                            estimated_fees = Decimal("0.04")
+                            profit_potential = spread_decimal - estimated_fees
+                            profit_percent = (profit_potential * 100) if profit_potential > 0 else Decimal("0")
 
-                    opp = ArbitrageOpportunity(
-                        id=f"{poly_m.market_id[:8]}-{kalshi_m.market_id[:8]}",
-                        market_title=poly_m.title[:80],
-                        platform_a=Platform.POLYMARKET,
-                        platform_b=Platform.KALSHI,
-                        market_id_a=poly_m.market_id,
-                        market_id_b=kalshi_m.market_id,
-                        price_a=poly_yes,
-                        price_b=kalshi_yes,
-                        spread_cents=spread_cents,
-                        profit_potential=profit_percent,
-                        direction=direction,
-                        title_a=poly_m.title[:50],
-                        title_b=kalshi_m.title[:50],
-                    )
+                            # Create unique ID
+                            opp_id = f"{buy_market.market_id[:6]}-{sell_market.market_id[:6]}"
 
-                    # Check if this is a new opportunity or spread changed significantly
-                    cache_key = opp.id
-                    cached = self._arbitrage_cache.get(cache_key)
+                            # Skip if we've seen this pair
+                            pair_key = (buy_market.market_id, sell_market.market_id)
+                            if pair_key in seen_pairs:
+                                continue
+                            seen_pairs.add(pair_key)
 
-                    if not cached or abs(cached.spread_cents - spread_cents) >= 2:
-                        self._arbitrage_cache[cache_key] = opp
-                        opportunities.append(opp)
+                            opp = ArbitrageOpportunity(
+                                id=opp_id,
+                                market_title=buy_market.title[:80],
+                                buy_platform=buy_platform,
+                                sell_platform=sell_platform,
+                                buy_market_id=buy_market.market_id,
+                                sell_market_id=sell_market.market_id,
+                                buy_price=buy_price,
+                                sell_price=sell_price,
+                                spread_cents=spread_cents,
+                                profit_potential=profit_percent,
+                                buy_title=buy_market.title[:50],
+                                sell_title=sell_market.title[:50],
+                            )
+
+                            # Check cache for significant changes
+                            cached = self._arbitrage_cache.get(opp_id)
+                            if not cached or abs(cached.spread_cents - spread_cents) >= 2:
+                                self._arbitrage_cache[opp_id] = opp
+                                opportunities.append(opp)
 
             # Sort by profit potential (highest first)
             opportunities.sort(key=lambda x: x.profit_potential, reverse=True)
-            return opportunities[:10]  # Return top 10
+            return opportunities[:15]  # Return top 15
 
         except Exception as e:
             logger.error("Failed to find arbitrage opportunities", error=str(e))
@@ -379,36 +429,41 @@ Platform: {alert.platform.value.title()}
         try:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-            price_a_cents = int(opp.price_a * 100)
-            price_b_cents = int(opp.price_b * 100)
+            # Platform display names
+            platform_names = {
+                Platform.POLYMARKET: "Polymarket",
+                Platform.KALSHI: "Kalshi",
+                Platform.LIMITLESS: "Limitless",
+                Platform.OPINION: "Opinion",
+            }
 
-            if opp.direction == "BUY_POLY_SELL_KALSHI":
-                buy_platform = "Polymarket"
-                sell_platform = "Kalshi"
-                buy_price = price_a_cents
-                sell_price = price_b_cents
-                buy_market_id = opp.market_id_a
-                sell_market_id = opp.market_id_b
-                action = f"Buy YES @ {buy_price}¢ on Polymarket → Sell @ {sell_price}¢ on Kalshi"
-            else:
-                buy_platform = "Kalshi"
-                sell_platform = "Polymarket"
-                buy_price = price_b_cents
-                sell_price = price_a_cents
-                buy_market_id = opp.market_id_b
-                sell_market_id = opp.market_id_a
-                action = f"Buy YES @ {buy_price}¢ on Kalshi → Sell @ {sell_price}¢ on Polymarket"
+            platform_emojis = {
+                Platform.POLYMARKET: "🔮",
+                Platform.KALSHI: "📈",
+                Platform.LIMITLESS: "♾️",
+                Platform.OPINION: "💭",
+            }
+
+            buy_name = platform_names.get(opp.buy_platform, opp.buy_platform.value)
+            sell_name = platform_names.get(opp.sell_platform, opp.sell_platform.value)
+            buy_emoji = platform_emojis.get(opp.buy_platform, "📊")
+            sell_emoji = platform_emojis.get(opp.sell_platform, "📊")
+
+            buy_price_cents = int(opp.buy_price * 100)
+            sell_price_cents = int(opp.sell_price * 100)
 
             # Show profit potential clearly
             profit_str = f"+{opp.profit_potential:.1f}%" if opp.profit_potential > 0 else f"{opp.profit_potential:.1f}%"
+
+            action = f"Buy YES @ {buy_price_cents}¢ on {buy_name} → Sell @ {sell_price_cents}¢ on {sell_name}"
 
             message = f"""
 ⚡ <b>Arbitrage Opportunity!</b>
 
 <b>{opp.market_title}</b>
 
-📊 Polymarket: <b>{price_a_cents}¢</b>
-📈 Kalshi: <b>{price_b_cents}¢</b>
+{buy_emoji} {buy_name}: <b>{buy_price_cents}¢</b> (BUY)
+{sell_emoji} {sell_name}: <b>{sell_price_cents}¢</b> (SELL)
 
 💰 <b>Spread: {opp.spread_cents}¢</b>
 📈 Est. Profit (after fees): <b>{profit_str}</b>
@@ -422,24 +477,24 @@ Platform: {alert.platform.value.title()}
             keyboard = [
                 [
                     InlineKeyboardButton(
-                        f"🟢 Buy YES on {buy_platform}",
-                        callback_data=f"arb_trade:{buy_platform.lower()}:{buy_market_id}:yes:buy"
+                        f"🟢 Buy YES on {buy_name}",
+                        callback_data=f"arb_trade:{opp.buy_platform.value}:{opp.buy_market_id}:yes:buy"
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        f"🔴 Sell YES on {sell_platform}",
-                        callback_data=f"arb_trade:{sell_platform.lower()}:{sell_market_id}:yes:sell"
+                        f"🔴 Sell YES on {sell_name}",
+                        callback_data=f"arb_trade:{opp.sell_platform.value}:{opp.sell_market_id}:yes:sell"
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        "📊 View Polymarket",
-                        callback_data=f"view_market:polymarket:{opp.market_id_a}"
+                        f"{buy_emoji} View {buy_name}",
+                        callback_data=f"view_market:{opp.buy_platform.value}:{opp.buy_market_id}"
                     ),
                     InlineKeyboardButton(
-                        "📈 View Kalshi",
-                        callback_data=f"view_market:kalshi:{opp.market_id_b}"
+                        f"{sell_emoji} View {sell_name}",
+                        callback_data=f"view_market:{opp.sell_platform.value}:{opp.sell_market_id}"
                     ),
                 ],
             ]

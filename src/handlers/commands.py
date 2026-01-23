@@ -9580,7 +9580,7 @@ async def handle_arbitrage_callback(query, action: str, telegram_id: int) -> Non
 
     elif action == "check":
         await query.edit_message_text(
-            "🔍 <b>Scanning for arbitrage opportunities...</b>",
+            "🔍 <b>Scanning for arbitrage across all 4 platforms...</b>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -9590,21 +9590,32 @@ async def handle_arbitrage_callback(query, action: str, telegram_id: int) -> Non
             await query.edit_message_text(
                 "📊 <b>Arbitrage Scan Complete</b>\n\n"
                 "No significant arbitrage opportunities found right now.\n\n"
-                "We check for price differences of 3¢ or more between platforms.",
+                "We check for price differences of 3¢ or more between:\n"
+                "• Polymarket\n• Kalshi\n• Limitless\n• Opinion Labs",
                 parse_mode=ParseMode.HTML,
             )
         else:
+            # Platform display names
+            platform_names = {
+                Platform.POLYMARKET: "Poly",
+                Platform.KALSHI: "Kalshi",
+                Platform.LIMITLESS: "Limitless",
+                Platform.OPINION: "Opinion",
+            }
+
             text = f"⚡ <b>Found {len(opportunities)} Opportunities!</b>\n\n"
 
             for opp in opportunities[:5]:  # Show max 5
-                price_a = int(opp.price_a * 100)
-                price_b = int(opp.price_b * 100)
+                buy_name = platform_names.get(opp.buy_platform, opp.buy_platform.value)
+                sell_name = platform_names.get(opp.sell_platform, opp.sell_platform.value)
+                buy_price = int(opp.buy_price * 100)
+                sell_price = int(opp.sell_price * 100)
                 profit_str = f"+{opp.profit_potential:.1f}%" if opp.profit_potential > 0 else f"{opp.profit_potential:.1f}%"
-                text += f"<b>{opp.market_title[:40]}...</b>\n"
-                text += f"• Polymarket: {price_a}¢ | Kalshi: {price_b}¢\n"
-                text += f"• Spread: {opp.spread_cents}¢ | Est. Profit: {profit_str}\n\n"
+                text += f"<b>{opp.market_title[:35]}...</b>\n"
+                text += f"• {buy_name}: {buy_price}¢ → {sell_name}: {sell_price}¢\n"
+                text += f"• Spread: {opp.spread_cents}¢ | Profit: {profit_str}\n\n"
 
-            text += "<i>Use the buttons in arbitrage alerts to trade directly.</i>"
+            text += "<i>Subscribe to get instant alerts with trade buttons!</i>"
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔔 Subscribe for Auto-Alerts", callback_data="arbitrage:subscribe")],
