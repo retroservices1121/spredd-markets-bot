@@ -2045,6 +2045,22 @@ Select which prediction market you want to trade on:
         elif action == "alerts":
             await handle_alerts_callback(query, parts[1], update.effective_user.id)
 
+        elif action == "arb_trade":
+            # Format: arb_trade:platform:market_id:outcome:side
+            await handle_arb_trade(query, parts[1], parts[2], parts[3], parts[4], update.effective_user.id, context)
+
+        elif action == "arb_amount":
+            # Format: arb_amount:platform:market_id:outcome:side:amount
+            await handle_arb_amount(query, parts[1], parts[2], parts[3], parts[4], parts[5], update.effective_user.id, context)
+
+        elif action == "cancel_arb":
+            context.user_data.pop("pending_arb_trade", None)
+            await query.edit_message_text("❌ Trade cancelled.")
+
+        elif action == "view_market":
+            # Format: view_market:platform:market_id
+            await handle_view_market_from_arb(query, parts[1], parts[2], update.effective_user.id)
+
     except Exception as e:
         error_str = str(e)
         # Silently ignore "message not modified" errors (happens on refresh with no changes)
@@ -9565,7 +9581,7 @@ async def handle_arbitrage_callback(query, action: str, telegram_id: int) -> Non
             await query.edit_message_text(
                 "📊 <b>Arbitrage Scan Complete</b>\n\n"
                 "No significant arbitrage opportunities found right now.\n\n"
-                "We check for price differences of 3% or more between platforms.",
+                "We check for price differences of 3¢ or more between platforms.",
                 parse_mode=ParseMode.HTML,
             )
         else:
@@ -9574,13 +9590,21 @@ async def handle_arbitrage_callback(query, action: str, telegram_id: int) -> Non
             for opp in opportunities[:5]:  # Show max 5
                 price_a = int(opp.price_a * 100)
                 price_b = int(opp.price_b * 100)
+                profit_str = f"+{opp.profit_potential:.1f}%" if opp.profit_potential > 0 else f"{opp.profit_potential:.1f}%"
                 text += f"<b>{opp.market_title[:40]}...</b>\n"
                 text += f"• Polymarket: {price_a}¢ | Kalshi: {price_b}¢\n"
-                text += f"• Spread: {opp.spread_percent:.1f}%\n\n"
+                text += f"• Spread: {opp.spread_cents}¢ | Est. Profit: {profit_str}\n\n"
+
+            text += "<i>Use the buttons in arbitrage alerts to trade directly.</i>"
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔔 Subscribe for Auto-Alerts", callback_data="arbitrage:subscribe")],
+            ])
 
             await query.edit_message_text(
                 text,
                 parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
             )
 
 
@@ -9599,3 +9623,246 @@ async def handle_alerts_callback(query, action: str, telegram_id: int) -> None:
             "Use /setalert to create new alerts.",
             parse_mode=ParseMode.HTML,
         )
+
+
+async def handle_arb_trade(
+    query, platform: str, market_id: str, outcome: str, side: str, telegram_id: int, context
+) -> None:
+    """
+    Handle trade initiation from arbitrage alerts.
+    Format: arb_trade:platform:market_id:outcome:side
+    """
+    try:
+        # Convert platform string to Platform enum
+        platform_enum = Platform(platform)
+
+        # Get user
+        user = await get_user_by_telegram_id(telegram_id)
+        if not user:
+            await query.edit_message_text("❌ Please /start first!")
+            return
+
+        # Get the platform client
+        platform_client = get_platform(platform_enum)
+        if not platform_client:
+            await query.edit_message_text(f"❌ Platform {platform} is not available.")
+            return
+
+        # Get market info
+        market = await platform_client.get_market(market_id)
+        if not market:
+            await query.edit_message_text("❌ Market not found. It may have expired or closed.")
+            return
+
+        # Get chain family for wallet
+        chain_family = get_chain_family_for_platform(platform_enum)
+
+        # Get wallet
+        from src.db.database import get_user_wallets
+        wallets = await get_user_wallets(user.id)
+        wallet = next((w for w in wallets if w.chain_family == chain_family), None)
+
+        if not wallet:
+            await query.edit_message_text(
+                f"❌ You don't have a {chain_family.value.upper()} wallet.\n\n"
+                f"Use /wallet to create one first.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Get wallet balance
+        wallet_info = await wallet_service.get_wallet_info(wallet)
+        balance = wallet_info.usdc_balance if wallet_info else Decimal("0")
+
+        # Build trading UI
+        price = market.yes_price if outcome == "yes" else market.no_price
+        price_cents = int(price * 100) if price else 0
+
+        text = f"""
+⚡ <b>Quick Trade from Arbitrage</b>
+
+<b>Market:</b> {escape_html(market.title[:60])}...
+<b>Platform:</b> {PLATFORM_INFO[platform_enum]['name']}
+<b>Action:</b> {side.upper()} {outcome.upper()}
+<b>Current Price:</b> {price_cents}¢
+
+<b>Your Balance:</b> ${balance:.2f} USDC
+
+Enter the amount you want to trade (in USDC):
+"""
+
+        # Store pending trade info in context
+        context.user_data["pending_arb_trade"] = {
+            "platform": platform,
+            "market_id": market_id,
+            "outcome": outcome,
+            "side": side,
+            "market_title": market.title,
+        }
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("$5", callback_data=f"arb_amount:{platform}:{market_id}:{outcome}:{side}:5"),
+                InlineKeyboardButton("$10", callback_data=f"arb_amount:{platform}:{market_id}:{outcome}:{side}:10"),
+                InlineKeyboardButton("$25", callback_data=f"arb_amount:{platform}:{market_id}:{outcome}:{side}:25"),
+            ],
+            [
+                InlineKeyboardButton("$50", callback_data=f"arb_amount:{platform}:{market_id}:{outcome}:{side}:50"),
+                InlineKeyboardButton("$100", callback_data=f"arb_amount:{platform}:{market_id}:{outcome}:{side}:100"),
+                InlineKeyboardButton("MAX", callback_data=f"arb_amount:{platform}:{market_id}:{outcome}:{side}:max"),
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_arb")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Failed to initiate arb trade", error=str(e))
+        await query.edit_message_text(f"❌ Error: {friendly_error(str(e))}")
+
+
+async def handle_view_market_from_arb(query, platform: str, market_id: str, telegram_id: int) -> None:
+    """
+    Handle viewing a market from arbitrage alert.
+    Shows market details with trade buttons.
+    """
+    try:
+        platform_enum = Platform(platform)
+        await handle_market_view(query, platform, market_id, telegram_id)
+
+    except Exception as e:
+        logger.error("Failed to view market from arb", error=str(e))
+        await query.edit_message_text(f"❌ Error: {friendly_error(str(e))}")
+
+
+async def handle_arb_amount(
+    query, platform: str, market_id: str, outcome: str, side: str, amount_str: str, telegram_id: int, context
+) -> None:
+    """
+    Handle amount selection for arbitrage trade.
+    Executes the trade with the selected amount.
+    """
+    from src.services.wallet import wallet_service
+    from src.db.database import get_user_wallets
+
+    try:
+        platform_enum = Platform(platform)
+
+        # Get user
+        user = await get_user_by_telegram_id(telegram_id)
+        if not user:
+            await query.edit_message_text("❌ Please /start first!")
+            return
+
+        # Get chain family and wallet
+        chain_family = get_chain_family_for_platform(platform_enum)
+        wallets = await get_user_wallets(user.id)
+        wallet = next((w for w in wallets if w.chain_family == chain_family), None)
+
+        if not wallet:
+            await query.edit_message_text("❌ Wallet not found. Use /wallet to create one.")
+            return
+
+        # Get wallet balance for MAX
+        wallet_info = await wallet_service.get_wallet_info(wallet)
+        balance = wallet_info.usdc_balance if wallet_info else Decimal("0")
+
+        # Parse amount
+        if amount_str.lower() == "max":
+            # Use 95% of balance to leave room for fees
+            amount = balance * Decimal("0.95")
+            if amount < Decimal("1"):
+                await query.edit_message_text("❌ Insufficient balance for trade.")
+                return
+        else:
+            amount = Decimal(amount_str)
+
+        if amount > balance:
+            await query.edit_message_text(
+                f"❌ Insufficient balance.\n\nYou have ${balance:.2f} USDC but tried to trade ${amount:.2f}.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Show processing message
+        await query.edit_message_text(
+            f"⏳ <b>Processing trade...</b>\n\n"
+            f"Platform: {PLATFORM_INFO[platform_enum]['name']}\n"
+            f"Action: {side.upper()} {outcome.upper()}\n"
+            f"Amount: ${amount:.2f}",
+            parse_mode=ParseMode.HTML,
+        )
+
+        # Get platform client
+        platform_client = get_platform(platform_enum)
+
+        # Get quote
+        from src.platforms.base import Outcome
+        outcome_enum = Outcome.YES if outcome == "yes" else Outcome.NO
+
+        quote = await platform_client.get_quote(
+            market_id=market_id,
+            outcome=outcome_enum,
+            side=side,
+            amount=amount,
+            wallet_address=wallet.public_key,
+        )
+
+        if not quote:
+            await query.edit_message_text("❌ Failed to get quote. Market may be unavailable.")
+            return
+
+        # Execute trade
+        result = await platform_client.execute_trade(
+            quote=quote,
+            wallet=wallet,
+        )
+
+        if result and result.success:
+            # Create position record
+            market = await platform_client.get_market(market_id)
+            await create_position(
+                user_id=user.id,
+                platform=platform_enum,
+                market_id=market_id,
+                market_title=market.title if market else "Unknown",
+                outcome=outcome,
+                token_amount=str(result.output_amount or quote.expected_output),
+                entry_price=str(quote.price),
+            )
+
+            # Show success
+            output_amount = result.output_amount or quote.expected_output
+            price_cents = int(quote.price * 100)
+
+            text = f"""
+✅ <b>Trade Executed!</b>
+
+<b>Platform:</b> {PLATFORM_INFO[platform_enum]['name']}
+<b>Action:</b> {side.upper()} {outcome.upper()}
+<b>Amount:</b> ${amount:.2f}
+<b>Price:</b> {price_cents}¢
+<b>Tokens:</b> {output_amount:.2f}
+
+<i>From arbitrage opportunity. Check /positions for your portfolio.</i>
+"""
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 View Positions", callback_data="positions:view")],
+            ])
+
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        else:
+            error_msg = result.error if result else "Unknown error"
+            await query.edit_message_text(f"❌ Trade failed: {friendly_error(error_msg)}")
+
+    except Exception as e:
+        logger.error("Failed to execute arb trade", error=str(e))
+        await query.edit_message_text(f"❌ Error: {friendly_error(str(e))}")

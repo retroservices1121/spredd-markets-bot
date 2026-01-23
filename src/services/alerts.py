@@ -56,9 +56,11 @@ class ArbitrageOpportunity:
     market_id_b: str
     price_a: Decimal  # YES price on platform A
     price_b: Decimal  # YES price on platform B
-    spread: Decimal  # Absolute difference
-    spread_percent: Decimal
+    spread_cents: int  # Spread in cents (e.g., 5 = 5¢)
+    profit_potential: Decimal  # Estimated profit % after ~4% fees
     direction: str  # "BUY_A_SELL_B" or "BUY_B_SELL_A"
+    title_a: str = ""  # Market title on platform A
+    title_b: str = ""  # Market title on platform B
     detected_at: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -268,36 +270,60 @@ Platform: {alert.platform.value.title()}
             from src.platforms.kalshi import kalshi_platform
             kalshi_markets = await kalshi_platform.get_markets(limit=50, active_only=True)
 
-            # Simple matching by title keywords
-            # More sophisticated matching would use Dome API's matching endpoint
+            # Extract key identifiers from titles for matching
+            def extract_match_key(title: str) -> set[str]:
+                """Extract meaningful words for matching."""
+                title_lower = title.lower()
+                # Remove common prediction market phrases
+                for phrase in ["will", "win", "beat", "defeat", "vs", "vs.", "to win", "winner"]:
+                    title_lower = title_lower.replace(phrase, " ")
+
+                words = set(title_lower.split())
+                # Remove stop words and short words
+                stop_words = {"the", "a", "an", "to", "in", "on", "at", "be", "or", "and", "?", "of", "for", "-"}
+                return {w for w in words if w not in stop_words and len(w) > 2}
+
             for poly_m in poly_markets:
-                poly_title_lower = poly_m.title.lower()
+                if not poly_m.yes_price:
+                    continue
+
+                poly_keys = extract_match_key(poly_m.title)
 
                 for kalshi_m in kalshi_markets:
-                    kalshi_title_lower = kalshi_m.title.lower()
-
-                    # Check for significant title overlap
-                    poly_words = set(poly_title_lower.split())
-                    kalshi_words = set(kalshi_title_lower.split())
-                    common_words = poly_words & kalshi_words
-
-                    # Remove common stop words
-                    stop_words = {"will", "the", "a", "an", "to", "in", "on", "at", "be", "or", "and", "?"}
-                    meaningful_common = common_words - stop_words
-
-                    if len(meaningful_common) < 3:
+                    if not kalshi_m.yes_price:
                         continue
 
-                    # Calculate spread
-                    poly_yes = poly_m.yes_price or Decimal("0.5")
-                    kalshi_yes = kalshi_m.yes_price or Decimal("0.5")
-                    spread = abs(poly_yes - kalshi_yes)
-                    spread_percent = (spread / min(poly_yes, kalshi_yes)) * 100 if min(poly_yes, kalshi_yes) > 0 else Decimal("0")
+                    kalshi_keys = extract_match_key(kalshi_m.title)
 
-                    if spread < self.min_arbitrage_spread:
+                    # Calculate Jaccard similarity (intersection over union)
+                    if not poly_keys or not kalshi_keys:
                         continue
 
-                    # Determine direction
+                    common = poly_keys & kalshi_keys
+                    union = poly_keys | kalshi_keys
+                    similarity = len(common) / len(union) if union else 0
+
+                    # Require at least 40% similarity AND 3+ common meaningful words
+                    if similarity < 0.4 or len(common) < 3:
+                        continue
+
+                    # Get prices and calculate spread in cents
+                    poly_yes = poly_m.yes_price
+                    kalshi_yes = kalshi_m.yes_price
+                    spread_decimal = abs(poly_yes - kalshi_yes)
+                    spread_cents = int(spread_decimal * 100)
+
+                    # Skip if spread is too small (less than min_arbitrage_spread)
+                    if spread_decimal < self.min_arbitrage_spread:
+                        continue
+
+                    # Calculate realistic profit potential after fees
+                    # Typical fees: ~2% per trade on each platform = ~4% total round-trip
+                    estimated_fees = Decimal("0.04")  # 4% total fees
+                    profit_potential = spread_decimal - estimated_fees
+                    profit_percent = (profit_potential * 100) if profit_potential > 0 else Decimal("0")
+
+                    # Determine direction (buy where cheaper, sell where more expensive)
                     if poly_yes < kalshi_yes:
                         direction = "BUY_POLY_SELL_KALSHI"
                     else:
@@ -305,27 +331,31 @@ Platform: {alert.platform.value.title()}
 
                     opp = ArbitrageOpportunity(
                         id=f"{poly_m.market_id[:8]}-{kalshi_m.market_id[:8]}",
-                        market_title=poly_m.title[:100],
+                        market_title=poly_m.title[:80],
                         platform_a=Platform.POLYMARKET,
                         platform_b=Platform.KALSHI,
                         market_id_a=poly_m.market_id,
                         market_id_b=kalshi_m.market_id,
                         price_a=poly_yes,
                         price_b=kalshi_yes,
-                        spread=spread,
-                        spread_percent=spread_percent,
+                        spread_cents=spread_cents,
+                        profit_potential=profit_percent,
                         direction=direction,
+                        title_a=poly_m.title[:50],
+                        title_b=kalshi_m.title[:50],
                     )
 
-                    # Check if this is a new opportunity
+                    # Check if this is a new opportunity or spread changed significantly
                     cache_key = opp.id
                     cached = self._arbitrage_cache.get(cache_key)
 
-                    if not cached or abs(cached.spread - spread) > Decimal("0.01"):
+                    if not cached or abs(cached.spread_cents - spread_cents) >= 2:
                         self._arbitrage_cache[cache_key] = opp
                         opportunities.append(opp)
 
-            return opportunities
+            # Sort by profit potential (highest first)
+            opportunities.sort(key=lambda x: x.profit_potential, reverse=True)
+            return opportunities[:10]  # Return top 10
 
         except Exception as e:
             logger.error("Failed to find arbitrage opportunities", error=str(e))
@@ -342,33 +372,78 @@ Platform: {alert.platform.value.title()}
             await self._send_arbitrage_notification(opp)
 
     async def _send_arbitrage_notification(self, opp: ArbitrageOpportunity) -> None:
-        """Send arbitrage alert to all subscribers."""
+        """Send arbitrage alert to all subscribers with trade buttons."""
         if not self._bot or not self._arbitrage_subscribers:
             return
 
         try:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
             price_a_cents = int(opp.price_a * 100)
             price_b_cents = int(opp.price_b * 100)
 
             if opp.direction == "BUY_POLY_SELL_KALSHI":
-                action = f"Buy YES on Polymarket ({price_a_cents}¢) → Sell on Kalshi ({price_b_cents}¢)"
+                buy_platform = "Polymarket"
+                sell_platform = "Kalshi"
+                buy_price = price_a_cents
+                sell_price = price_b_cents
+                buy_market_id = opp.market_id_a
+                sell_market_id = opp.market_id_b
+                action = f"Buy YES @ {buy_price}¢ on Polymarket → Sell @ {sell_price}¢ on Kalshi"
             else:
-                action = f"Buy YES on Kalshi ({price_b_cents}¢) → Sell on Polymarket ({price_a_cents}¢)"
+                buy_platform = "Kalshi"
+                sell_platform = "Polymarket"
+                buy_price = price_b_cents
+                sell_price = price_a_cents
+                buy_market_id = opp.market_id_b
+                sell_market_id = opp.market_id_a
+                action = f"Buy YES @ {buy_price}¢ on Kalshi → Sell @ {sell_price}¢ on Polymarket"
+
+            # Show profit potential clearly
+            profit_str = f"+{opp.profit_potential:.1f}%" if opp.profit_potential > 0 else f"{opp.profit_potential:.1f}%"
 
             message = f"""
 ⚡ <b>Arbitrage Opportunity!</b>
 
 <b>{opp.market_title}</b>
 
-📊 Polymarket: {price_a_cents}¢
-📈 Kalshi: {price_b_cents}¢
+📊 Polymarket: <b>{price_a_cents}¢</b>
+📈 Kalshi: <b>{price_b_cents}¢</b>
 
-💰 <b>Spread: {opp.spread_percent:.1f}%</b>
+💰 <b>Spread: {opp.spread_cents}¢</b>
+📈 Est. Profit (after fees): <b>{profit_str}</b>
 
-🎯 {action}
+🎯 <i>{action}</i>
 
-<i>Note: Consider fees, slippage, and execution time.</i>
+<i>⚠️ Fees ~4% round-trip. Execute quickly!</i>
 """
+
+            # Create trade buttons
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        f"🟢 Buy YES on {buy_platform}",
+                        callback_data=f"arb_trade:{buy_platform.lower()}:{buy_market_id}:yes:buy"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"🔴 Sell YES on {sell_platform}",
+                        callback_data=f"arb_trade:{sell_platform.lower()}:{sell_market_id}:yes:sell"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "📊 View Polymarket",
+                        callback_data=f"view_market:polymarket:{opp.market_id_a}"
+                    ),
+                    InlineKeyboardButton(
+                        "📈 View Kalshi",
+                        callback_data=f"view_market:kalshi:{opp.market_id_b}"
+                    ),
+                ],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
             for telegram_id in list(self._arbitrage_subscribers):
                 try:
@@ -376,6 +451,7 @@ Platform: {alert.platform.value.title()}
                         chat_id=telegram_id,
                         text=message,
                         parse_mode="HTML",
+                        reply_markup=reply_markup,
                     )
                 except Exception as e:
                     logger.warning(
@@ -387,7 +463,8 @@ Platform: {alert.platform.value.title()}
             logger.info(
                 "Arbitrage alert sent",
                 opportunity_id=opp.id,
-                spread=str(opp.spread_percent),
+                spread_cents=opp.spread_cents,
+                profit_potential=str(opp.profit_potential),
                 subscribers=len(self._arbitrage_subscribers),
             )
 
