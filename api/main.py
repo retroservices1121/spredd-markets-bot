@@ -312,15 +312,18 @@ async def get_polymarket_market(market_id: str = Path(...)):
             if resp.status_code == 200:
                 markets_data = resp.json()
                 if markets_data and len(markets_data) > 0:
-                    found_market = markets_data[0]
-                    # Fetch parent event for additional data
-                    event_slug = found_market.get("eventSlug")
-                    if event_slug:
-                        event_resp = await client.get(gamma_url, params={"slug": event_slug})
-                        if event_resp.status_code == 200:
-                            events = event_resp.json()
-                            if events:
-                                found_event = events[0]
+                    # IMPORTANT: Verify the returned market actually matches the requested ID
+                    candidate = markets_data[0]
+                    if candidate.get("conditionId") == market_id:
+                        found_market = candidate
+                        # Fetch parent event for additional data
+                        event_slug = found_market.get("eventSlug")
+                        if event_slug:
+                            event_resp = await client.get(gamma_url, params={"slug": event_slug})
+                            if event_resp.status_code == 200:
+                                events = event_resp.json()
+                                if events:
+                                    found_event = events[0]
 
             # Fallback: Search through events with proper ordering
             if not found_market:
@@ -1487,14 +1490,17 @@ async def get_market_by_id(market_id: str = Path(...)):
                 if resp.status_code == 200:
                     markets_data = resp.json()
                     if markets_data and len(markets_data) > 0:
-                        found_market = markets_data[0]
-                        event_slug = found_market.get("eventSlug")
-                        if event_slug:
-                            event_resp = await client.get(gamma_url, params={"slug": event_slug})
-                            if event_resp.status_code == 200:
-                                events = event_resp.json()
-                                if events:
-                                    found_event = events[0]
+                        # IMPORTANT: Verify the returned market actually matches the requested ID
+                        candidate = markets_data[0]
+                        if candidate.get("conditionId") == market_id:
+                            found_market = candidate
+                            event_slug = found_market.get("eventSlug")
+                            if event_slug:
+                                event_resp = await client.get(gamma_url, params={"slug": event_slug})
+                                if event_resp.status_code == 200:
+                                    events = event_resp.json()
+                                    if events:
+                                        found_event = events[0]
 
                 # Fallback: Search through events
                 if not found_market:
@@ -1522,21 +1528,58 @@ async def get_market_by_id(market_id: str = Path(...)):
                 m = found_market
                 event = found_event
 
-                # Parse fields
-                outcome_prices_raw = m.get("outcomePrices", [])
-                if isinstance(outcome_prices_raw, str):
-                    try:
-                        outcome_prices_raw = json_lib.loads(outcome_prices_raw)
-                    except:
-                        outcome_prices_raw = []
-                prices = [str(p) for p in outcome_prices_raw] if outcome_prices_raw else ["0", "0"]
-
+                # Parse token IDs for orderbook lookup
                 tokens_raw = m.get("clobTokenIds", [])
                 if isinstance(tokens_raw, str):
                     try:
                         tokens_raw = json_lib.loads(tokens_raw)
                     except:
                         tokens_raw = []
+
+                # Parse fallback prices from Gamma API
+                outcome_prices_raw = m.get("outcomePrices", [])
+                if isinstance(outcome_prices_raw, str):
+                    try:
+                        outcome_prices_raw = json_lib.loads(outcome_prices_raw)
+                    except:
+                        outcome_prices_raw = []
+                fallback_prices = [str(p) for p in outcome_prices_raw] if outcome_prices_raw else ["0.5", "0.5"]
+
+                # Fetch orderbook prices for accuracy
+                prices = fallback_prices.copy()
+                if len(tokens_raw) >= 2:
+                    try:
+                        clob_url = "https://clob.polymarket.com/book"
+                        # Fetch YES token orderbook
+                        yes_resp = await client.get(clob_url, params={"token_id": tokens_raw[0]}, timeout=5.0)
+                        if yes_resp.status_code == 200:
+                            yes_book = yes_resp.json()
+                            yes_bids = yes_book.get("bids", [])
+                            yes_asks = yes_book.get("asks", [])
+                            if yes_bids and yes_asks:
+                                # Use mid price
+                                yes_mid = (float(yes_bids[0]["price"]) + float(yes_asks[0]["price"])) / 2
+                                prices[0] = str(round(yes_mid, 4))
+                            elif yes_bids:
+                                prices[0] = str(round(float(yes_bids[0]["price"]), 4))
+                            elif yes_asks:
+                                prices[0] = str(round(float(yes_asks[0]["price"]), 4))
+
+                        # Fetch NO token orderbook
+                        no_resp = await client.get(clob_url, params={"token_id": tokens_raw[1]}, timeout=5.0)
+                        if no_resp.status_code == 200:
+                            no_book = no_resp.json()
+                            no_bids = no_book.get("bids", [])
+                            no_asks = no_book.get("asks", [])
+                            if no_bids and no_asks:
+                                no_mid = (float(no_bids[0]["price"]) + float(no_asks[0]["price"])) / 2
+                                prices[1] = str(round(no_mid, 4))
+                            elif no_bids:
+                                prices[1] = str(round(float(no_bids[0]["price"]), 4))
+                            elif no_asks:
+                                prices[1] = str(round(float(no_asks[0]["price"]), 4))
+                    except Exception as orderbook_err:
+                        print(f"Orderbook fetch failed, using Gamma prices: {orderbook_err}")
 
                 outcomes_raw = m.get("outcomes", ["Yes", "No"])
                 if isinstance(outcomes_raw, str):

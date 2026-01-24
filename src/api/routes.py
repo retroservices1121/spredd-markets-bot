@@ -441,6 +441,72 @@ async def get_wallet_address(
 # Market Endpoints
 # ===================
 
+@router.get("/markets")
+async def get_all_markets(
+    platform: Optional[str] = Query(default="all", description="Platform filter: all, polymarket, kalshi, opinion, limitless"),
+    limit: int = Query(default=100, le=300),
+    active: bool = Query(default=True),
+):
+    """Get markets from all platforms for the webapp."""
+    from ..platforms import platform_registry
+
+    results = []
+
+    # Determine which platforms to fetch
+    if platform and platform.lower() != "all":
+        platforms_to_fetch = [platform.lower()]
+    else:
+        platforms_to_fetch = ["kalshi", "polymarket", "limitless"]  # Opinion requires auth
+
+    for plat in platforms_to_fetch:
+        try:
+            platform_instance = platform_registry.get(Platform(plat))
+            if not platform_instance:
+                continue
+
+            markets = await platform_instance.get_markets(limit=limit, active_only=active)
+            for m in markets:
+                # Extract image from raw_data if available
+                image = None
+                if m.raw_data:
+                    # Polymarket stores event image
+                    if "event" in m.raw_data:
+                        image = m.raw_data["event"].get("image")
+                    # Direct image field
+                    elif "image" in m.raw_data:
+                        image = m.raw_data["image"]
+
+                # Build slug from market_id or event_id
+                slug = m.event_id or m.market_id
+
+                results.append({
+                    "id": m.market_id,
+                    "platform": plat,
+                    "question": m.title,
+                    "description": m.description,
+                    "image": image,
+                    "category": m.category or "OTHER",
+                    "outcomes": ["Yes", "No"],
+                    "outcomePrices": [
+                        str(float(m.yes_price)) if m.yes_price else "0.5",
+                        str(float(m.no_price)) if m.no_price else "0.5",
+                    ],
+                    "volume": float(m.volume_24h) if m.volume_24h else 0,
+                    "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
+                    "liquidity": float(m.liquidity) if m.liquidity else 0,
+                    "endDate": m.close_time,
+                    "slug": slug,
+                    "active": m.is_active,
+                })
+        except Exception as e:
+            print(f"Error fetching {plat} markets: {e}")
+
+    # Sort by volume
+    results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
+
+    return results[:limit]
+
+
 @router.get("/markets/search")
 async def search_markets(
     q: str = Query(..., min_length=1),
@@ -1614,6 +1680,144 @@ def create_api_app() -> FastAPI:
     @app.get("/health")
     async def health_check():
         return {"status": "healthy", "service": "spredd-miniapp-api"}
+
+    # =========================================
+    # Direct routes for webapp (no /api/v1 prefix)
+    # =========================================
+
+    @app.get("/markets")
+    async def get_webapp_markets(
+        platform: Optional[str] = Query(default="all"),
+        limit: int = Query(default=100, le=300),
+        active: bool = Query(default=True),
+    ):
+        """Get markets for webapp - direct route without /api/v1 prefix."""
+        from ..platforms import platform_registry
+
+        results = []
+
+        # Determine which platforms to fetch
+        if platform and platform.lower() != "all":
+            platforms_to_fetch = [platform.lower()]
+        else:
+            platforms_to_fetch = ["kalshi", "polymarket", "limitless"]
+
+        for plat in platforms_to_fetch:
+            try:
+                platform_instance = platform_registry.get(Platform(plat))
+                if not platform_instance:
+                    continue
+
+                markets = await platform_instance.get_markets(limit=limit, active_only=active)
+                for m in markets:
+                    # Extract image from raw_data if available
+                    image = None
+                    if m.raw_data:
+                        if "event" in m.raw_data:
+                            image = m.raw_data["event"].get("image")
+                        elif "image" in m.raw_data:
+                            image = m.raw_data["image"]
+
+                    slug = m.event_id or m.market_id
+
+                    results.append({
+                        "id": m.market_id,
+                        "platform": plat,
+                        "question": m.title,
+                        "description": m.description,
+                        "image": image,
+                        "category": m.category or "OTHER",
+                        "outcomes": ["Yes", "No"],
+                        "outcomePrices": [
+                            str(float(m.yes_price)) if m.yes_price else "0.5",
+                            str(float(m.no_price)) if m.no_price else "0.5",
+                        ],
+                        "volume": float(m.volume_24h) if m.volume_24h else 0,
+                        "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
+                        "liquidity": float(m.liquidity) if m.liquidity else 0,
+                        "endDate": m.close_time,
+                        "slug": slug,
+                        "active": m.is_active,
+                    })
+            except Exception as e:
+                print(f"Error fetching {plat} markets: {e}")
+
+        results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
+        return results[:limit]
+
+    @app.get("/markets/{market_id}")
+    async def get_webapp_market_details(market_id: str):
+        """Get single market details for webapp - tries all platforms."""
+        from ..platforms import platform_registry
+        from ..platforms.base import Outcome
+
+        # Try to find the market across all platforms
+        for plat_name in ["polymarket", "kalshi", "limitless"]:
+            try:
+                platform_instance = platform_registry.get(Platform(plat_name))
+                if not platform_instance:
+                    continue
+
+                market = await platform_instance.get_market(market_id)
+                if market:
+                    # Extract image from raw_data
+                    image = None
+                    if market.raw_data:
+                        if "event" in market.raw_data:
+                            image = market.raw_data["event"].get("image")
+                        elif "image" in market.raw_data:
+                            image = market.raw_data["image"]
+
+                    # Get orderbook prices for accuracy (Polymarket)
+                    yes_price = float(market.yes_price) if market.yes_price else 0.5
+                    no_price = float(market.no_price) if market.no_price else 0.5
+
+                    if plat_name == "polymarket" and hasattr(platform_instance, 'get_orderbook'):
+                        try:
+                            yes_orderbook = await platform_instance.get_orderbook(market_id, Outcome.YES)
+                            no_orderbook = await platform_instance.get_orderbook(market_id, Outcome.NO)
+
+                            # Use mid price from orderbook if available
+                            if yes_orderbook.best_bid and yes_orderbook.best_ask:
+                                yes_price = float((yes_orderbook.best_bid + yes_orderbook.best_ask) / 2)
+                            elif yes_orderbook.best_ask:
+                                yes_price = float(yes_orderbook.best_ask)
+                            elif yes_orderbook.best_bid:
+                                yes_price = float(yes_orderbook.best_bid)
+
+                            if no_orderbook.best_bid and no_orderbook.best_ask:
+                                no_price = float((no_orderbook.best_bid + no_orderbook.best_ask) / 2)
+                            elif no_orderbook.best_ask:
+                                no_price = float(no_orderbook.best_ask)
+                            elif no_orderbook.best_bid:
+                                no_price = float(no_orderbook.best_bid)
+                        except Exception as e:
+                            print(f"Error fetching orderbook for {market_id}: {e}")
+                            # Fall back to market prices
+
+                    return {
+                        "market": {
+                            "market_id": market.market_id,
+                            "platform": plat_name,
+                            "title": market.title,
+                            "description": market.description,
+                            "image": image,
+                            "category": market.category,
+                            "yes_price": yes_price,
+                            "no_price": no_price,
+                            "volume_24h": str(market.volume_24h) if market.volume_24h else "0",
+                            "liquidity": str(market.liquidity) if market.liquidity else "0",
+                            "is_active": market.is_active,
+                            "close_time": market.close_time,
+                            "slug": market.event_id or market.market_id,
+                            "outcomes": ["Yes", "No"],
+                        }
+                    }
+            except Exception as e:
+                print(f"Error fetching {plat_name} market {market_id}: {e}")
+                continue
+
+        raise HTTPException(status_code=404, detail=f"Market not found: {market_id}")
 
     # Serve static webapp files if they exist
     webapp_dist = Path(__file__).parent.parent.parent / "webapp" / "dist"
