@@ -22,13 +22,21 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # Add marketing tracking columns to users table
-    op.add_column('users', sa.Column('cm_click_id', sa.String(255), nullable=True, index=True))
-    op.add_column('users', sa.Column('cm_registration_sent', sa.Boolean(), nullable=False, server_default='false'))
-    op.add_column('users', sa.Column('cm_qualification_sent', sa.Boolean(), nullable=False, server_default='false'))
-    op.add_column('users', sa.Column('cm_qualified_at', sa.DateTime(timezone=True), nullable=True))
+    # Note: Using execute for IF NOT EXISTS since alembic doesn't support it natively
+    conn = op.get_bind()
 
-    # Create index on cm_click_id
-    op.create_index('ix_users_cm_click_id', 'users', ['cm_click_id'])
+    # Add columns if they don't exist
+    conn.execute(sa.text("""
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS cm_click_id VARCHAR(255);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS cm_registration_sent BOOLEAN DEFAULT false NOT NULL;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS cm_qualification_sent BOOLEAN DEFAULT false NOT NULL;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS cm_qualified_at TIMESTAMP WITH TIME ZONE;
+    """))
+
+    # Create index if it doesn't exist
+    conn.execute(sa.text("""
+        CREATE INDEX IF NOT EXISTS ix_users_cm_click_id ON users (cm_click_id);
+    """))
 
 
 def downgrade() -> None:
