@@ -263,6 +263,22 @@ class Settings(BaseSettings):
     )
 
     # ===================
+    # Marketing Postback Configuration (CMAffS Attribution)
+    # ===================
+    postback_url: Optional[str] = Field(
+        default=None,
+        description="Base URL for marketing postbacks (e.g., https://cmaffs-postback.org/direct/)"
+    )
+    postback_adv_id: Optional[str] = Field(
+        default=None,
+        description="Advertiser ID assigned by marketing partner"
+    )
+    postback_min_qualification_amount: float = Field(
+        default=5.0,
+        description="Minimum trade amount in USD to trigger qualification postback"
+    )
+
+    # ===================
     # Virtuals ACP Configuration (Agent Commerce Protocol)
     # ===================
     acp_enabled: bool = Field(

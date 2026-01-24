@@ -260,12 +260,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Check for start parameter
     referral_code = None
     geo_verified = False
+    cm_click_id = None
+
     if context.args and len(context.args) > 0:
         arg = context.args[0]
         if arg.startswith("ref_"):
             referral_code = arg[4:]  # Remove "ref_" prefix
+        elif arg.startswith("cm_"):
+            cm_click_id = arg[3:]  # Remove "cm_" prefix - marketing click ID
         elif arg == "geo_verified":
             geo_verified = True
+        elif len(arg) > 8 and not arg.startswith("ref"):
+            # Assume longer parameters are click IDs (for flexibility)
+            # This allows direct click IDs without prefix
+            cm_click_id = arg
 
     user = await get_or_create_user(
         telegram_id=update.effective_user.id,
@@ -273,6 +281,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         first_name=update.effective_user.first_name,
         last_name=update.effective_user.last_name,
     )
+
+    # Process marketing click_id if provided
+    if cm_click_id:
+        from src.services.postback import store_click_id
+        await store_click_id(update.effective_user.id, cm_click_id)
 
     # Process referral code if provided
     referral_message = ""
@@ -5766,6 +5779,17 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
                 fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
                 fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
 
+                # Check for marketing qualification postback (first trade over $5)
+                try:
+                    from src.services.postback import check_and_send_qualification_postback
+                    await check_and_send_qualification_postback(
+                        telegram_id=telegram_id,
+                        trade_amount=amount,
+                        fee_amount=Decimal(fee_amount) if fee_amount else Decimal("0"),
+                    )
+                except Exception as pb_error:
+                    logger.debug("Postback check failed", error=str(pb_error))
+
                 text = f"""
 ✅ <b>Order Executed!</b>
 
@@ -6804,6 +6828,17 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
                 fee_amount = fee_result.get("fee", "0")
                 fee_display = format_usdc(fee_amount) if Decimal(fee_amount) > 0 else ""
                 fee_line = f"\n💸 Fee: {fee_display}" if fee_display else ""
+
+                # Check for marketing qualification postback (first trade over $5)
+                try:
+                    from src.services.postback import check_and_send_qualification_postback
+                    await check_and_send_qualification_postback(
+                        telegram_id=update.effective_user.id,
+                        trade_amount=amount,
+                        fee_amount=Decimal(fee_amount) if fee_amount else Decimal("0"),
+                    )
+                except Exception as pb_error:
+                    logger.debug("Postback check failed", error=str(pb_error))
 
                 text = f"""
 ✅ <b>Order Executed!</b>
@@ -9854,6 +9889,17 @@ async def handle_arb_amount(
                 token_amount=str(result.output_amount or quote.expected_output),
                 entry_price=str(quote.price),
             )
+
+            # Check for marketing qualification postback (first trade over $5)
+            try:
+                from src.services.postback import check_and_send_qualification_postback
+                await check_and_send_qualification_postback(
+                    telegram_id=telegram_id,
+                    trade_amount=amount,
+                    fee_amount=Decimal("0"),  # No fee tracking for arb trades yet
+                )
+            except Exception as pb_error:
+                logger.debug("Postback check failed", error=str(pb_error))
 
             # Show success
             output_amount = result.output_amount or quote.expected_output

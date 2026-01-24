@@ -124,6 +124,12 @@ class User(Base):
     partner_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("partners.id"), nullable=True, index=True)
     partner_group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)  # TG group where user was attributed
 
+    # Marketing attribution (cmaffs postback system)
+    cm_click_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)  # Click ID from marketing partner
+    cm_registration_sent: Mapped[bool] = mapped_column(Boolean, default=False)  # Registration postback sent
+    cm_qualification_sent: Mapped[bool] = mapped_column(Boolean, default=False)  # Qualification postback sent
+    cm_qualified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # First qualifying trade
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

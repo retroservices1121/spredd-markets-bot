@@ -106,6 +106,13 @@ async def post_shutdown(application: Application) -> None:
     except Exception as e:
         logger.warning("Dome API shutdown error", error=str(e))
 
+    # Close postback service
+    try:
+        from src.services.postback import postback_service
+        await postback_service.close()
+    except Exception as e:
+        logger.warning("Postback service shutdown error", error=str(e))
+
     # Close platforms
     await platform_registry.close()
 
@@ -289,6 +296,18 @@ async def run_bot() -> None:
         logger.info("Dome API client ready")
     except Exception as e:
         logger.warning("Dome API initialization failed (optional)", error=str(e))
+
+    # Initialize postback service (for marketing attribution)
+    logger.info("Initializing postback service...")
+    try:
+        from src.services.postback import postback_service
+        await postback_service.initialize()
+        if postback_service.is_enabled():
+            logger.info("Postback service ready")
+        else:
+            logger.info("Postback service disabled (POSTBACK_URL not configured)")
+    except Exception as e:
+        logger.warning("Postback service initialization failed (optional)", error=str(e))
 
     app = create_application()
 
