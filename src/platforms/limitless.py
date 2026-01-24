@@ -402,17 +402,35 @@ class LimitlessPlatform(BasePlatform):
         )
 
         # Extract prices
+        # Prefer tradePrices.buy.market (actual price you'd pay) over prices (last/mid price)
         yes_price = None
         no_price = None
 
-        prices = data.get("prices") or data.get("outcomePrices")
-        if prices:
-            if isinstance(prices, dict):
-                yes_price = Decimal(str(prices.get("yes", prices.get("0", 0.5))))
-                no_price = Decimal(str(prices.get("no", prices.get("1", 0.5))))
-            elif isinstance(prices, list) and len(prices) >= 2:
-                yes_price = Decimal(str(prices[0]))
-                no_price = Decimal(str(prices[1]))
+        # First try tradePrices which shows actual executable prices
+        trade_prices = data.get("tradePrices", {})
+        buy_market = trade_prices.get("buy", {}).get("market")
+        if buy_market and isinstance(buy_market, list) and len(buy_market) >= 2:
+            # buy.market = [YES price, NO price] - what you'd pay to buy each outcome
+            yes_buy = Decimal(str(buy_market[0]))
+            no_buy = Decimal(str(buy_market[1]))
+            # Only use if prices look valid (not 0 or 1 which indicate no liquidity)
+            if Decimal("0.01") < yes_buy < Decimal("0.99"):
+                yes_price = yes_buy
+                no_price = Decimal("1") - yes_price  # Calculate NO from YES for consistency
+            elif Decimal("0.01") < no_buy < Decimal("0.99"):
+                no_price = no_buy
+                yes_price = Decimal("1") - no_price
+
+        # Fall back to prices (last traded or mid-market price)
+        if yes_price is None:
+            prices = data.get("prices") or data.get("outcomePrices")
+            if prices:
+                if isinstance(prices, dict):
+                    yes_price = Decimal(str(prices.get("yes", prices.get("0", 0.5))))
+                    no_price = Decimal(str(prices.get("no", prices.get("1", 0.5))))
+                elif isinstance(prices, list) and len(prices) >= 2:
+                    yes_price = Decimal(str(prices[0]))
+                    no_price = Decimal(str(prices[1]))
 
         # If no prices, try lastPrice or default
         if yes_price is None:
