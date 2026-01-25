@@ -5678,6 +5678,35 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
             await query.edit_message_text("❌ Wallet not found. Please try again.")
             return
 
+        # For Polymarket, check if we need to swap native USDC to USDC.e before trading
+        if platform_enum == Platform.POLYMARKET:
+            from src.platforms.polymarket import polymarket_platform
+            native_balance, bridged_balance = polymarket_platform.get_usdc_balances(private_key.address)
+
+            # If not enough USDC.e but have native USDC, swap it
+            if bridged_balance < amount and native_balance >= amount:
+                await query.edit_message_text(
+                    f"💱 Swapping USDC → USDC.e for trading...\n\n"
+                    f"Amount: {native_balance:.2f} USDC",
+                    parse_mode=ParseMode.HTML,
+                )
+
+                success, swap_tx, swap_error = polymarket_platform.swap_native_to_bridged_usdc(
+                    private_key, native_balance
+                )
+
+                if not success:
+                    await query.edit_message_text(
+                        f"❌ <b>Swap Failed</b>\n\n{escape_html(swap_error or 'Unknown error')}",
+                        parse_mode=ParseMode.HTML,
+                    )
+                    return
+
+                await query.edit_message_text(
+                    f"✅ Swapped USDC → USDC.e\n\n⏳ Executing order...",
+                    parse_mode=ParseMode.HTML,
+                )
+
         # Get market title from quote data or fetch market
         # Prefer outcome_name or question for player props
         market_title = None
@@ -6729,6 +6758,35 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not private_key:
             await executing_msg.edit_text("❌ Wallet not found.")
             return
+
+        # For Polymarket, check if we need to swap native USDC to USDC.e before trading
+        if platform_enum == Platform.POLYMARKET:
+            from src.platforms.polymarket import polymarket_platform
+            native_balance, bridged_balance = polymarket_platform.get_usdc_balances(private_key.address)
+
+            # If not enough USDC.e but have native USDC, swap it
+            if bridged_balance < amount and native_balance >= amount:
+                await executing_msg.edit_text(
+                    f"💱 Swapping USDC → USDC.e for trading...\n\n"
+                    f"Amount: {native_balance:.2f} USDC",
+                    parse_mode=ParseMode.HTML,
+                )
+
+                success, swap_tx, swap_error = polymarket_platform.swap_native_to_bridged_usdc(
+                    private_key, native_balance
+                )
+
+                if not success:
+                    await executing_msg.edit_text(
+                        f"❌ <b>Swap Failed</b>\n\n{escape_html(swap_error or 'Unknown error')}",
+                        parse_mode=ParseMode.HTML,
+                    )
+                    return
+
+                await executing_msg.edit_text(
+                    f"✅ Swapped USDC → USDC.e\n\n⏳ Executing order...",
+                    parse_mode=ParseMode.HTML,
+                )
 
         # Get market title from quote data or fetch market
         # Prefer outcome_name or question for player props
