@@ -800,7 +800,25 @@ class PolymarketPlatform(BasePlatform):
         from datetime import datetime, timezone
 
         def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
-            """Check if a market has expired based on end date."""
+            """Check if a market has expired.
+
+            Prioritizes active/closed flags over endDate since events can be
+            postponed without updating the endDate in the API.
+            """
+            # First check explicit active/closed flags - these are authoritative
+            if market_data:
+                if market_data.get("active") is True and market_data.get("closed") is False:
+                    return False  # Explicitly active, trust API
+                if market_data.get("closed") is True:
+                    return True  # Explicitly closed
+
+            # Check event-level flags
+            if event_data.get("active") is True and event_data.get("closed") is False:
+                return False  # Explicitly active, trust API
+            if event_data.get("closed") is True:
+                return True  # Explicitly closed
+
+            # Fall back to endDate check only if flags are ambiguous
             end_date_str = None
             if market_data:
                 end_date_str = market_data.get("endDate") or market_data.get("endDateIso")
@@ -903,7 +921,25 @@ class PolymarketPlatform(BasePlatform):
         from datetime import datetime, timezone
 
         def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
-            """Check if a market has expired based on end date."""
+            """Check if a market has expired.
+
+            Prioritizes active/closed flags over endDate since events can be
+            postponed without updating the endDate in the API.
+            """
+            # First check explicit active/closed flags - these are authoritative
+            if market_data:
+                if market_data.get("active") is True and market_data.get("closed") is False:
+                    return False  # Explicitly active, trust API
+                if market_data.get("closed") is True:
+                    return True  # Explicitly closed
+
+            # Check event-level flags
+            if event_data.get("active") is True and event_data.get("closed") is False:
+                return False  # Explicitly active, trust API
+            if event_data.get("closed") is True:
+                return True  # Explicitly closed
+
+            # Fall back to endDate check only if flags are ambiguous
             end_date_str = None
             if market_data:
                 end_date_str = market_data.get("endDate") or market_data.get("endDateIso")
@@ -1083,7 +1119,25 @@ class PolymarketPlatform(BasePlatform):
             from datetime import datetime, timezone
 
             def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
-                """Check if a market has expired based on end date."""
+                """Check if a market has expired.
+
+                Prioritizes active/closed flags over endDate since events can be
+                postponed without updating the endDate in the API.
+                """
+                # First check explicit active/closed flags - these are authoritative
+                if market_data:
+                    if market_data.get("active") is True and market_data.get("closed") is False:
+                        return False  # Explicitly active, trust API
+                    if market_data.get("closed") is True:
+                        return True  # Explicitly closed
+
+                # Check event-level flags
+                if event_data.get("active") is True and event_data.get("closed") is False:
+                    return False  # Explicitly active, trust API
+                if event_data.get("closed") is True:
+                    return True  # Explicitly closed
+
+                # Fall back to endDate check only if flags are ambiguous
                 end_date_str = None
                 if market_data:
                     end_date_str = market_data.get("endDate") or market_data.get("endDateIso")
