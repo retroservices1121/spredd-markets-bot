@@ -483,8 +483,9 @@ class PolymarketPlatform(BasePlatform):
             if bridged_balance >= required_amount:
                 return True, f"USDC.e balance: {bridged_balance:.2f}", None
 
-            # Step 2: If not enough USDC.e but have native USDC on Polygon, swap it
-            if native_balance >= required_amount:
+            # Step 2: If combined balance is enough, swap native to USDC.e
+            total_polygon = native_balance + bridged_balance
+            if total_polygon >= required_amount and native_balance > Decimal("0.01"):
                 swap_amount = native_balance  # Swap all native USDC
                 message = f"Swapping {swap_amount:.2f} USDC → USDC.e..."
 

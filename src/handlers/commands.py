@@ -5682,9 +5682,10 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
         if platform_enum == Platform.POLYMARKET:
             from src.platforms.polymarket import polymarket_platform
             native_balance, bridged_balance = polymarket_platform.get_usdc_balances(private_key.address)
+            total_polygon = native_balance + bridged_balance
 
-            # If not enough USDC.e but have native USDC, swap it
-            if bridged_balance < amount and native_balance >= amount:
+            # If not enough USDC.e but combined balance is enough, swap native USDC
+            if bridged_balance < amount and total_polygon >= amount and native_balance > Decimal("0.01"):
                 await query.edit_message_text(
                     f"💱 Swapping USDC → USDC.e for trading...\n\n"
                     f"Amount: {native_balance:.2f} USDC",
@@ -6763,9 +6764,10 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
         if platform_enum == Platform.POLYMARKET:
             from src.platforms.polymarket import polymarket_platform
             native_balance, bridged_balance = polymarket_platform.get_usdc_balances(private_key.address)
+            total_polygon = native_balance + bridged_balance
 
-            # If not enough USDC.e but have native USDC, swap it
-            if bridged_balance < amount and native_balance >= amount:
+            # If not enough USDC.e but combined balance is enough, swap native USDC
+            if bridged_balance < amount and total_polygon >= amount and native_balance > Decimal("0.01"):
                 await executing_msg.edit_text(
                     f"💱 Swapping USDC → USDC.e for trading...\n\n"
                     f"Amount: {native_balance:.2f} USDC",
