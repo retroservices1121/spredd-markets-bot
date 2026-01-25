@@ -783,7 +783,8 @@ class PolymarketPlatform(BasePlatform):
             active_only: Only return active, non-closed markets
         """
         # Fetch more events than limit to account for multi-market events
-        fetch_limit = min(limit + 20, 100)
+        # Allow up to 1000 to include all trending markets
+        fetch_limit = min(limit + 50, 1000)
 
         params = {
             "limit": fetch_limit,
@@ -892,12 +893,14 @@ class PolymarketPlatform(BasePlatform):
         limit: int = 20,
     ) -> list[Market]:
         """Search markets by query."""
-        # Fetch events and filter by query
+        # Fetch events and filter by query - fetch up to 500 for better coverage
         try:
             data = await self._gamma_request("GET", "/events", params={
                 "active": "true",
                 "closed": "false",
-                "limit": 100,
+                "limit": 500,
+                "order": "volume24hr",
+                "ascending": "false",
             })
         except Exception as e:
             logger.error("Failed to fetch events for search", error=str(e))
@@ -1107,7 +1110,7 @@ class PolymarketPlatform(BasePlatform):
         try:
             # Fetch more events to filter locally by tag
             params = {
-                "limit": 200,  # Fetch many to find matching tags
+                "limit": 500,  # Fetch many to find matching tags
                 "active": "true",
                 "closed": "false",
                 "order": "volume24hr",
