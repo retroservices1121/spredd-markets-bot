@@ -728,12 +728,13 @@ class LimitlessPlatform(BasePlatform):
 
         return markets[:limit]
 
-    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
+    async def get_market(self, market_id: str, search_title: Optional[str] = None, include_closed: bool = False) -> Optional[Market]:
         """Get a specific market by ID (numeric) or slug.
 
         Args:
             market_id: The market ID (numeric) or slug
             search_title: Optional title to search for if direct lookup fails
+            include_closed: Accepted for API compatibility (not used - Limitless returns all markets)
 
         Note: Prefers fetching via get_markets() to get multi-outcome info.
         """

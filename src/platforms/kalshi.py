@@ -385,10 +385,10 @@ class KalshiPlatform(BasePlatform):
 
         return filtered[:limit]
     
-    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
+    async def get_market(self, market_id: str, search_title: Optional[str] = None, include_closed: bool = False) -> Optional[Market]:
         """Get a specific market by ticker.
 
-        Note: search_title is accepted for API compatibility but not used.
+        Note: search_title and include_closed are accepted for API compatibility but not used.
 
         First tries to find the market in the cache (which has multi-outcome info),
         then falls back to fetching directly from the API.

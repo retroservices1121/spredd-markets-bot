@@ -1001,10 +1001,11 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
     for pos in all_positions:
         try:
             # First check if we can find the market at all
+            # Use include_closed=True to find recently closed markets (not yet resolved)
             lookup_id = pos.event_id if pos.event_id else pos.market_id
-            market = await platform.get_market(lookup_id, search_title=pos.market_title)
+            market = await platform.get_market(lookup_id, search_title=pos.market_title, include_closed=True)
             if not market and pos.event_id:
-                market = await platform.get_market(pos.market_id, search_title=pos.market_title)
+                market = await platform.get_market(pos.market_id, search_title=pos.market_title, include_closed=True)
 
             if not market:
                 # Market not found - likely expired/delisted
@@ -1095,11 +1096,12 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         current_price = None
         try:
             # Try event_id (slug) first for Limitless, then fall back to market_id with title search
+            # Use include_closed=True to get prices for resolved/closed markets
             lookup_id = pos.event_id if pos.event_id else pos.market_id
-            market = await platform.get_market(lookup_id, search_title=pos.market_title)
+            market = await platform.get_market(lookup_id, search_title=pos.market_title, include_closed=True)
             if not market and pos.event_id:
                 # Fallback to numeric ID with title search if slug lookup failed
-                market = await platform.get_market(pos.market_id, search_title=pos.market_title)
+                market = await platform.get_market(pos.market_id, search_title=pos.market_title, include_closed=True)
             if market:
                 # Get the price for the outcome the user holds
                 if outcome_str == "YES":
@@ -1364,12 +1366,13 @@ async def pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             positions_count += 1
 
             # Fetch current price from platform - try event_id (slug) first for Limitless
+            # Use include_closed=True to get prices for closed/resolved markets
             current_price = None
             try:
                 lookup_id = pos.event_id if pos.event_id else pos.market_id
-                market = await platform.get_market(lookup_id, search_title=pos.market_title)
+                market = await platform.get_market(lookup_id, search_title=pos.market_title, include_closed=True)
                 if not market and pos.event_id:
-                    market = await platform.get_market(pos.market_id, search_title=pos.market_title)
+                    market = await platform.get_market(pos.market_id, search_title=pos.market_title, include_closed=True)
                 if market:
                     outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
                     if outcome_str == "YES":

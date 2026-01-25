@@ -260,12 +260,13 @@ class BasePlatform(ABC):
         pass
     
     @abstractmethod
-    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
+    async def get_market(self, market_id: str, search_title: Optional[str] = None, include_closed: bool = False) -> Optional[Market]:
         """Get a specific market by ID.
 
         Args:
             market_id: The market identifier
             search_title: Optional title hint for platforms that need it for lookup
+            include_closed: If True, also search closed/inactive markets (for position tracking)
         """
         pass
     

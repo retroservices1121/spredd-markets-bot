@@ -1002,21 +1002,29 @@ class PolymarketPlatform(BasePlatform):
 
         return markets[:limit]
     
-    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
+    async def get_market(self, market_id: str, search_title: Optional[str] = None, include_closed: bool = False) -> Optional[Market]:
         """Get a specific market by condition ID, event ID, or slug.
 
         Supports partial matching for truncated condition IDs (Telegram callback limit).
         Note: search_title is accepted for API compatibility but not used.
+
+        Args:
+            market_id: The market ID to look up
+            search_title: Not used (API compatibility)
+            include_closed: If True, also search closed/inactive markets (for position tracking)
         """
         try:
-            # Fetch events ordered by volume (same as get_markets) to maximize chance of finding
-            data = await self._gamma_request("GET", "/events", params={
-                "active": "true",
-                "closed": "false",
-                "limit": 200,  # Fetch more to increase coverage
+            # Build params - include closed markets for position P&L tracking
+            params = {
+                "limit": 200,
                 "order": "volume24hr",
                 "ascending": "false",
-            })
+            }
+            if not include_closed:
+                params["active"] = "true"
+                params["closed"] = "false"
+
+            data = await self._gamma_request("GET", "/events", params=params)
 
             for event in data if isinstance(data, list) else []:
                 # Check event-level condition ID (exact or partial match)

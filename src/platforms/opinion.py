@@ -378,10 +378,10 @@ class OpinionPlatform(BasePlatform):
                    (m.description and query_lower in m.description.lower())
             ][:limit]
 
-    async def get_market(self, market_id: str, search_title: Optional[str] = None) -> Optional[Market]:
+    async def get_market(self, market_id: str, search_title: Optional[str] = None, include_closed: bool = False) -> Optional[Market]:
         """Get a specific market by ID.
 
-        Note: search_title is accepted for API compatibility but not used.
+        Note: search_title and include_closed are accepted for API compatibility but not used.
         """
         try:
             # Opinion uses /openapi/market/{market_id} or /openapi/market?marketId=X
