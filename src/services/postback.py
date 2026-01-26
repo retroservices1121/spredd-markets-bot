@@ -4,7 +4,10 @@ Sends HTTP GET requests to marketing partner's postback URLs on conversion event
 
 Supported events:
 - Registration (conv_type=1): User starts the bot with a click_id
-- Qualification (conv_type=4): User completes first trade over $5
+- Trade/Qualification (conv_type=15): User completes first trade over $5
+
+Postback URL format:
+https://receiver.t3nzu.com/direct/?cm_cid={click_id}&adver_payout={payout}&conv_type={type}&adv_id=17
 """
 
 import asyncio
@@ -19,17 +22,17 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Conversion types
-CONV_TYPE_REGISTRATION = 1
-CONV_TYPE_QUALIFICATION = 4
+# Conversion types (t3nzu)
+CONV_TYPE_REGISTRATION = 1   # REG - user registration
+CONV_TYPE_TRADE = 15         # Trade - first qualifying trade
 
 
 class PostbackService:
     """
-    Service for sending marketing attribution postbacks.
+    Service for sending marketing attribution postbacks to t3nzu.
 
     Postback URL format:
-    https://cmaffs-postback.org/direct/?cm_cid={click_id}&adver_payout={payout}&conv_type={type}&adv_id={id}
+    https://receiver.t3nzu.com/direct/?cm_cid={click_id}&adver_payout={payout}&conv_type={type}&adv_id=17
     """
 
     def __init__(self):
@@ -89,13 +92,13 @@ class PostbackService:
             payout=payout,
         )
 
-    async def send_qualification_postback(
+    async def send_trade_postback(
         self,
         click_id: str,
         payout: Decimal,
     ) -> bool:
         """
-        Send qualification postback (conv_type=4).
+        Send trade postback (conv_type=15).
         Called when user completes their first qualifying trade (over $5).
 
         Args:
@@ -107,7 +110,7 @@ class PostbackService:
         """
         return await self._send_postback(
             click_id=click_id,
-            conv_type=CONV_TYPE_QUALIFICATION,
+            conv_type=CONV_TYPE_TRADE,
             payout=payout,
         )
 
@@ -122,7 +125,7 @@ class PostbackService:
 
         Args:
             click_id: Marketing click ID
-            conv_type: Conversion type (1=registration, 4=qualification)
+            conv_type: Conversion type (1=registration, 15=trade)
             payout: Payout amount in USD
 
         Returns:
@@ -141,7 +144,7 @@ class PostbackService:
 
         try:
             # Build the postback URL
-            # Format: https://cmaffs-postback.org/direct/?cm_cid={click_id}&adver_payout={payout}&conv_type={type}&adv_id={id}
+            # Format: https://receiver.t3nzu.com/direct/?cm_cid={click_id}&adver_payout={payout}&conv_type={type}&adv_id={id}
             params = {
                 "cm_cid": click_id,
                 "adver_payout": str(payout),
@@ -265,7 +268,7 @@ async def store_click_id(telegram_id: int, click_id: str) -> bool:
             return False
 
 
-async def check_and_send_qualification_postback(
+async def check_and_send_trade_postback(
     telegram_id: int,
     trade_amount: Decimal,
     fee_amount: Decimal,
@@ -312,13 +315,13 @@ async def check_and_send_qualification_postback(
 
             if user.cm_qualification_sent:
                 logger.debug(
-                    "Qualification postback already sent",
+                    "Trade postback already sent",
                     telegram_id=telegram_id,
                 )
                 return False
 
-            # Send qualification postback
-            success = await postback_service.send_qualification_postback(
+            # Send trade postback
+            success = await postback_service.send_trade_postback(
                 click_id=user.cm_click_id,
                 payout=fee_amount,
             )
@@ -329,7 +332,7 @@ async def check_and_send_qualification_postback(
                 await session.commit()
 
                 logger.info(
-                    "Qualification postback sent",
+                    "Trade postback sent",
                     telegram_id=telegram_id,
                     trade_amount=str(trade_amount),
                     fee_amount=str(fee_amount),
@@ -340,7 +343,7 @@ async def check_and_send_qualification_postback(
 
         except Exception as e:
             logger.error(
-                "Failed to check/send qualification postback",
+                "Failed to check/send trade postback",
                 telegram_id=telegram_id,
                 error=str(e),
             )

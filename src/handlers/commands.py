@@ -1138,6 +1138,14 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         # IMPORTANT: Use market_id (specific outcome) not event_id (group) for multi-outcome markets
         try:
             resolution = await platform.get_market_resolution(pos.market_id)
+            logger.debug(
+                "Position resolution check",
+                position_id=pos.id,
+                market_id=pos.market_id[:20],
+                is_resolved=resolution.is_resolved,
+                winning_outcome=resolution.winning_outcome,
+                position_outcome=outcome_str,
+            )
             if resolution.is_resolved:
                 # Show Redeem button for resolved markets
                 if resolution.winning_outcome and resolution.winning_outcome.upper() == outcome_str:
@@ -1167,7 +1175,8 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                         callback_data=f"sell:{pos.id}"
                     )
                 ])
-        except Exception:
+        except Exception as e:
+            logger.warning("Resolution check failed, defaulting to Sell", error=str(e), position_id=pos.id)
             # Default to Sell if we can't check resolution
             buttons.append([
                 InlineKeyboardButton(
@@ -5814,8 +5823,8 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
 
                 # Check for marketing qualification postback (first trade over $5)
                 try:
-                    from src.services.postback import check_and_send_qualification_postback
-                    await check_and_send_qualification_postback(
+                    from src.services.postback import check_and_send_trade_postback
+                    await check_and_send_trade_postback(
                         telegram_id=telegram_id,
                         trade_amount=amount,
                         fee_amount=Decimal(fee_amount) if fee_amount else Decimal("0"),
@@ -6894,8 +6903,8 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
 
                 # Check for marketing qualification postback (first trade over $5)
                 try:
-                    from src.services.postback import check_and_send_qualification_postback
-                    await check_and_send_qualification_postback(
+                    from src.services.postback import check_and_send_trade_postback
+                    await check_and_send_trade_postback(
                         telegram_id=update.effective_user.id,
                         trade_amount=amount,
                         fee_amount=Decimal(fee_amount) if fee_amount else Decimal("0"),
@@ -9955,8 +9964,8 @@ async def handle_arb_amount(
 
             # Check for marketing qualification postback (first trade over $5)
             try:
-                from src.services.postback import check_and_send_qualification_postback
-                await check_and_send_qualification_postback(
+                from src.services.postback import check_and_send_trade_postback
+                await check_and_send_trade_postback(
                     telegram_id=telegram_id,
                     trade_amount=amount,
                     fee_amount=Decimal("0"),  # No fee tracking for arb trades yet

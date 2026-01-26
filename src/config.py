@@ -263,19 +263,19 @@ class Settings(BaseSettings):
     )
 
     # ===================
-    # Marketing Postback Configuration (CMAffS Attribution)
+    # Marketing Postback Configuration (t3nzu Attribution)
     # ===================
     postback_url: Optional[str] = Field(
-        default=None,
-        description="Base URL for marketing postbacks (e.g., https://cmaffs-postback.org/direct/)"
+        default="https://receiver.t3nzu.com/direct/",
+        description="Base URL for marketing postbacks"
     )
     postback_adv_id: Optional[str] = Field(
-        default=None,
+        default="17",
         description="Advertiser ID assigned by marketing partner"
     )
     postback_min_qualification_amount: float = Field(
         default=5.0,
-        description="Minimum trade amount in USD to trigger qualification postback"
+        description="Minimum trade amount in USD to trigger trade postback"
     )
 
     # ===================
