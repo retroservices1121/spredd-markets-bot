@@ -1989,7 +1989,7 @@ class BridgeService:
                     input_amount=native_amount,
                     output_amount=output_amount,
                     fee_amount=total_fee_usd,
-                    fee_percent=float(total_fee_usd / (float(native_amount) * 2000) * 100) if native_amount > 0 else 0,  # Rough ETH price estimate
+                    fee_percent=float(total_fee_usd) / (float(native_amount) * 2000) * 100 if native_amount > 0 else 0,  # Rough ETH price estimate
                     estimated_time_seconds=execution_duration,
                     tool_name=tool_name,
                     quote_data=data,
