@@ -3255,7 +3255,7 @@ You haven't created your wallets yet.
                 bridge_service.initialize()
 
             # Check native balances on key chains
-            for chain in [BridgeChain.POLYGON, BridgeChain.BASE, BridgeChain.ABSTRACT, BridgeChain.BSC, BridgeChain.ARBITRUM]:
+            for chain in [BridgeChain.ETHEREUM, BridgeChain.POLYGON, BridgeChain.BASE, BridgeChain.ABSTRACT, BridgeChain.BSC, BridgeChain.ARBITRUM, BridgeChain.OPTIMISM]:
                 try:
                     native_bal = bridge_service.get_native_balance(chain, evm_wallet.public_key)
                     if native_bal >= Decimal("0"):
@@ -3287,11 +3287,13 @@ You haven't created your wallets yet.
         if native_balances:
             text += "\n<b>Gas Tokens:</b>\n"
             chain_emoji = {
+                BridgeChain.ETHEREUM: "⚪",
                 BridgeChain.POLYGON: "🟣",
                 BridgeChain.BASE: "🔵",
                 BridgeChain.ABSTRACT: "🌀",
                 BridgeChain.BSC: "🟡",
                 BridgeChain.ARBITRUM: "🔷",
+                BridgeChain.OPTIMISM: "🔴",
             }
             for chain, bal in native_balances.items():
                 symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "ETH")
@@ -3350,12 +3352,17 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
         # Get USDC balances on all chains
         balances = bridge_service.get_all_usdc_balances(evm_wallet.public_key)
 
-        # Get native token balances for swap options
+        # Get native token balances for swap and gas bridge options
+        # Include all chains that support swapping OR have valid gas bridge routes
         native_balances = {}
-        for chain in SWAP_SUPPORTED_CHAINS:
+        native_check_chains = set(SWAP_SUPPORTED_CHAINS) | {
+            BridgeChain.ETHEREUM,  # Can bridge ETH to Abstract/Linea
+            BridgeChain.OPTIMISM,  # Can bridge ETH to Abstract
+        }
+        for chain in native_check_chains:
             try:
                 native_bal = bridge_service.get_native_balance(chain, evm_wallet.public_key)
-                if native_bal > Decimal("0.001"):  # Only show if meaningful balance
+                if native_bal > Decimal("0.0001"):  # Only show if meaningful balance
                     native_balances[chain] = native_bal
             except Exception:
                 pass
