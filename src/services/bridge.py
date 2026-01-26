@@ -274,6 +274,61 @@ LIFI_USDC = {
 # USDT address for BSC (Opinion Labs uses USDT)
 LIFI_USDT_BSC = "0x55d398326f99059fF775485246999027B3197955"
 
+# Native token address (used for swaps)
+NATIVE_TOKEN = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+
+# Valid bridge routes - (source, dest) pairs that work with LI.FI
+# Based on actual LI.FI support - Abstract is only reachable from certain chains
+VALID_BRIDGE_ROUTES: set[tuple[BridgeChain, BridgeChain]] = {
+    # Standard CCTP/LI.FI routes
+    (BridgeChain.POLYGON, BridgeChain.BASE),
+    (BridgeChain.POLYGON, BridgeChain.ARBITRUM),
+    (BridgeChain.POLYGON, BridgeChain.OPTIMISM),
+    (BridgeChain.POLYGON, BridgeChain.ETHEREUM),
+    (BridgeChain.POLYGON, BridgeChain.SOLANA),
+    (BridgeChain.BASE, BridgeChain.POLYGON),
+    (BridgeChain.BASE, BridgeChain.ARBITRUM),
+    (BridgeChain.BASE, BridgeChain.OPTIMISM),
+    (BridgeChain.BASE, BridgeChain.ETHEREUM),
+    (BridgeChain.BASE, BridgeChain.SOLANA),
+    (BridgeChain.BASE, BridgeChain.ABSTRACT),  # Base → Abstract works via LI.FI
+    (BridgeChain.ARBITRUM, BridgeChain.POLYGON),
+    (BridgeChain.ARBITRUM, BridgeChain.BASE),
+    (BridgeChain.ARBITRUM, BridgeChain.OPTIMISM),
+    (BridgeChain.ARBITRUM, BridgeChain.ETHEREUM),
+    (BridgeChain.ETHEREUM, BridgeChain.POLYGON),
+    (BridgeChain.ETHEREUM, BridgeChain.BASE),
+    (BridgeChain.ETHEREUM, BridgeChain.ARBITRUM),
+    (BridgeChain.ETHEREUM, BridgeChain.OPTIMISM),
+    (BridgeChain.ETHEREUM, BridgeChain.ABSTRACT),  # ETH → Abstract
+    # BSC routes (USDT)
+    (BridgeChain.BSC, BridgeChain.POLYGON),
+    (BridgeChain.BSC, BridgeChain.BASE),
+    (BridgeChain.POLYGON, BridgeChain.BSC),
+    (BridgeChain.BASE, BridgeChain.BSC),
+}
+
+# Chains that support swapping native token to USDC
+SWAP_SUPPORTED_CHAINS = {
+    BridgeChain.POLYGON,  # POL → USDC
+    BridgeChain.BASE,     # ETH → USDC
+    BridgeChain.ARBITRUM, # ETH → USDC
+    BridgeChain.BSC,      # BNB → USDC/USDT
+}
+
+# Native token symbols per chain
+NATIVE_TOKEN_SYMBOLS = {
+    BridgeChain.POLYGON: "POL",
+    BridgeChain.BASE: "ETH",
+    BridgeChain.ARBITRUM: "ETH",
+    BridgeChain.BSC: "BNB",
+    BridgeChain.ETHEREUM: "ETH",
+    BridgeChain.OPTIMISM: "ETH",
+    BridgeChain.ABSTRACT: "ETH",
+    BridgeChain.LINEA: "ETH",
+    BridgeChain.MONAD: "MON",
+}
+
 
 # Type alias for progress callback
 # Callback receives (status_message: str, elapsed_seconds: int, estimated_total_seconds: int)
@@ -1762,6 +1817,307 @@ class BridgeService:
             return "relay"  # Default to fast bridge for EVM
         else:
             return "cctp"
+
+    def is_valid_bridge_route(self, source_chain: BridgeChain, dest_chain: BridgeChain) -> bool:
+        """Check if a bridge route is valid/supported."""
+        if source_chain == dest_chain:
+            return False
+        return (source_chain, dest_chain) in VALID_BRIDGE_ROUTES
+
+    def get_valid_source_chains(self, dest_chain: BridgeChain) -> list[BridgeChain]:
+        """Get list of valid source chains that can bridge to the destination."""
+        valid_sources = []
+        for source, dest in VALID_BRIDGE_ROUTES:
+            if dest == dest_chain:
+                valid_sources.append(source)
+        return valid_sources
+
+    def get_valid_dest_chains(self, source_chain: BridgeChain) -> list[BridgeChain]:
+        """Get list of valid destination chains from the source."""
+        valid_dests = []
+        for source, dest in VALID_BRIDGE_ROUTES:
+            if source == source_chain:
+                valid_dests.append(dest)
+        return valid_dests
+
+    def supports_swap(self, chain: BridgeChain) -> bool:
+        """Check if a chain supports native → USDC swap."""
+        return chain in SWAP_SUPPORTED_CHAINS
+
+    def get_swap_quote(
+        self,
+        chain: BridgeChain,
+        native_amount: Decimal,
+        wallet_address: str,
+    ) -> LiFiBridgeQuote:
+        """
+        Get quote for swapping native token to USDC on the same chain.
+
+        Args:
+            chain: Chain to swap on
+            native_amount: Amount of native token (in whole units, e.g., 0.5 ETH)
+            wallet_address: User's wallet address
+        """
+        import httpx
+
+        if chain not in SWAP_SUPPORTED_CHAINS:
+            return LiFiBridgeQuote(
+                input_amount=native_amount,
+                output_amount=Decimal(0),
+                fee_amount=Decimal(0),
+                fee_percent=0,
+                estimated_time_seconds=0,
+                tool_name="",
+                error=f"Swap not supported on {chain.value}"
+            )
+
+        try:
+            chain_id = LIFI_CHAIN_IDS[chain]
+            amount_raw = int(native_amount * Decimal(10**18))  # Native tokens have 18 decimals
+
+            # Get USDC address for output
+            to_token = LIFI_USDC.get(chain)
+            if not to_token:
+                return LiFiBridgeQuote(
+                    input_amount=native_amount,
+                    output_amount=Decimal(0),
+                    fee_amount=Decimal(0),
+                    fee_percent=0,
+                    estimated_time_seconds=0,
+                    tool_name="",
+                    error=f"USDC not configured for {chain.value}"
+                )
+
+            # Use BSC USDT if on BSC
+            to_decimals = 18 if chain == BridgeChain.BSC else 6
+            if chain == BridgeChain.BSC:
+                to_token = LIFI_USDT_BSC
+
+            url = "https://li.quest/v1/quote"
+            params = {
+                "fromChain": chain_id,
+                "toChain": chain_id,  # Same chain for swap
+                "fromToken": NATIVE_TOKEN,
+                "toToken": to_token,
+                "fromAmount": str(amount_raw),
+                "fromAddress": wallet_address,
+                "toAddress": wallet_address,
+                "slippage": "0.005",  # 0.5% slippage for same-chain swap
+            }
+
+            headers = {}
+            if settings.lifi_api_key:
+                headers["x-lifi-api-key"] = settings.lifi_api_key
+
+            with httpx.Client(timeout=30) as client:
+                resp = client.get(url, params=params, headers=headers)
+
+                if resp.status_code != 200:
+                    try:
+                        error_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                        error_msg = error_data.get("message", resp.text[:200])
+                    except Exception:
+                        error_msg = resp.text[:200]
+                    return LiFiBridgeQuote(
+                        input_amount=native_amount,
+                        output_amount=Decimal(0),
+                        fee_amount=Decimal(0),
+                        fee_percent=0,
+                        estimated_time_seconds=0,
+                        tool_name="",
+                        error=f"Quote failed: {error_msg}"
+                    )
+
+                data = resp.json()
+                estimate = data.get("estimate", {})
+                to_amount_raw = int(estimate.get("toAmount", "0"))
+                output_amount = Decimal(to_amount_raw) / Decimal(10**to_decimals)
+
+                # Calculate fees
+                fee_costs = estimate.get("feeCosts", [])
+                gas_costs = estimate.get("gasCosts", [])
+                total_fee_usd = Decimal(0)
+                for fee in fee_costs:
+                    total_fee_usd += Decimal(str(fee.get("amountUSD", "0")))
+                for gas in gas_costs:
+                    total_fee_usd += Decimal(str(gas.get("amountUSD", "0")))
+
+                tool_name = data.get("toolDetails", {}).get("name", "DEX")
+                execution_duration = estimate.get("executionDuration", 30)
+
+                native_symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
+                out_symbol = "USDT" if chain == BridgeChain.BSC else "USDC"
+
+                logger.info(
+                    "Swap quote received",
+                    tool=tool_name,
+                    input=f"{native_amount} {native_symbol}",
+                    output=f"{output_amount} {out_symbol}",
+                    chain=chain.value
+                )
+
+                return LiFiBridgeQuote(
+                    input_amount=native_amount,
+                    output_amount=output_amount,
+                    fee_amount=total_fee_usd,
+                    fee_percent=float(total_fee_usd / output_amount * 100) if output_amount > 0 else 0,
+                    estimated_time_seconds=execution_duration,
+                    tool_name=tool_name,
+                    quote_data=data,
+                )
+
+        except Exception as e:
+            logger.error("Failed to get swap quote", error=str(e))
+            return LiFiBridgeQuote(
+                input_amount=native_amount,
+                output_amount=Decimal(0),
+                fee_amount=Decimal(0),
+                fee_percent=0,
+                estimated_time_seconds=0,
+                tool_name="",
+                error=str(e)
+            )
+
+    def execute_swap(
+        self,
+        private_key: LocalAccount,
+        chain: BridgeChain,
+        native_amount: Decimal,
+        progress_callback: ProgressCallback = None,
+    ) -> BridgeResult:
+        """
+        Execute a native token → USDC swap on the same chain.
+
+        Args:
+            private_key: EVM account for signing
+            chain: Chain to swap on
+            native_amount: Amount of native token to swap
+            progress_callback: Optional progress callback
+        """
+        import httpx
+
+        if chain not in self._web3_clients:
+            return BridgeResult(
+                success=False,
+                source_chain=chain,
+                dest_chain=chain,
+                amount=native_amount,
+                error_message=f"Chain {chain.value} not configured"
+            )
+
+        try:
+            w3 = self._web3_clients[chain]
+            wallet = Web3.to_checksum_address(private_key.address)
+
+            if progress_callback:
+                progress_callback("💱 Getting swap quote...", 0, 60)
+
+            # Get quote
+            quote = self.get_swap_quote(chain, native_amount, wallet)
+            if quote.error:
+                return BridgeResult(
+                    success=False,
+                    source_chain=chain,
+                    dest_chain=chain,
+                    amount=native_amount,
+                    error_message=quote.error
+                )
+
+            if not quote.quote_data:
+                return BridgeResult(
+                    success=False,
+                    source_chain=chain,
+                    dest_chain=chain,
+                    amount=native_amount,
+                    error_message="No quote data received"
+                )
+
+            if progress_callback:
+                native_symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
+                progress_callback(f"📋 Swapping {native_amount} {native_symbol} → USDC", 10, 60)
+
+            # Extract transaction data
+            tx_request = quote.quote_data.get("transactionRequest", {})
+            if not tx_request:
+                return BridgeResult(
+                    success=False,
+                    source_chain=chain,
+                    dest_chain=chain,
+                    amount=native_amount,
+                    error_message="No transaction data in quote"
+                )
+
+            # Build and sign transaction
+            nonce = w3.eth.get_transaction_count(wallet, 'pending')
+            gas_price = int(w3.eth.gas_price * 1.2)
+
+            tx = {
+                "from": wallet,
+                "to": Web3.to_checksum_address(tx_request.get("to")),
+                "value": int(tx_request.get("value", "0"), 16) if isinstance(tx_request.get("value"), str) else int(tx_request.get("value", 0)),
+                "data": tx_request.get("data"),
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "chainId": LIFI_CHAIN_IDS[chain],
+            }
+
+            # Estimate gas
+            try:
+                gas_estimate = w3.eth.estimate_gas(tx)
+                tx["gas"] = int(gas_estimate * 1.3)
+            except Exception as e:
+                logger.warning("Gas estimation failed, using default", error=str(e))
+                tx["gas"] = 300000
+
+            if progress_callback:
+                progress_callback("✍️ Signing transaction...", 20, 60)
+
+            signed_tx = w3.eth.account.sign_transaction(tx, private_key.key)
+
+            if progress_callback:
+                progress_callback("🚀 Executing swap...", 30, 60)
+
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            tx_hash_hex = tx_hash.hex()
+
+            logger.info("Swap transaction sent", tx_hash=tx_hash_hex, chain=chain.value)
+
+            if progress_callback:
+                progress_callback("⏳ Waiting for confirmation...", 45, 60)
+
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+            if receipt["status"] != 1:
+                return BridgeResult(
+                    success=False,
+                    source_chain=chain,
+                    dest_chain=chain,
+                    amount=native_amount,
+                    burn_tx_hash=tx_hash_hex,
+                    error_message="Swap transaction failed"
+                )
+
+            if progress_callback:
+                progress_callback("✅ Swap complete!", 60, 60)
+
+            return BridgeResult(
+                success=True,
+                source_chain=chain,
+                dest_chain=chain,
+                amount=quote.output_amount,
+                burn_tx_hash=tx_hash_hex,
+            )
+
+        except Exception as e:
+            error_msg = str(e) if str(e) else type(e).__name__
+            logger.error(f"Swap failed: {error_msg}")
+            return BridgeResult(
+                success=False,
+                source_chain=chain,
+                dest_chain=chain,
+                amount=native_amount,
+                error_message=error_msg
+            )
 
 
 # Singleton instance
