@@ -1676,6 +1676,41 @@ def create_api_app() -> FastAPI:
     # Include API router
     app.include_router(router)
 
+    # Include real-time streaming router
+    from .realtime import router as realtime_router
+    app.include_router(realtime_router, prefix="/api")
+
+    # Real-time data lifecycle management
+    @app.on_event("startup")
+    async def startup_realtime():
+        """Start real-time data services on app startup."""
+        from src.services.polymarket_ws import polymarket_ws_manager
+        from src.services.price_poller import price_poller
+
+        # Start Polymarket WebSocket
+        try:
+            await polymarket_ws_manager.start()
+            print("[API] Polymarket WebSocket connected")
+        except Exception as e:
+            print(f"[API] Failed to start Polymarket WebSocket: {e}")
+
+        # Start price poller for other platforms
+        try:
+            await price_poller.start()
+            print("[API] Price poller started")
+        except Exception as e:
+            print(f"[API] Failed to start price poller: {e}")
+
+    @app.on_event("shutdown")
+    async def shutdown_realtime():
+        """Stop real-time data services on app shutdown."""
+        from src.services.polymarket_ws import polymarket_ws_manager
+        from src.services.price_poller import price_poller
+
+        await polymarket_ws_manager.stop()
+        await price_poller.stop()
+        print("[API] Real-time services stopped")
+
     # Health check
     @app.get("/health")
     async def health_check():

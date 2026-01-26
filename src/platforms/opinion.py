@@ -24,6 +24,7 @@ from src.platforms.base import (
     PlatformError,
     MarketNotFoundError,
     RateLimitError,
+    MarketResolution,
 )
 from src.utils.logging import get_logger
 
@@ -855,6 +856,63 @@ class OpinionPlatform(BasePlatform):
                 error_message=str(e),
                 explorer_url=None,
             )
+
+    async def get_market_resolution(self, market_id: str) -> MarketResolution:
+        """Check if market has resolved.
+
+        Opinion uses statusEnum field for resolution:
+        - "settled" or "resolved" = market has resolved
+        - "expired" = deadline passed
+        - The winning outcome can be in 'resolution' or 'winningOutcome' fields
+        """
+        try:
+            market = await self.get_market(market_id, include_closed=True)
+            if not market or not market.raw_data:
+                return MarketResolution(is_resolved=False, winning_outcome=None, resolution_time=None)
+
+            raw = market.raw_data
+
+            # Check status for resolution indicators
+            status_enum = str(raw.get("statusEnum", "")).lower()
+            status_num = raw.get("status")
+
+            # Market is resolved if status indicates settled/resolved/expired
+            resolved = status_enum in ("settled", "resolved", "expired") or status_num in (3, 4, 5)
+
+            if not resolved:
+                return MarketResolution(is_resolved=False, winning_outcome=None, resolution_time=None)
+
+            # Determine winning outcome
+            winning = None
+
+            # Check various fields for winning outcome
+            resolution = (
+                raw.get("resolution") or
+                raw.get("winningOutcome") or
+                raw.get("winning_outcome") or
+                raw.get("outcome")
+            )
+
+            if resolution is not None:
+                resolution_str = str(resolution).lower()
+                if resolution_str in ["yes", "0", "true", "y"]:
+                    winning = "yes"
+                elif resolution_str in ["no", "1", "false", "n"]:
+                    winning = "no"
+
+            # Also check winning_index if available
+            winning_index = raw.get("winning_index") or raw.get("winningIndex")
+            if winning_index is not None and winning is None:
+                winning = "yes" if winning_index == 0 else "no"
+
+            return MarketResolution(
+                is_resolved=True,
+                winning_outcome=winning,
+                resolution_time=raw.get("resolvedAt") or raw.get("settledAt"),
+            )
+        except Exception as e:
+            logger.warning("Failed to check market resolution", market_id=market_id, error=str(e))
+            return MarketResolution(is_resolved=False, winning_outcome=None, resolution_time=None)
 
 
 # Singleton instance

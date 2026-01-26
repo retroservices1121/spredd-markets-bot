@@ -235,6 +235,29 @@ class PolymarketPlatform(BasePlatform):
         if self._gamma_client:
             await self._gamma_client.aclose()
 
+    async def _get_live_price(self, token_id: str) -> Optional[dict]:
+        """
+        Get live price from WebSocket cache if available.
+
+        Returns dict with 'best_bid' and 'best_ask' Decimals, or None if not cached.
+        """
+        try:
+            from src.services.websocket_manager import price_cache
+
+            cached = await price_cache.get_price("polymarket", token_id)
+            if cached:
+                return {
+                    "best_bid": cached.best_bid,
+                    "best_ask": cached.best_ask,
+                    "last_trade_price": cached.last_trade_price,
+                }
+        except ImportError:
+            pass  # WebSocket service not available
+        except Exception as e:
+            logger.debug("Failed to get live price", token_id=token_id[:16], error=str(e))
+
+        return None
+
     def _switch_to_next_rpc(self) -> bool:
         """Switch to the next RPC in the fallback list. Returns True if switched, False if no more RPCs."""
         if len(self._rpc_urls) <= 1:
@@ -481,17 +504,28 @@ class PolymarketPlatform(BasePlatform):
 
             # Step 1: If already have enough USDC.e, good to go
             if bridged_balance >= required_amount:
+                logger.info("Step 1: Sufficient USDC.e, no swap needed", bridged=str(bridged_balance))
                 return True, f"USDC.e balance: {bridged_balance:.2f}", None
 
             # Step 2: If combined balance is enough, swap native to USDC.e
             total_polygon = native_balance + bridged_balance
+            logger.info(
+                "Step 2: Checking if swap needed",
+                total_polygon=str(total_polygon),
+                required=str(required_amount),
+                native_balance=str(native_balance),
+                condition_total=total_polygon >= required_amount,
+                condition_native=native_balance > Decimal("0.01"),
+            )
             if total_polygon >= required_amount and native_balance > Decimal("0.01"):
                 swap_amount = native_balance  # Swap all native USDC
+                logger.info("Step 2: Initiating swap", swap_amount=str(swap_amount))
                 message = f"Swapping {swap_amount:.2f} USDC → USDC.e..."
 
                 success, tx_hash, error = self.swap_native_to_bridged_usdc(
                     private_key, swap_amount
                 )
+                logger.info("Step 2: Swap result", success=success, tx_hash=tx_hash, error=error)
 
                 if success:
                     # Check new balance
@@ -1350,18 +1384,23 @@ class PolymarketPlatform(BasePlatform):
         if not token_id:
             raise PlatformError(f"Token not found for {outcome.value}", Platform.POLYMARKET)
 
+        # Try to get live price from WebSocket cache first
+        live_price = await self._get_live_price(token_id)
+
         # Get current price from orderbook (pass token_id for sells)
         orderbook = await self.get_orderbook(market_id, outcome, token_id=token_id)
-        
+
         if side == "buy":
-            # Buying - use ask price
-            price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+            # Buying - use ask price (prefer live WebSocket price if available)
+            price = live_price.get("best_ask") if live_price else None
+            price = price or orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
             expected_output = amount / price
             input_token = POLYMARKET_CONTRACTS["collateral"]
             output_token = token_id
         else:
-            # Selling - use bid price
-            price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+            # Selling - use bid price (prefer live WebSocket price if available)
+            price = live_price.get("best_bid") if live_price else None
+            price = price or orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
             expected_output = amount * price
             input_token = token_id
             output_token = POLYMARKET_CONTRACTS["collateral"]
@@ -1725,11 +1764,20 @@ class PolymarketPlatform(BasePlatform):
             raise PlatformError("Quote data missing", Platform.POLYMARKET)
 
         try:
+            logger.info(
+                "execute_trade: Starting",
+                side=quote.side,
+                input_amount=str(quote.input_amount),
+                market_id=quote.market_id[:20],
+            )
+
             # For BUY orders, ensure we have enough USDC.e (auto-swap from native USDC if needed)
             if quote.side == "buy":
+                logger.info("execute_trade: Checking USDC balance for buy order")
                 success, message, swap_tx = await self.ensure_usdc_balance(
                     private_key, quote.input_amount
                 )
+                logger.info("execute_trade: Balance check result", success=success, message=message, swap_tx=swap_tx)
                 if not success:
                     return TradeResult(
                         success=False,
@@ -1744,7 +1792,9 @@ class PolymarketPlatform(BasePlatform):
 
             # Ensure USDC.e and CTF are approved for Polymarket exchange contracts
             # This is now cached for repeat trades
+            logger.info("execute_trade: Ensuring exchange approvals")
             await self._ensure_exchange_approval(private_key)
+            logger.info("execute_trade: Approvals confirmed")
 
             # Import order types
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
