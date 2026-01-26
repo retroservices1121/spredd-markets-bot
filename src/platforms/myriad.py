@@ -430,6 +430,62 @@ class MyriadPlatform(BasePlatform):
         return await self.get_markets(limit=limit, active_only=True)
 
     # ===================
+    # Categories
+    # ===================
+
+    def get_available_categories(self) -> list[dict]:
+        """Get list of available market categories (topics).
+
+        Returns list of dicts with 'id', 'label', and 'emoji' keys.
+        """
+        return [
+            {"id": "Sports", "label": "Sports", "emoji": "🏆"},
+            {"id": "Politics", "label": "Politics", "emoji": "🏛️"},
+            {"id": "Crypto", "label": "Crypto", "emoji": "🪙"},
+            {"id": "Economy", "label": "Economy", "emoji": "📈"},
+            {"id": "Culture", "label": "Culture", "emoji": "🎭"},
+            {"id": "Sentiment", "label": "Sentiment", "emoji": "💭"},
+        ]
+
+    async def get_markets_by_category(
+        self,
+        category: str,
+        limit: int = 20,
+    ) -> list[Market]:
+        """Get markets filtered by category (topic).
+
+        Args:
+            category: Topic name (e.g., 'Sports', 'Politics', 'Crypto')
+            limit: Maximum number of markets to return
+        """
+        params = {
+            "topics": category,  # API uses 'topics' (plural)
+            "limit": min(limit, 100),
+            "sort": "volume_24h",
+            "order": "desc",
+            "state": "open",
+            "network_id": self._network_id,
+        }
+
+        try:
+            data = await self._api_request("GET", "/markets", params=params)
+
+            markets = []
+            items = data.get("data", data.get("markets", []))
+
+            for item in items:
+                try:
+                    markets.append(self._parse_market(item))
+                except Exception as e:
+                    logger.warning("Failed to parse market", error=str(e))
+
+            return markets
+
+        except Exception as e:
+            logger.error("Failed to get markets by category", category=category, error=str(e))
+            return []
+
+    # ===================
     # Order Book
     # ===================
 
