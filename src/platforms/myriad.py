@@ -384,23 +384,44 @@ class MyriadPlatform(BasePlatform):
         search_title: Optional[str] = None,
         include_closed: bool = False,
     ) -> Optional[Market]:
-        """Get a specific market by ID or slug."""
+        """Get a specific market by ID or slug.
+
+        Note: Myriad API uses slugs for single market lookups, not numeric IDs.
+        The market_id parameter can be either the slug (preferred) or numeric ID.
+        """
+        # First try as slug (more likely to work)
         try:
-            # Try by ID with network_id
-            params = {"network_id": self._network_id}
-            data = await self._api_request("GET", f"/markets/{market_id}", params=params)
+            data = await self._api_request("GET", f"/markets/{market_id}")
             return self._parse_market(data)
         except MarketNotFoundError:
             pass
         except Exception as e:
-            logger.debug("Market lookup by ID failed", market_id=market_id, error=str(e))
+            logger.debug("Market lookup as slug failed", market_id=market_id, error=str(e))
 
-        # Try by slug (no network_id needed)
-        try:
-            data = await self._api_request("GET", f"/markets/{market_id}")
-            return self._parse_market(data)
-        except Exception as e:
-            logger.debug("Market lookup by slug failed", market_id=market_id, error=str(e))
+        # If market_id looks like a number, search for it in the market list
+        if market_id.isdigit():
+            try:
+                # Fetch markets and find by numeric ID
+                params = {"state": "open" if not include_closed else None, "limit": 100}
+                params = {k: v for k, v in params.items() if v is not None}
+                data = await self._api_request("GET", "/markets", params=params)
+
+                items = data.get("data", data.get("markets", []))
+                for item in items:
+                    if str(item.get("id")) == market_id:
+                        return self._parse_market(item)
+
+                # Also check closed markets if needed
+                if include_closed:
+                    params["state"] = "closed"
+                    data = await self._api_request("GET", "/markets", params=params)
+                    items = data.get("data", data.get("markets", []))
+                    for item in items:
+                        if str(item.get("id")) == market_id:
+                            return self._parse_market(item)
+
+            except Exception as e:
+                logger.debug("Market search by numeric ID failed", market_id=market_id, error=str(e))
 
         return None
 
@@ -470,10 +491,14 @@ class MyriadPlatform(BasePlatform):
         # Determine outcome ID (0=YES, 1=NO)
         outcome_id = 0 if outcome == Outcome.YES else 1
 
-        # Build quote request
+        # Get market slug from raw_data (API requires slug, not numeric ID)
+        market_slug = market.raw_data.get("slug") or market.event_id
+        if not market_slug:
+            raise PlatformError(f"Market {market_id} has no slug", Platform.MYRIAD)
+
+        # Build quote request - API uses market_slug, not market_id
         quote_request = {
-            "market_id": int(market_id),
-            "network_id": network_id,
+            "market_slug": market_slug,
             "outcome_id": outcome_id,
             "action": side,  # "buy" or "sell"
             "slippage": 0.01,  # 1% slippage

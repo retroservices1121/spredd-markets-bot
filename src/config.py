@@ -133,7 +133,7 @@ class Settings(BaseSettings):
         description="Platform fee in basis points (200 = 2%)"
     )
 
-    # EVM Fee Collection (Polymarket/Opinion/Limitless)
+    # EVM Fee Collection (Polymarket/Opinion/Limitless/Myriad)
     evm_fee_account: Optional[str] = Field(
         default=None,
         description="EVM wallet address to receive platform fees"

@@ -443,7 +443,7 @@ async def get_wallet_address(
 
 @router.get("/markets")
 async def get_all_markets(
-    platform: Optional[str] = Query(default="all", description="Platform filter: all, polymarket, kalshi, opinion, limitless"),
+    platform: Optional[str] = Query(default="all", description="Platform filter: all, polymarket, kalshi, opinion, limitless, myriad"),
     limit: int = Query(default=100, le=300),
     active: bool = Query(default=True),
 ):
@@ -456,7 +456,7 @@ async def get_all_markets(
     if platform and platform.lower() != "all":
         platforms_to_fetch = [platform.lower()]
     else:
-        platforms_to_fetch = ["kalshi", "polymarket", "limitless"]  # Opinion requires auth
+        platforms_to_fetch = ["kalshi", "polymarket", "limitless", "myriad"]  # Opinion requires auth
 
     for plat in platforms_to_fetch:
         try:
@@ -1480,7 +1480,7 @@ async def check_geo_status(
                         html += '<h2>🚫 Access Restricted</h2>';
                         html += '<p>Your location is restricted from accessing Kalshi due to regulatory requirements.</p>';
                         html += '</div>';
-                        html += '<p class="note">You can still use Polymarket, Opinion, and Limitless.</p>';
+                        html += '<p class="note">You can still use Polymarket, Opinion, Limitless, and Myriad.</p>';
                     }} else {{
                         html += '<div class="status-box allowed">';
                         html += '<h2>✅ Access Granted</h2>';
@@ -1621,7 +1621,7 @@ async def verify_geo_location(
     if is_blocked:
         blocked_msg = f"""
         <p style="color: #ff6b6b;">⚠️ Note: Access to Kalshi is restricted in {country_name}.</p>
-        <p>You can still use other platforms like Polymarket, Opinion, and Limitless.</p>
+        <p>You can still use other platforms like Polymarket, Opinion, Limitless, and Myriad.</p>
         """
 
     # Build redirect URL back to Telegram
@@ -1787,7 +1787,7 @@ def create_api_app() -> FastAPI:
         from ..platforms.base import Outcome
 
         # Try to find the market across all platforms
-        for plat_name in ["polymarket", "kalshi", "limitless"]:
+        for plat_name in ["polymarket", "kalshi", "limitless", "myriad"]:
             try:
                 platform_instance = platform_registry.get(Platform(plat_name))
                 if not platform_instance:

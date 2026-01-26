@@ -23,7 +23,7 @@ class JobType(str, Enum):
 # ===================
 EXECUTE_TRADE_SCHEMA = {
     "name": "execute_trade",
-    "description": "Execute a prediction market trade on any supported platform (Kalshi, Polymarket, Opinion Labs, Limitless)",
+    "description": "Execute a prediction market trade on any supported platform (Kalshi, Polymarket, Opinion Labs, Limitless, Myriad)",
     "price_usdc": 0.01,  # Minimum, actual is 0.5% of trade
     "price_type": "percentage",  # 0.5% of trade amount
     "price_percentage": 0.5,
@@ -33,7 +33,7 @@ EXECUTE_TRADE_SCHEMA = {
         "properties": {
             "platform": {
                 "type": "string",
-                "enum": ["kalshi", "polymarket", "opinion", "limitless"],
+                "enum": ["kalshi", "polymarket", "opinion", "limitless", "myriad"],
                 "description": "Target prediction market platform"
             },
             "market_id": {
@@ -114,7 +114,7 @@ GET_QUOTE_SCHEMA = {
         "properties": {
             "platform": {
                 "type": "string",
-                "enum": ["kalshi", "polymarket", "opinion", "limitless"],
+                "enum": ["kalshi", "polymarket", "opinion", "limitless", "myriad"],
                 "description": "Target prediction market platform"
             },
             "market_id": {

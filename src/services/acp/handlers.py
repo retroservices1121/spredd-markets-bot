@@ -226,7 +226,7 @@ class ACPJobHandler:
                 except ValueError:
                     continue
         else:
-            platforms = [Platform.KALSHI, Platform.POLYMARKET, Platform.OPINION, Platform.LIMITLESS]
+            platforms = [Platform.KALSHI, Platform.POLYMARKET, Platform.OPINION, Platform.LIMITLESS, Platform.MYRIAD]
 
         all_markets = []
 

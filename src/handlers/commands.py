@@ -317,7 +317,7 @@ Your location has been verified as: <b>{country_name}</b>
 
 Unfortunately, Kalshi is not available in your region due to regulatory restrictions.
 
-You can still trade on other platforms like Polymarket, Opinion, and Limitless.
+You can still trade on other platforms like Polymarket, Opinion, Limitless, and Myriad.
 """
         else:
             text = f"""
@@ -668,7 +668,7 @@ Type /cancel to cancel.
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)
+<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)
 <code>{}</code>
 
 <i>Tap address to copy. Send funds to deposit.</i>
@@ -717,9 +717,9 @@ Type /cancel to cancel.
             text += f"  • {bal.formatted}\n"
         text += "\n"
 
-    # EVM wallet (for Polymarket, Opinion & Monad)
+    # EVM wallet (for Polymarket, Opinion, Limitless & Myriad)
     if evm_wallet:
-        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)\n"
+        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
         for bal in balances.get(ChainFamily.EVM, []):
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
@@ -1778,7 +1778,7 @@ Earn commissions when your referrals trade!
 ├ Claimable: <b>{solana_claimable}</b> USDC
 └ Total Earned: <b>{solana_earned}</b> USDC
 
-<b>🔷 EVM (Polymarket/Opinion/Limitless)</b>
+<b>🔷 EVM (Polymarket/Opinion/Limitless/Myriad)</b>
 ├ Claimable: <b>{evm_claimable}</b> USDC
 └ Total Earned: <b>{evm_earned}</b> USDC
 
@@ -3208,7 +3208,7 @@ You haven't created your wallets yet.
         text += "\n"
 
     if evm_wallet:
-        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)\n"
+        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
         for bal in balances.get(ChainFamily.EVM, []):
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
@@ -4653,7 +4653,7 @@ Before proceeding, make sure to:
 
 You'll create PIN-protected wallets for:
 • <b>Solana</b> (for Kalshi trading)
-• <b>EVM</b> (for Polymarket & Opinion)
+• <b>EVM</b> (for Polymarket, Opinion, Limitless & Myriad)
 
 Your PIN ensures only YOU can sign transactions.
 
@@ -5543,7 +5543,7 @@ Earn commissions when your referrals trade!
 ├ Claimable: <b>{solana_claimable}</b> USDC
 └ Total Earned: <b>{solana_earned}</b> USDC
 
-<b>🔷 EVM (Polymarket/Opinion/Limitless)</b>
+<b>🔷 EVM (Polymarket/Opinion/Limitless/Myriad)</b>
 ├ Claimable: <b>{evm_claimable}</b> USDC
 └ Total Earned: <b>{evm_earned}</b> USDC
 
@@ -7271,7 +7271,7 @@ Your wallets are protected with your PIN.
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)
+<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)
 <code>{}</code>
 
 ⚠️ <b>Important:</b>
@@ -7627,7 +7627,7 @@ async def handle_wallet_reset_with_pin(update: Update, context: ContextTypes.DEF
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)
+<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)
 <code>{}</code>
 
 🔐 <b>Export PIN set!</b>
@@ -7731,7 +7731,7 @@ async def handle_new_wallet_with_pin(update: Update, context: ContextTypes.DEFAU
 <b>🟣 Solana</b> (Kalshi)
 <code>{}</code>
 
-<b>🔷 EVM</b> (Polymarket + Opinion + Limitless)
+<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)
 <code>{}</code>
 
 🔐 <b>Export PIN set!</b>
@@ -9510,7 +9510,7 @@ async def setalert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "<code>/setalert [platform] [market_id] [yes/no] [above/below] [price]</code>\n\n"
             "<b>Example:</b>\n"
             "<code>/setalert polymarket abc123 yes above 0.75</code>\n\n"
-            "<b>Platforms:</b> polymarket, kalshi, limitless, opinion",
+            "<b>Platforms:</b> polymarket, kalshi, limitless, opinion, myriad",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -9523,8 +9523,8 @@ async def setalert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         target_price = Decimal(args[4])
 
         # Validate inputs
-        if platform_str not in ["polymarket", "kalshi", "limitless", "opinion"]:
-            await update.message.reply_text("❌ Invalid platform. Use: polymarket, kalshi, limitless, opinion")
+        if platform_str not in ["polymarket", "kalshi", "limitless", "opinion", "myriad"]:
+            await update.message.reply_text("❌ Invalid platform. Use: polymarket, kalshi, limitless, opinion, myriad")
             return
 
         if outcome not in ["yes", "no"]:
@@ -9698,7 +9698,7 @@ async def handle_arbitrage_callback(query, action: str, telegram_id: int) -> Non
                 "📊 <b>Arbitrage Scan Complete</b>\n\n"
                 "No significant arbitrage opportunities found right now.\n\n"
                 "We check for price differences of 3¢ or more between:\n"
-                "• Polymarket\n• Kalshi\n• Limitless\n• Opinion Labs",
+                "• Polymarket\n• Kalshi\n• Limitless\n• Opinion Labs\n• Myriad",
                 parse_mode=ParseMode.HTML,
             )
         else:
@@ -9708,6 +9708,7 @@ async def handle_arbitrage_callback(query, action: str, telegram_id: int) -> Non
                 Platform.KALSHI: "Kalshi",
                 Platform.LIMITLESS: "Limitless",
                 Platform.OPINION: "Opinion",
+                Platform.MYRIAD: "Myriad",
             }
 
             text = f"⚡ <b>Found {len(opportunities)} Opportunities!</b>\n\n"

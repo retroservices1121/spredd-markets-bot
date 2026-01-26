@@ -10,7 +10,7 @@ Fee Structure:
 
 Chain-Specific Tracking:
 - Kalshi (Solana): Fees tracked as Solana USDC
-- Polymarket/Opinion/Limitless (EVM): Fees tracked as EVM USDC
+- Polymarket/Opinion/Limitless/Myriad (EVM): Fees tracked as EVM USDC
 """
 
 from decimal import Decimal, ROUND_DOWN

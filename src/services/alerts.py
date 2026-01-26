@@ -255,8 +255,8 @@ Platform: {alert.platform.value.title()}
 
     async def find_arbitrage_opportunities(self) -> list[ArbitrageOpportunity]:
         """
-        Find arbitrage opportunities across all 4 platforms:
-        Polymarket, Kalshi, Limitless, and Opinion Labs.
+        Find arbitrage opportunities across all 5 platforms:
+        Polymarket, Kalshi, Limitless, Opinion Labs, and Myriad.
         Compares YES prices for matching markets.
         """
         opportunities = []
@@ -267,6 +267,7 @@ Platform: {alert.platform.value.title()}
             from src.platforms.kalshi import kalshi_platform
             from src.platforms.limitless import limitless_platform
             from src.platforms.opinion import opinion_platform
+            from src.platforms.myriad import myriad_platform
 
             # Fetch all markets in parallel
             results = await asyncio.gather(
@@ -274,6 +275,7 @@ Platform: {alert.platform.value.title()}
                 kalshi_platform.get_markets(limit=50, active_only=True),
                 limitless_platform.get_markets(limit=50, active_only=True),
                 opinion_platform.get_markets(limit=50, active_only=True),
+                myriad_platform.get_markets(limit=50, active_only=True),
                 return_exceptions=True,
             )
 
@@ -283,9 +285,10 @@ Platform: {alert.platform.value.title()}
                 Platform.KALSHI: [],
                 Platform.LIMITLESS: [],
                 Platform.OPINION: [],
+                Platform.MYRIAD: [],
             }
 
-            platforms_list = [Platform.POLYMARKET, Platform.KALSHI, Platform.LIMITLESS, Platform.OPINION]
+            platforms_list = [Platform.POLYMARKET, Platform.KALSHI, Platform.LIMITLESS, Platform.OPINION, Platform.MYRIAD]
 
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
