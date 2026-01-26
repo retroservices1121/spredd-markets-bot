@@ -1955,6 +1955,23 @@ Select which prediction market you want to trade on:
                 # swap:confirm - user confirmed the swap (quote stored in user_data)
                 await handle_native_swap_confirm(query, update.effective_user.id, context)
 
+        elif action == "gas_bridge":
+            # Native token bridging (ETH/POL between chains)
+            # Format: gas_bridge:source:{chain}, gas_bridge:dest:{source}:{dest},
+            #         gas_bridge:amount:{source}:{dest}:{percent}, gas_bridge:confirm
+            if parts[1] == "source":
+                # gas_bridge:source:base - user wants to bridge from this chain
+                await handle_gas_bridge_source(query, parts[2], update.effective_user.id, context)
+            elif parts[1] == "dest":
+                # gas_bridge:dest:{source}:{dest} - user selected destination
+                await handle_gas_bridge_dest(query, parts[2], parts[3], update.effective_user.id, context)
+            elif parts[1] == "amount":
+                # gas_bridge:amount:{source}:{dest}:{percent}
+                await handle_gas_bridge_amount(query, parts[2], parts[3], int(parts[4]), update.effective_user.id, context)
+            elif parts[1] == "confirm":
+                # gas_bridge:confirm - execute the bridge
+                await handle_gas_bridge_confirm(query, update.effective_user.id, context)
+
         elif action == "export":
             await handle_export_key(query, parts[1], update.effective_user.id, context)
 
@@ -3443,6 +3460,35 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
         else:
             text += "<i>No native tokens to swap</i>\n"
 
+        # === BRIDGE GAS SECTION ===
+        text += "\n<b>⛽ Bridge Gas Tokens</b>\n"
+        text += "<i>Bridge ETH/POL between chains for gas fees</i>\n"
+
+        gas_bridge_buttons = []
+
+        # Check each chain with native balance for valid bridge destinations
+        for source_chain, native_bal in native_balances.items():
+            if native_bal < Decimal("0.001"):  # Skip tiny balances
+                continue
+
+            # Get valid destinations for this source
+            valid_dests = bridge_service.get_valid_native_dest_chains(source_chain)
+            if valid_dests:
+                symbol = NATIVE_TOKEN_SYMBOLS.get(source_chain, "TOKEN")
+                emoji = chain_emoji.get(source_chain, "🔹")
+                # Show button to select destination
+                gas_bridge_buttons.append([
+                    InlineKeyboardButton(
+                        f"⛽ Bridge {symbol} from {source_chain.value.title()} ({float(native_bal):.4f})",
+                        callback_data=f"gas_bridge:source:{source_chain.value}"
+                    )
+                ])
+
+        if gas_bridge_buttons:
+            buttons.extend(gas_bridge_buttons)
+        else:
+            text += "<i>No gas tokens available to bridge</i>\n"
+
         # Solana wallet hint
         if not solana_wallet:
             text += "\n<i>💡 Create a Solana wallet in /wallet to bridge to Kalshi</i>\n"
@@ -3972,6 +4018,408 @@ async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTy
         logger.error("Native swap failed", error=str(e))
         await query.edit_message_text(
             f"❌ Swap failed: {friendly_error(str(e))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+
+
+async def handle_gas_bridge_source(query, source_chain_str: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle gas bridge source selection - show valid destination chains."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS
+
+        # Initialize bridge service if needed
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        # Parse source chain
+        try:
+            source_chain = BridgeChain(source_chain_str.lower())
+        except ValueError:
+            await query.edit_message_text(f"❌ Invalid chain: {source_chain_str}")
+            return
+
+        # Get user's EVM wallet
+        from src.db.database import get_user_wallets
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        # Get native balance
+        native_balance = bridge_service.get_native_balance(source_chain, evm_wallet.public_key)
+        native_symbol = NATIVE_TOKEN_SYMBOLS.get(source_chain, "TOKEN")
+
+        # Get valid destinations
+        valid_dests = bridge_service.get_valid_native_dest_chains(source_chain)
+
+        if not valid_dests:
+            await query.edit_message_text(
+                f"❌ No valid bridge destinations from {source_chain.value.title()}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        chain_emoji = {
+            BridgeChain.POLYGON: "🟣",
+            BridgeChain.BASE: "🔵",
+            BridgeChain.ABSTRACT: "🌀",
+            BridgeChain.BSC: "🟡",
+            BridgeChain.ARBITRUM: "🔷",
+            BridgeChain.ETHEREUM: "⚪",
+            BridgeChain.OPTIMISM: "🔴",
+            BridgeChain.LINEA: "🔷",
+        }
+
+        text = f"⛽ <b>Bridge {native_symbol} from {source_chain.value.title()}</b>\n\n"
+        text += f"Balance: {float(native_balance):.6f} {native_symbol}\n\n"
+        text += "Select destination chain:"
+
+        buttons = []
+        for dest in valid_dests:
+            dest_symbol = NATIVE_TOKEN_SYMBOLS.get(dest, "TOKEN")
+            emoji = chain_emoji.get(dest, "🔹")
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{emoji} → {dest.value.title()} (receive {dest_symbol})",
+                    callback_data=f"gas_bridge:dest:{source_chain.value}:{dest.value}"
+                )
+            ])
+
+        buttons.append([InlineKeyboardButton("« Back", callback_data="wallet:bridge")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to show gas bridge destinations", error=str(e))
+        await query.edit_message_text(
+            f"❌ Error: {friendly_error(str(e))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+
+
+async def handle_gas_bridge_dest(query, source_chain_str: str, dest_chain_str: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle gas bridge destination selection - show amount options."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS
+
+        # Initialize bridge service if needed
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        # Parse chains
+        try:
+            source_chain = BridgeChain(source_chain_str.lower())
+            dest_chain = BridgeChain(dest_chain_str.lower())
+        except ValueError:
+            await query.edit_message_text(f"❌ Invalid chain")
+            return
+
+        # Get user's EVM wallet
+        from src.db.database import get_user_wallets
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        # Get native balance
+        native_balance = bridge_service.get_native_balance(source_chain, evm_wallet.public_key)
+        source_symbol = NATIVE_TOKEN_SYMBOLS.get(source_chain, "TOKEN")
+        dest_symbol = NATIVE_TOKEN_SYMBOLS.get(dest_chain, "TOKEN")
+
+        text = f"⛽ <b>Bridge {source_symbol} → {dest_chain.value.title()}</b>\n\n"
+        text += f"From: {source_chain.value.title()}\n"
+        text += f"To: {dest_chain.value.title()}\n"
+        text += f"Balance: {float(native_balance):.6f} {source_symbol}\n\n"
+        text += "Select amount to bridge:"
+
+        # Amount buttons
+        buttons = [
+            [
+                InlineKeyboardButton("25%", callback_data=f"gas_bridge:amount:{source_chain.value}:{dest_chain.value}:25"),
+                InlineKeyboardButton("50%", callback_data=f"gas_bridge:amount:{source_chain.value}:{dest_chain.value}:50"),
+            ],
+            [
+                InlineKeyboardButton("75%", callback_data=f"gas_bridge:amount:{source_chain.value}:{dest_chain.value}:75"),
+                InlineKeyboardButton("90%", callback_data=f"gas_bridge:amount:{source_chain.value}:{dest_chain.value}:90"),
+            ],
+            [InlineKeyboardButton("« Back", callback_data=f"gas_bridge:source:{source_chain.value}")],
+        ]
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to show gas bridge amount options", error=str(e))
+        await query.edit_message_text(
+            f"❌ Error: {friendly_error(str(e))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+
+
+async def handle_gas_bridge_amount(query, source_chain_str: str, dest_chain_str: str, percent: int, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle gas bridge amount selection - get quote and show confirmation."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS
+
+        # Initialize bridge service if needed
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        # Parse chains
+        try:
+            source_chain = BridgeChain(source_chain_str.lower())
+            dest_chain = BridgeChain(dest_chain_str.lower())
+        except ValueError:
+            await query.edit_message_text(f"❌ Invalid chain")
+            return
+
+        # Get user's EVM wallet
+        from src.db.database import get_user_wallets
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        # Get native balance and calculate bridge amount
+        native_balance = bridge_service.get_native_balance(source_chain, evm_wallet.public_key)
+        source_symbol = NATIVE_TOKEN_SYMBOLS.get(source_chain, "TOKEN")
+        dest_symbol = NATIVE_TOKEN_SYMBOLS.get(dest_chain, "TOKEN")
+
+        # Leave some for gas on source chain
+        max_bridge = native_balance - Decimal("0.002")  # Keep 0.002 for gas
+        if max_bridge <= Decimal(0):
+            await query.edit_message_text(
+                f"❌ Insufficient balance. Need to keep some {source_symbol} for gas fees.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        bridge_amount = max_bridge * Decimal(percent) / Decimal(100)
+
+        if bridge_amount < Decimal("0.0001"):
+            await query.edit_message_text(
+                f"❌ Amount too small to bridge.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        # Show loading
+        await query.edit_message_text(
+            f"⛽ <b>Getting bridge quote...</b>\n\n"
+            f"Bridging: {float(bridge_amount):.6f} {source_symbol}\n"
+            f"Route: {source_chain.value.title()} → {dest_chain.value.title()}",
+            parse_mode=ParseMode.HTML,
+        )
+
+        # Get quote
+        import asyncio
+        quote = await asyncio.to_thread(
+            bridge_service.get_native_bridge_quote,
+            source_chain,
+            dest_chain,
+            bridge_amount,
+            evm_wallet.public_key,
+        )
+
+        if quote.error:
+            await query.edit_message_text(
+                f"❌ Quote failed: {friendly_error(quote.error)}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        # Store quote data in user_data for confirmation
+        context.user_data["pending_gas_bridge"] = {
+            "source_chain": source_chain.value,
+            "dest_chain": dest_chain.value,
+            "amount": str(bridge_amount),
+            "quote": quote,
+        }
+
+        text = f"⛽ <b>Gas Bridge Quote</b>\n\n"
+        text += f"<b>You send:</b> {float(bridge_amount):.6f} {source_symbol}\n"
+        text += f"<b>You receive:</b> ~{float(quote.output_amount):.6f} {dest_symbol}\n"
+        text += f"<b>Route:</b> {source_chain.value.title()} → {dest_chain.value.title()}\n"
+        text += f"<b>Bridge:</b> {quote.tool_name}\n"
+        text += f"<b>Fees:</b> ~${float(quote.fee_amount):.2f}\n"
+        text += f"<b>Time:</b> ~{quote.estimated_time_seconds}s\n\n"
+        text += f"⚠️ Output may vary slightly."
+
+        buttons = [
+            [InlineKeyboardButton("✅ Confirm Bridge", callback_data="gas_bridge:confirm")],
+            [InlineKeyboardButton("« Back", callback_data=f"gas_bridge:dest:{source_chain.value}:{dest_chain.value}")],
+        ]
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to get gas bridge quote", error=str(e))
+        await query.edit_message_text(
+            f"❌ Error: {friendly_error(str(e))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+
+
+async def handle_gas_bridge_confirm(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute the gas bridge."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    # Get pending bridge from user_data
+    pending = context.user_data.get("pending_gas_bridge")
+    if not pending:
+        await query.edit_message_text(
+            "❌ Bridge expired. Please try again.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS
+
+        # Initialize bridge service if needed
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        source_chain = BridgeChain(pending["source_chain"])
+        dest_chain = BridgeChain(pending["dest_chain"])
+        bridge_amount = Decimal(pending["amount"])
+        source_symbol = NATIVE_TOKEN_SYMBOLS.get(source_chain, "TOKEN")
+        dest_symbol = NATIVE_TOKEN_SYMBOLS.get(dest_chain, "TOKEN")
+
+        # Get user's EVM wallet and private key
+        from src.db.database import get_user_wallets
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        private_key = await wallet_service.get_evm_account(user.id, telegram_id)
+        if not private_key:
+            await query.edit_message_text("❌ Failed to load wallet.")
+            return
+
+        # Clear pending bridge
+        context.user_data.pop("pending_gas_bridge", None)
+
+        # Show progress
+        progress_msg = await query.edit_message_text(
+            f"⛽ <b>Bridging {source_symbol} → {dest_chain.value.title()}</b>\n\n"
+            f"Amount: {float(bridge_amount):.6f} {source_symbol}\n\n"
+            f"⏳ Executing bridge...",
+            parse_mode=ParseMode.HTML,
+        )
+
+        async def update_progress(status: str, current: int, total: int):
+            try:
+                await progress_msg.edit_text(
+                    f"⛽ <b>Bridging {source_symbol} → {dest_chain.value.title()}</b>\n\n"
+                    f"Amount: {float(bridge_amount):.6f} {source_symbol}\n\n"
+                    f"{status}",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+        # Execute bridge
+        import asyncio
+        result = await asyncio.to_thread(
+            bridge_service.execute_native_bridge,
+            private_key,
+            source_chain,
+            dest_chain,
+            bridge_amount,
+            lambda s, c, t: asyncio.run_coroutine_threadsafe(update_progress(s, c, t), asyncio.get_event_loop()),
+        )
+
+        if result.success:
+            text = f"✅ <b>Bridge Initiated!</b>\n\n"
+            text += f"Sent: {float(bridge_amount):.6f} {source_symbol}\n"
+            text += f"Expected: ~{float(result.received_amount or bridge_amount):.6f} {dest_symbol}\n"
+            text += f"Route: {source_chain.value.title()} → {dest_chain.value.title()}\n\n"
+            text += f"⏳ Funds will arrive on {dest_chain.value.title()} in 1-5 minutes.\n\n"
+            if result.explorer_url:
+                text += f"<a href='{result.explorer_url}'>View on Explorer</a>"
+        else:
+            error_msg = result.error_message or 'Unknown error'
+            text = f"❌ <b>Bridge Failed</b>\n\n"
+
+            # Check if it's a gas-related error
+            if "gas" in error_msg.lower() or "insufficient" in error_msg.lower():
+                text += f"⛽ <b>Insufficient {source_symbol} for gas fees</b>\n\n"
+                text += f"You need some {source_symbol} to pay for the bridge transaction.\n\n"
+                text += f"<b>Your wallet address:</b>\n"
+                text += f"<code>{evm_wallet.public_key}</code>"
+            else:
+                text += f"Error: {friendly_error(error_msg)}"
+
+        await progress_msg.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back to Bridge", callback_data="wallet:bridge")],
+            ]),
+            disable_web_page_preview=True,
+        )
+
+    except Exception as e:
+        logger.error("Gas bridge failed", error=str(e))
+        await query.edit_message_text(
+            f"❌ Bridge failed: {friendly_error(str(e))}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
             ]),

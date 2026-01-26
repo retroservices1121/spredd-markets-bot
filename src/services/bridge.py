@@ -329,6 +329,30 @@ NATIVE_TOKEN_SYMBOLS = {
     BridgeChain.MONAD: "MON",
 }
 
+# Valid routes for native token (gas) bridging via LI.FI
+# Format: (source_chain, dest_chain) - bridges native token (ETH/POL/BNB)
+VALID_NATIVE_BRIDGE_ROUTES: set[tuple[BridgeChain, BridgeChain]] = {
+    # ETH bridges to Abstract (for Myriad gas)
+    (BridgeChain.ETHEREUM, BridgeChain.ABSTRACT),
+    (BridgeChain.BASE, BridgeChain.ABSTRACT),
+    (BridgeChain.ARBITRUM, BridgeChain.ABSTRACT),
+    (BridgeChain.OPTIMISM, BridgeChain.ABSTRACT),
+    # ETH bridges to Linea
+    (BridgeChain.ETHEREUM, BridgeChain.LINEA),
+    (BridgeChain.BASE, BridgeChain.LINEA),
+    (BridgeChain.ARBITRUM, BridgeChain.LINEA),
+    # ETH bridges between L2s
+    (BridgeChain.BASE, BridgeChain.ARBITRUM),
+    (BridgeChain.ARBITRUM, BridgeChain.BASE),
+    (BridgeChain.BASE, BridgeChain.OPTIMISM),
+    (BridgeChain.OPTIMISM, BridgeChain.BASE),
+    # Polygon POL bridges (limited - mostly stays on Polygon)
+    (BridgeChain.POLYGON, BridgeChain.ETHEREUM),  # POL → ETH on Ethereum
+    # ETH to Polygon (arrives as WETH, not POL)
+    (BridgeChain.ETHEREUM, BridgeChain.POLYGON),
+    (BridgeChain.BASE, BridgeChain.POLYGON),
+}
+
 
 # Type alias for progress callback
 # Callback receives (status_message: str, elapsed_seconds: int, estimated_total_seconds: int)
@@ -1839,6 +1863,304 @@ class BridgeService:
             if source == source_chain:
                 valid_dests.append(dest)
         return valid_dests
+
+    def is_valid_native_bridge_route(self, source_chain: BridgeChain, dest_chain: BridgeChain) -> bool:
+        """Check if native token bridging is supported between these chains."""
+        return (source_chain, dest_chain) in VALID_NATIVE_BRIDGE_ROUTES
+
+    def get_valid_native_dest_chains(self, source_chain: BridgeChain) -> list[BridgeChain]:
+        """Get list of valid destination chains for native token bridging from the source."""
+        valid_dests = []
+        for source, dest in VALID_NATIVE_BRIDGE_ROUTES:
+            if source == source_chain:
+                valid_dests.append(dest)
+        return valid_dests
+
+    def get_native_bridge_quote(
+        self,
+        source_chain: BridgeChain,
+        dest_chain: BridgeChain,
+        native_amount: Decimal,
+        wallet_address: str,
+    ) -> LiFiBridgeQuote:
+        """
+        Get quote for bridging native token (ETH/POL/BNB) to another chain.
+
+        Args:
+            source_chain: Source chain
+            dest_chain: Destination chain
+            native_amount: Amount of native token (in whole units, e.g., 0.01 ETH)
+            wallet_address: User's wallet address
+        """
+        import httpx
+
+        if not self.is_valid_native_bridge_route(source_chain, dest_chain):
+            return LiFiBridgeQuote(
+                input_amount=native_amount,
+                output_amount=Decimal(0),
+                fee_amount=Decimal(0),
+                fee_percent=0,
+                estimated_time_seconds=0,
+                tool_name="",
+                error=f"Native bridge not supported: {source_chain.value} → {dest_chain.value}"
+            )
+
+        try:
+            source_chain_id = LIFI_CHAIN_IDS.get(source_chain)
+            dest_chain_id = LIFI_CHAIN_IDS.get(dest_chain)
+
+            if not source_chain_id or not dest_chain_id:
+                return LiFiBridgeQuote(
+                    input_amount=native_amount,
+                    output_amount=Decimal(0),
+                    fee_amount=Decimal(0),
+                    fee_percent=0,
+                    estimated_time_seconds=0,
+                    tool_name="",
+                    error=f"Chain not configured for LI.FI"
+                )
+
+            amount_raw = int(native_amount * Decimal(10**18))  # Native tokens have 18 decimals
+
+            url = "https://li.quest/v1/quote"
+            params = {
+                "fromChain": source_chain_id,
+                "toChain": dest_chain_id,
+                "fromToken": NATIVE_TOKEN,  # Native token address
+                "toToken": NATIVE_TOKEN,    # Receive native token on dest
+                "fromAmount": str(amount_raw),
+                "fromAddress": wallet_address,
+                "toAddress": wallet_address,
+                "slippage": "0.01",  # 1% slippage for cross-chain
+            }
+
+            headers = {}
+            if settings.lifi_api_key:
+                headers["x-lifi-api-key"] = settings.lifi_api_key
+
+            with httpx.Client(timeout=30) as client:
+                resp = client.get(url, params=params, headers=headers)
+
+                if resp.status_code != 200:
+                    try:
+                        error_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                        error_msg = error_data.get("message", resp.text[:200])
+                    except Exception:
+                        error_msg = resp.text[:200]
+                    return LiFiBridgeQuote(
+                        input_amount=native_amount,
+                        output_amount=Decimal(0),
+                        fee_amount=Decimal(0),
+                        fee_percent=0,
+                        estimated_time_seconds=0,
+                        tool_name="",
+                        error=f"Quote failed: {error_msg}"
+                    )
+
+                data = resp.json()
+                estimate = data.get("estimate", {})
+                to_amount_raw = int(estimate.get("toAmount", "0"))
+                output_amount = Decimal(to_amount_raw) / Decimal(10**18)
+
+                # Calculate fees
+                fee_costs = estimate.get("feeCosts", [])
+                gas_costs = estimate.get("gasCosts", [])
+                total_fee_usd = Decimal(0)
+                for fee in fee_costs:
+                    total_fee_usd += Decimal(str(fee.get("amountUSD", "0")))
+                for gas in gas_costs:
+                    total_fee_usd += Decimal(str(gas.get("amountUSD", "0")))
+
+                tool_name = data.get("toolDetails", {}).get("name", "Bridge")
+                execution_duration = estimate.get("executionDuration", 60)
+
+                source_symbol = NATIVE_TOKEN_SYMBOLS.get(source_chain, "TOKEN")
+                dest_symbol = NATIVE_TOKEN_SYMBOLS.get(dest_chain, "TOKEN")
+
+                logger.info(
+                    "Native bridge quote received",
+                    tool=tool_name,
+                    input=f"{native_amount} {source_symbol}",
+                    output=f"{output_amount} {dest_symbol}",
+                    route=f"{source_chain.value} → {dest_chain.value}"
+                )
+
+                return LiFiBridgeQuote(
+                    input_amount=native_amount,
+                    output_amount=output_amount,
+                    fee_amount=total_fee_usd,
+                    fee_percent=float(total_fee_usd / (float(native_amount) * 2000) * 100) if native_amount > 0 else 0,  # Rough ETH price estimate
+                    estimated_time_seconds=execution_duration,
+                    tool_name=tool_name,
+                    quote_data=data,
+                )
+
+        except Exception as e:
+            logger.error("Failed to get native bridge quote", error=str(e))
+            return LiFiBridgeQuote(
+                input_amount=native_amount,
+                output_amount=Decimal(0),
+                fee_amount=Decimal(0),
+                fee_percent=0,
+                estimated_time_seconds=0,
+                tool_name="",
+                error=str(e)
+            )
+
+    def execute_native_bridge(
+        self,
+        private_key: LocalAccount,
+        source_chain: BridgeChain,
+        dest_chain: BridgeChain,
+        native_amount: Decimal,
+        progress_callback: ProgressCallback = None,
+    ) -> BridgeResult:
+        """
+        Execute a native token bridge between chains.
+
+        Args:
+            private_key: EVM account for signing
+            source_chain: Source chain
+            dest_chain: Destination chain
+            native_amount: Amount of native token to bridge
+            progress_callback: Optional progress callback
+        """
+        import httpx
+
+        if source_chain not in self._web3_clients:
+            return BridgeResult(
+                success=False,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=native_amount,
+                error_message=f"Chain {source_chain.value} not configured"
+            )
+
+        try:
+            w3 = self._web3_clients[source_chain]
+            wallet = Web3.to_checksum_address(private_key.address)
+            source_symbol = NATIVE_TOKEN_SYMBOLS.get(source_chain, "TOKEN")
+            dest_symbol = NATIVE_TOKEN_SYMBOLS.get(dest_chain, "TOKEN")
+
+            if progress_callback:
+                progress_callback(f"🌉 Getting bridge quote...", 0, 120)
+
+            # Get quote
+            quote = self.get_native_bridge_quote(source_chain, dest_chain, native_amount, wallet)
+            if quote.error:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=native_amount,
+                    error_message=quote.error
+                )
+
+            if not quote.quote_data:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=native_amount,
+                    error_message="No quote data received"
+                )
+
+            if progress_callback:
+                progress_callback(f"📋 Bridging {native_amount} {source_symbol} → {dest_chain.value}", 10, 120)
+
+            # Extract transaction data
+            tx_request = quote.quote_data.get("transactionRequest", {})
+            if not tx_request:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=native_amount,
+                    error_message="No transaction data in quote"
+                )
+
+            # Build transaction
+            to_address = Web3.to_checksum_address(tx_request.get("to", ""))
+            data = tx_request.get("data", "0x")
+            value = int(tx_request.get("value", "0"), 16) if isinstance(tx_request.get("value"), str) else int(tx_request.get("value", 0))
+            gas_limit = int(tx_request.get("gasLimit", "500000"), 16) if isinstance(tx_request.get("gasLimit"), str) else int(tx_request.get("gasLimit", 500000))
+
+            # Get current gas price
+            gas_price = w3.eth.gas_price
+            nonce = w3.eth.get_transaction_count(wallet)
+
+            tx = {
+                "from": wallet,
+                "to": to_address,
+                "data": data,
+                "value": value,
+                "gas": gas_limit,
+                "gasPrice": gas_price,
+                "nonce": nonce,
+                "chainId": CHAIN_CONFIG[source_chain]["chain_id"],
+            }
+
+            if progress_callback:
+                progress_callback(f"✍️ Signing transaction...", 20, 120)
+
+            # Sign and send
+            signed_tx = w3.eth.account.sign_transaction(tx, private_key.key)
+
+            if progress_callback:
+                progress_callback(f"📤 Sending bridge transaction...", 30, 120)
+
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            tx_hash_hex = tx_hash.hex()
+
+            logger.info(
+                "Native bridge transaction sent",
+                tx_hash=tx_hash_hex,
+                route=f"{source_chain.value} → {dest_chain.value}",
+                amount=str(native_amount)
+            )
+
+            if progress_callback:
+                progress_callback(f"⏳ Waiting for confirmation...", 40, 120)
+
+            # Wait for receipt
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+
+            if receipt["status"] != 1:
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=native_amount,
+                    tx_hash=tx_hash_hex,
+                    error_message="Transaction failed on-chain"
+                )
+
+            # Get explorer URL
+            explorer_base = CHAIN_CONFIG[source_chain].get("explorer", "")
+            explorer_url = f"{explorer_base}/tx/{tx_hash_hex}" if explorer_base else None
+
+            if progress_callback:
+                progress_callback(f"✅ Bridge initiated! Funds arriving on {dest_chain.value} soon.", 100, 120)
+
+            return BridgeResult(
+                success=True,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=native_amount,
+                received_amount=quote.output_amount,
+                tx_hash=tx_hash_hex,
+                explorer_url=explorer_url,
+            )
+
+        except Exception as e:
+            logger.error("Native bridge execution failed", error=str(e))
+            return BridgeResult(
+                success=False,
+                source_chain=source_chain,
+                dest_chain=dest_chain,
+                amount=native_amount,
+                error_message=str(e)
+            )
 
     def supports_swap(self, chain: BridgeChain) -> bool:
         """Check if a chain supports native → USDC swap."""
