@@ -78,7 +78,10 @@ def escape_html(text: str) -> str:
 
 
 def friendly_error(error: str) -> str:
-    """Convert technical error messages to user-friendly plain English."""
+    """Convert technical error messages to user-friendly plain English.
+
+    Returns HTML-escaped output safe for Telegram ParseMode.HTML.
+    """
     error_lower = error.lower()
 
     # Common error patterns and their friendly versions
@@ -131,10 +134,12 @@ def friendly_error(error: str) -> str:
             cleaned = cleaned[len(prefix):].strip()
 
     # If it's still very technical, give a generic message
-    if any(x in cleaned.lower() for x in ["traceback", "0x", "bytes", "uint", "abi", "keccak"]):
+    if any(x in cleaned.lower() for x in ["traceback", "0x", "bytes", "uint", "abi", "keccak", "<bridgechain", "<platform"]):
         return "Something went wrong. Please try again or contact support if the issue persists."
 
-    return cleaned if len(cleaned) < 200 else cleaned[:200] + "..."
+    # Truncate and escape HTML to prevent Telegram parsing issues
+    result = cleaned if len(cleaned) < 200 else cleaned[:200] + "..."
+    return escape_html(result)
 
 
 def format_price(price: Optional[Decimal]) -> str:
