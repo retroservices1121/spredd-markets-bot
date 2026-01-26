@@ -1735,8 +1735,8 @@ class BridgeService:
             )
 
     def requires_lifi(self, source_chain: BridgeChain, dest_chain: BridgeChain) -> bool:
-        """Check if the bridge route requires LI.FI (Solana or BSC)."""
-        lifi_only_chains = {BridgeChain.SOLANA, BridgeChain.BSC}
+        """Check if the bridge route requires LI.FI (no CCTP support)."""
+        lifi_only_chains = {BridgeChain.SOLANA, BridgeChain.BSC, BridgeChain.ABSTRACT, BridgeChain.LINEA}
         return source_chain in lifi_only_chains or dest_chain in lifi_only_chains
 
     def involves_solana(self, source_chain: BridgeChain, dest_chain: BridgeChain) -> bool:
