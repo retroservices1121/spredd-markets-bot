@@ -3229,6 +3229,25 @@ You haven't created your wallets yet.
     solana_wallet = wallets.get(ChainFamily.SOLANA)
     evm_wallet = wallets.get(ChainFamily.EVM)
 
+    # Get native token balances for gas display
+    native_balances = {}
+    if evm_wallet:
+        try:
+            from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS
+            if not bridge_service._initialized:
+                bridge_service.initialize()
+
+            # Check native balances on key chains
+            for chain in [BridgeChain.POLYGON, BridgeChain.BASE, BridgeChain.ABSTRACT, BridgeChain.BSC, BridgeChain.ARBITRUM]:
+                try:
+                    native_bal = bridge_service.get_native_balance(chain, evm_wallet.public_key)
+                    if native_bal >= Decimal("0"):
+                        native_balances[chain] = native_bal
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     text = "💰 <b>Your Wallets</b>\n\n"
 
     if solana_wallet:
@@ -3241,8 +3260,26 @@ You haven't created your wallets yet.
     if evm_wallet:
         text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
+
+        # Show USDC balances
+        text += "<b>USDC:</b>\n"
         for bal in balances.get(ChainFamily.EVM, []):
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
+
+        # Show native token balances (for gas)
+        if native_balances:
+            text += "\n<b>Gas Tokens:</b>\n"
+            chain_emoji = {
+                BridgeChain.POLYGON: "🟣",
+                BridgeChain.BASE: "🔵",
+                BridgeChain.ABSTRACT: "🌀",
+                BridgeChain.BSC: "🟡",
+                BridgeChain.ARBITRUM: "🔷",
+            }
+            for chain, bal in native_balances.items():
+                symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "ETH")
+                emoji = chain_emoji.get(chain, "🔹")
+                text += f"  {emoji} {float(bal):.6f} {symbol} ({chain.value})\n"
 
     text += "\n<i>Tap address to copy. Send funds to deposit.</i>"
 
