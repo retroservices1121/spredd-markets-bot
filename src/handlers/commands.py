@@ -3280,6 +3280,8 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
                 BridgeChain.POLYGON: "🟣",
                 BridgeChain.MONAD: "🟢",
                 BridgeChain.BSC: "🟡",
+                BridgeChain.ABSTRACT: "🌀",
+                BridgeChain.LINEA: "🔷",
             }.get(chain, "🔹")
 
             text += f"{chain_emoji} {chain.value.upper()}: ${float(balance):.2f}\n"
@@ -3326,6 +3328,14 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
             InlineKeyboardButton(
                 "🟡 Bridge to BSC (Opinion Labs)",
                 callback_data="bridge:dest:bsc"
+            )
+        ])
+
+        # Bridge to Abstract (for Myriad)
+        buttons.append([
+            InlineKeyboardButton(
+                "🌀 Bridge to Abstract (Myriad)",
+                callback_data="bridge:dest:abstract"
             )
         ])
 
@@ -3614,6 +3624,9 @@ async def handle_bridge_dest(query, dest_chain: str, telegram_id: int, context: 
             BridgeChain.POLYGON: "🟣",
             BridgeChain.SOLANA: "🟠",
             BridgeChain.BASE: "🔵",
+            BridgeChain.BSC: "🟡",
+            BridgeChain.ABSTRACT: "🌀",
+            BridgeChain.LINEA: "🔷",
         }.get(dest, "🔹")
 
         text = f"🌉 <b>Bridge to {dest.value.title()}</b> {dest_emoji}\n\n"
@@ -3632,6 +3645,8 @@ async def handle_bridge_dest(query, dest_chain: str, telegram_id: int, context: 
                 BridgeChain.ETHEREUM: "⚪",
                 BridgeChain.POLYGON: "🟣",
                 BridgeChain.MONAD: "🟢",
+                BridgeChain.ABSTRACT: "🌀",
+                BridgeChain.LINEA: "🔷",
             }.get(chain, "🔹")
 
             text += f"{chain_emoji} {chain.value.title()}: ${float(balance):.2f}\n"
@@ -3750,6 +3765,9 @@ async def handle_bridge_start(query, source_chain: str, telegram_id: int, contex
             BridgeChain.POLYGON: "🟣",
             BridgeChain.SOLANA: "🟠",
             BridgeChain.BASE: "🔵",
+            BridgeChain.BSC: "🟡",
+            BridgeChain.ABSTRACT: "🌀",
+            BridgeChain.LINEA: "🔷",
         }.get(dest, "🔹")
 
         # Determine bridge method
@@ -3876,7 +3894,7 @@ async def handle_bridge_amount(query, source_chain: str, dest_chain: str, percen
         fee_display = f"${float(lifi_quote.fee_amount):.2f}" if lifi_quote.fee_amount > Decimal("0.01") else f"{lifi_quote.fee_percent:.1f}%"
         est_time = lifi_quote.estimated_time_seconds
 
-        dest_emoji_display = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
+        dest_emoji_display = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡", "abstract": "🌀"}.get(dest_chain, "🔹")
 
         text = f"""
 🌉 <b>Bridge USDC to {dest.value.title()}</b> {dest_emoji_display}
@@ -3918,7 +3936,7 @@ Amount: <b>${float(amount):.2f} USDC</b>
     else:
         fee_text = "\n<b>🚀 Fast:</b> ~30 seconds (small fee)"
 
-    dest_emoji = {"polygon": "🟣", "base": "🔵", "arbitrum": "🔷"}.get(dest_chain, "🔹")
+    dest_emoji = {"polygon": "🟣", "base": "🔵", "arbitrum": "🔷", "abstract": "🌀"}.get(dest_chain, "🔹")
 
     text = f"""
 🌉 <b>Bridge USDC - Select Speed</b>
@@ -3957,7 +3975,7 @@ async def handle_bridge_custom(query, source_chain: str, dest_chain: str, telegr
     context.user_data["pending_bridge"]["awaiting_custom_amount"] = True
     context.user_data["pending_bridge"]["dest_chain"] = dest_chain
 
-    dest_emoji = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
+    dest_emoji = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡", "abstract": "🌀"}.get(dest_chain, "🔹")
 
     text = f"""
 🌉 <b>Bridge USDC - Custom Amount</b>
@@ -4055,7 +4073,7 @@ async def handle_bridge_custom_amount_input(update: Update, context: ContextType
         fee_display = f"${float(lifi_quote.fee_amount):.2f}" if lifi_quote.fee_amount > Decimal("0.01") else f"{lifi_quote.fee_percent:.1f}%"
         est_time = lifi_quote.estimated_time_seconds
 
-        dest_emoji_display = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
+        dest_emoji_display = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡", "abstract": "🌀"}.get(dest_chain, "🔹")
 
         text = f"""
 🌉 <b>Bridge USDC to {dest.value.title()}</b> {dest_emoji_display}
@@ -4097,7 +4115,7 @@ Amount: <b>${float(amount):.2f} USDC</b>
     else:
         fee_text = "\n<b>🚀 Fast:</b> ~30 seconds (small fee)"
 
-    dest_emoji = {"polygon": "🟣", "base": "🔵", "solana": "🟠"}.get(dest_chain, "🔹")
+    dest_emoji = {"polygon": "🟣", "base": "🔵", "solana": "🟠", "abstract": "🌀"}.get(dest_chain, "🔹")
 
     text = f"""
 🌉 <b>Bridge USDC - Select Speed</b>
@@ -4199,7 +4217,7 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
         else:
             speed_label = "🐢 Standard"
 
-        dest_emoji = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
+        dest_emoji = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡", "abstract": "🌀"}.get(dest_chain, "🔹")
 
         await query.edit_message_text(
             f"🌉 <b>Bridging USDC ({speed_label})</b>\n\n"
@@ -4399,7 +4417,7 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
     else:
         speed_label = "🐢 Standard"
 
-    dest_emoji = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡"}.get(dest_chain, "🔹")
+    dest_emoji = {"polygon": "🟣", "solana": "🟠", "base": "🔵", "bsc": "🟡", "abstract": "🌀"}.get(dest_chain, "🔹")
 
     # Send initial status
     status_msg = await update.message.reply_text(
