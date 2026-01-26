@@ -1306,6 +1306,7 @@ class PolymarketPlatform(BasePlatform):
         market_id: str,
         outcome: Outcome,
         token_id: str = None,
+        slug: str = None,  # Accepted for API compatibility, not used
     ) -> OrderBook:
         """Get order book from CLOB API.
 
@@ -1313,6 +1314,7 @@ class PolymarketPlatform(BasePlatform):
             market_id: The market identifier
             outcome: YES or NO
             token_id: Optional token ID to use (for sells with stored position token)
+            slug: Ignored (for API compatibility with other platforms)
         """
         # Use provided token_id if given, otherwise get from market
         if not token_id:

@@ -616,6 +616,7 @@ class KalshiPlatform(BasePlatform):
         self,
         market_id: str,
         outcome: Outcome,
+        slug: str = None,  # Accepted for API compatibility, not used
     ) -> OrderBook:
         """Get order book for a market."""
         data = await self._metadata_request("GET", f"/api/v1/orderbook/{market_id}")

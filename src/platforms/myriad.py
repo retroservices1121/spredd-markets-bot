@@ -500,11 +500,13 @@ class MyriadPlatform(BasePlatform):
         self,
         market_id: str,
         outcome: Outcome,
+        slug: Optional[str] = None,  # Ignored - for API compatibility
     ) -> OrderBook:
         """
         Get order book for a market outcome.
 
         Note: Myriad uses AMM, so we derive orderbook from current prices.
+        The slug parameter is ignored (used by other platforms like Limitless).
         """
         market = await self.get_market(market_id)
         if not market:
