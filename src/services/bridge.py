@@ -30,6 +30,8 @@ class BridgeChain(Enum):
     MONAD = "monad"
     BSC = "bsc"  # Binance Smart Chain (for Opinion Labs)
     SOLANA = "solana"  # Supported via LI.FI only
+    ABSTRACT = "abstract"  # Supported via LI.FI (for Myriad)
+    LINEA = "linea"  # Supported via LI.FI (for Myriad)
 
 
 # Chain configurations for CCTP
@@ -98,6 +100,22 @@ CHAIN_CONFIG = {
         "token_messenger": None,  # No CCTP
         "message_transmitter": None,  # No CCTP
         "rpc_env": "BSC_RPC_URL",
+    },
+    BridgeChain.ABSTRACT: {
+        "chain_id": 2741,
+        "domain": None,  # Abstract doesn't support CCTP - use LI.FI
+        "usdc": "0x84A71ccD554Cc1b02749b35d22F684CC8ec987e1",  # USDC.e on Abstract
+        "token_messenger": None,  # No CCTP
+        "message_transmitter": None,  # No CCTP
+        "rpc_env": "ABSTRACT_RPC_URL",
+    },
+    BridgeChain.LINEA: {
+        "chain_id": 59144,
+        "domain": None,  # Linea CCTP coming soon - use LI.FI for now
+        "usdc": "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",  # USDC on Linea
+        "token_messenger": None,  # No CCTP yet
+        "message_transmitter": None,  # No CCTP yet
+        "rpc_env": "LINEA_RPC_URL",
     },
 }
 
@@ -235,6 +253,8 @@ LIFI_CHAIN_IDS = {
     BridgeChain.AVALANCHE: 43114,
     BridgeChain.BSC: 56,  # Binance Smart Chain
     BridgeChain.SOLANA: 1151111081099710,  # LI.FI's Solana chain ID
+    BridgeChain.ABSTRACT: 2741,  # Abstract (for Myriad)
+    BridgeChain.LINEA: 59144,  # Linea (for Myriad)
 }
 
 # USDC/stablecoin addresses for LI.FI
@@ -247,6 +267,8 @@ LIFI_USDC = {
     BridgeChain.AVALANCHE: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
     BridgeChain.BSC: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",  # USDC on BSC
     BridgeChain.SOLANA: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # Native USDC on Solana
+    BridgeChain.ABSTRACT: "0x84A71ccD554Cc1b02749b35d22F684CC8ec987e1",  # USDC.e on Abstract
+    BridgeChain.LINEA: "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",  # USDC on Linea
 }
 
 # USDT address for BSC (Opinion Labs uses USDT)

@@ -241,6 +241,11 @@ class Settings(BaseSettings):
         default="https://api.mainnet.abs.xyz",
         description="Abstract chain RPC URL"
     )
+    # Linea RPC
+    linea_rpc_url: str = Field(
+        default="https://rpc.linea.build",
+        description="Linea chain RPC URL"
+    )
 
     # ===================
     # LI.FI Bridge Configuration
@@ -380,6 +385,7 @@ class Settings(BaseSettings):
             "optimism": self.optimism_rpc_url,
             "ethereum": self.ethereum_rpc_url,
             "abstract": self.abstract_rpc_url,
+            "linea": self.linea_rpc_url,
         }
         return rpcs.get(chain.lower(), "")
     
