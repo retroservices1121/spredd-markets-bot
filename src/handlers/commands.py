@@ -3076,7 +3076,7 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
 
             # Create progress callback for bridge updates
             last_update_time = [0]  # Use list to allow modification in closure
-            main_loop = asyncio.get_event_loop()  # Capture main event loop
+            main_loop = asyncio.get_running_loop()  # Capture main event loop
 
             async def update_progress(msg: str, elapsed: int, total: int):
                 import time
@@ -3676,11 +3676,12 @@ async def handle_bsc_swap_execute(query, percent: int, telegram_id: int, context
 
         # Execute swap
         import asyncio
+        loop = asyncio.get_running_loop()
         result = await asyncio.to_thread(
             bridge_service.swap_bsc_usdc_to_usdt,
             private_key,
             swap_amount,
-            lambda s, c, t: asyncio.run_coroutine_threadsafe(update_progress(s, c, t), asyncio.get_event_loop()),
+            lambda s, c, t: asyncio.run_coroutine_threadsafe(update_progress(s, c, t), loop),
         )
 
         if result.success:
@@ -3984,12 +3985,13 @@ async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTy
 
         # Execute swap
         import asyncio
+        loop = asyncio.get_running_loop()
         result = await asyncio.to_thread(
             bridge_service.execute_swap,
             private_key,
             chain,
             swap_amount,
-            lambda s, c, t: asyncio.run_coroutine_threadsafe(update_progress(s, c, t), asyncio.get_event_loop()),
+            lambda s, c, t: asyncio.run_coroutine_threadsafe(update_progress(s, c, t), loop),
         )
 
         if result.success:
@@ -4384,13 +4386,14 @@ async def handle_gas_bridge_confirm(query, telegram_id: int, context: ContextTyp
 
         # Execute bridge
         import asyncio
+        loop = asyncio.get_running_loop()
         result = await asyncio.to_thread(
             bridge_service.execute_native_bridge,
             private_key,
             source_chain,
             dest_chain,
             bridge_amount,
-            lambda s, c, t: asyncio.run_coroutine_threadsafe(update_progress(s, c, t), asyncio.get_event_loop()),
+            lambda s, c, t: asyncio.run_coroutine_threadsafe(update_progress(s, c, t), loop),
         )
 
         if result.success:
@@ -5092,7 +5095,7 @@ async def execute_bridge(query, user_id: str, telegram_id: int, source_chain: st
         )
 
         # Create progress callback
-        main_loop = asyncio.get_event_loop()
+        main_loop = asyncio.get_running_loop()
         last_update_time = [0]
 
         async def update_progress(msg: str, elapsed: int, total: int):
@@ -5339,7 +5342,7 @@ async def handle_bridge_with_pin(update: Update, context: ContextTypes.DEFAULT_T
         )
 
         # Create progress callback
-        main_loop = asyncio.get_event_loop()
+        main_loop = asyncio.get_running_loop()
         last_update_time = [0]
 
         async def update_progress(msg: str, elapsed: int, total: int):
@@ -7425,7 +7428,7 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
 
         # Create progress callback for bridge updates
         last_update_time = [0]  # Use list to allow modification in closure
-        main_loop = asyncio.get_event_loop()  # Capture main event loop
+        main_loop = asyncio.get_running_loop()  # Capture main event loop
 
         async def update_progress(msg: str, elapsed: int, total: int):
             import time
