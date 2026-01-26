@@ -253,18 +253,23 @@ class MyriadPlatform(BasePlatform):
         no_price = None
         yes_token = None
         no_token = None
+        yes_outcome_name = None
+        no_outcome_name = None
 
         for outcome in outcomes:
             outcome_id = outcome.get("id")
             price = Decimal(str(outcome.get("price", 0)))
+            outcome_title = outcome.get("title", "")
 
             # Outcome 0 is typically YES, 1 is NO
             if outcome_id == 0:
                 yes_price = price
                 yes_token = str(outcome_id)
+                yes_outcome_name = outcome_title
             elif outcome_id == 1:
                 no_price = price
                 no_token = str(outcome_id)
+                no_outcome_name = outcome_title
 
         # If no_price not set, derive from yes_price
         if yes_price and not no_price:
@@ -305,6 +310,8 @@ class MyriadPlatform(BasePlatform):
             close_time=expires_at,
             yes_token=yes_token,
             no_token=no_token,
+            yes_outcome_name=yes_outcome_name,
+            no_outcome_name=no_outcome_name,
             raw_data=data,
         )
 

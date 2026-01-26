@@ -57,6 +57,10 @@ class Market:
     is_multi_outcome: bool = False  # True if part of a multi-outcome event
     related_market_count: int = 0  # Number of related markets in the same event
 
+    # Binary outcome names (for matchups like "Team A vs Team B")
+    yes_outcome_name: Optional[str] = None  # Name for YES outcome (e.g., "Magic")
+    no_outcome_name: Optional[str] = None  # Name for NO outcome (e.g., "Cavaliers")
+
     # Resolution criteria - how the market will be settled
     resolution_criteria: Optional[str] = None
     

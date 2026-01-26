@@ -2587,6 +2587,19 @@ Expires: {expiration_text}
             no_label = "⬇️ Under"
             yes_btn_label = f"⬆️ Buy OVER ({format_probability(yes_ask_price)})"
             no_btn_label = f"⬇️ Buy UNDER ({format_probability(no_ask_price)})"
+        elif market.yes_outcome_name and market.no_outcome_name:
+            # Matchup market with named outcomes (e.g., "Magic vs Cavaliers")
+            yes_name = market.yes_outcome_name
+            no_name = market.no_outcome_name
+            # Truncate long names
+            if len(yes_name) > 20:
+                yes_name = yes_name[:17] + "..."
+            if len(no_name) > 20:
+                no_name = no_name[:17] + "..."
+            yes_label = f"🏆 {yes_name}"
+            no_label = f"🏆 {no_name}"
+            yes_btn_label = f"🏆 Buy {yes_name} ({format_probability(yes_ask_price)})"
+            no_btn_label = f"🏆 Buy {no_name} ({format_probability(no_ask_price)})"
         else:
             # Regular binary market - show YES/NO labels
             yes_label = "🟢 YES"
