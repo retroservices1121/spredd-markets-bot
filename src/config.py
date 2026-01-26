@@ -207,6 +207,42 @@ class Settings(BaseSettings):
     opinion_multi_sig_addr: Optional[str] = Field(default=None, description="Opinion Labs multi-sig address")
 
     # ===================
+    # Myriad Protocol Configuration
+    # ===================
+    myriad_api_key: Optional[str] = Field(default=None, description="Myriad Protocol API key")
+    myriad_api_url: str = Field(
+        default="https://api-v2.myriadprotocol.com",
+        description="Myriad Protocol API base URL (use staging: https://api-v2.staging.myriadprotocol.com)"
+    )
+    myriad_referral_code: Optional[str] = Field(
+        default=None,
+        description="Myriad referral code for builder revenue sharing"
+    )
+    # Myriad network configuration - Abstract is primary
+    myriad_network_id: int = Field(
+        default=2741,
+        description="Myriad network ID (2741=Abstract mainnet)"
+    )
+    # Contract addresses for Abstract mainnet
+    myriad_prediction_market_contract: str = Field(
+        default="0x3e0F5F8F5Fb043aBFA475C0308417Bf72c463289",
+        description="Myriad PredictionMarket contract address"
+    )
+    myriad_querier_contract: str = Field(
+        default="0x1d5773Cd0dC74744C1F7a19afEeECfFE64f233Ff",
+        description="Myriad PredictionMarketQuerier contract address"
+    )
+    myriad_collateral_token: str = Field(
+        default="0x84A71ccD554Cc1b02749b35d22F684CC8ec987e1",
+        description="Myriad collateral token (USDC.e on Abstract)"
+    )
+    # Abstract RPC
+    abstract_rpc_url: str = Field(
+        default="https://api.mainnet.abs.xyz",
+        description="Abstract chain RPC URL"
+    )
+
+    # ===================
     # LI.FI Bridge Configuration
     # ===================
     lifi_api_key: Optional[str] = Field(default=None, description="LI.FI API key for cross-chain bridging")
@@ -343,6 +379,7 @@ class Settings(BaseSettings):
             "arbitrum": self.arbitrum_rpc_url,
             "optimism": self.optimism_rpc_url,
             "ethereum": self.ethereum_rpc_url,
+            "abstract": self.abstract_rpc_url,
         }
         return rpcs.get(chain.lower(), "")
     
@@ -355,6 +392,10 @@ class Settings(BaseSettings):
             return True  # Public API works without auth for basic operations
         elif platform == "opinion":
             return bool(self.opinion_api_key)
+        elif platform == "limitless":
+            return True  # Public API
+        elif platform == "myriad":
+            return bool(self.myriad_api_key)
         return False
 
 

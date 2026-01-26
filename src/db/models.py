@@ -47,6 +47,7 @@ class Platform(str, Enum):
     POLYMARKET = "polymarket"
     OPINION = "opinion"
     LIMITLESS = "limitless"
+    MYRIAD = "myriad"
 
 
 class Chain(str, Enum):
@@ -56,6 +57,8 @@ class Chain(str, Enum):
     BSC = "bsc"
     BASE = "base"
     MONAD = "monad"
+    ABSTRACT = "abstract"
+    LINEA = "linea"
 
 
 class Outcome(str, Enum):

@@ -416,5 +416,7 @@ class BasePlatform(ABC):
             Chain.BSC: f"https://bscscan.com/tx/{tx_hash}",
             Chain.BASE: f"https://basescan.org/tx/{tx_hash}",
             Chain.MONAD: f"https://monadscan.com/tx/{tx_hash}",
+            Chain.ABSTRACT: f"https://abscan.org/tx/{tx_hash}",
+            Chain.LINEA: f"https://lineascan.build/tx/{tx_hash}",
         }
         return explorers.get(self.chain, tx_hash)

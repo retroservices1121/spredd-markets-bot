@@ -11,6 +11,7 @@ from src.platforms.kalshi import kalshi_platform, KalshiPlatform
 from src.platforms.polymarket import polymarket_platform, PolymarketPlatform
 from src.platforms.opinion import opinion_platform, OpinionPlatform
 from src.platforms.limitless import limitless_platform, LimitlessPlatform
+from src.platforms.myriad import myriad_platform, MyriadPlatform
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -54,6 +55,15 @@ PLATFORM_INFO = {
         "collateral": "USDC",
         "features": ["Base L2", "Low Fees", "Fast Settlement", "Politics", "Crypto"],
     },
+    Platform.MYRIAD: {
+        "name": "Myriad",
+        "emoji": "🌀",
+        "chain": "Abstract",
+        "chain_family": ChainFamily.EVM,
+        "description": "Multi-chain prediction markets",
+        "collateral": "USDC.e",
+        "features": ["Multi-chain", "Abstract", "Linea", "BNB Chain", "Sports", "Crypto"],
+    },
 }
 
 
@@ -66,6 +76,7 @@ class PlatformRegistry:
             Platform.POLYMARKET: polymarket_platform,
             Platform.OPINION: opinion_platform,
             Platform.LIMITLESS: limitless_platform,
+            Platform.MYRIAD: myriad_platform,
         }
         self._initialized = False
     
