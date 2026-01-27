@@ -795,9 +795,10 @@ class MyriadPlatform(BasePlatform):
                 address=Web3.to_checksum_address(token_address),
                 abi=ERC20_ABI,
             )
-            approve_data = sync_token.encodeABI(
-                fn_name="approve",
-                args=[Web3.to_checksum_address(spender_address), max_approval]
+            # web3.py v7 uses encode_abi method
+            approve_data = sync_token.encode_abi(
+                "approve",
+                [Web3.to_checksum_address(spender_address), max_approval]
             )
             logger.info("Using ZKsync transaction for Abstract chain approval")
             tx_hash = await self._send_zksync_transaction(
