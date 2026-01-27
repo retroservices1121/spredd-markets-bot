@@ -788,14 +788,17 @@ class MyriadPlatform(BasePlatform):
 
         logger.info("Approving token spend", token=token_address, spender=spender_address)
 
-        # Build approval calldata
-        approve_data = token.encodeABI(
-            fn_name="approve",
-            args=[Web3.to_checksum_address(spender_address), max_approval]
-        )
-
         # Use ZKsync SDK for Abstract chain
         if self._is_zksync_network(network_id):
+            # Build approval calldata using synchronous Web3 for encoding
+            sync_token = Web3().eth.contract(
+                address=Web3.to_checksum_address(token_address),
+                abi=ERC20_ABI,
+            )
+            approve_data = sync_token.encodeABI(
+                fn_name="approve",
+                args=[Web3.to_checksum_address(spender_address), max_approval]
+            )
             logger.info("Using ZKsync transaction for Abstract chain approval")
             tx_hash = await self._send_zksync_transaction(
                 network_id=network_id,
