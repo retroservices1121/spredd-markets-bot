@@ -91,7 +91,8 @@ def friendly_error(error: str) -> str:
         return "You don't have enough funds in your wallet. Please deposit more and try again."
     if "allowance" in error_lower:
         return "Wallet approval is pending. Please wait a moment and try again."
-    if "gas" in error_lower or "fee" in error_lower and "estimate" in error_lower:
+    # Only show gas error for actual insufficient gas, not any error mentioning "gas"
+    if ("insufficient" in error_lower and "gas" in error_lower) or "intrinsic gas too low" in error_lower:
         return "Not enough funds to cover network fees. Please add some ETH/MATIC/BNB to your wallet."
     if "nonce" in error_lower:
         return "Transaction conflict. Please wait a moment and try again."

@@ -762,7 +762,20 @@ class MyriadPlatform(BasePlatform):
                 gas_estimate = await web3.eth.estimate_gas(tx_params)
                 gas_limit = int(gas_estimate * 1.2)  # 20% buffer
             except Exception as e:
-                logger.warning("Gas estimation failed, using default", error=str(e))
+                error_str = str(e)
+                logger.warning("Gas estimation failed", error=error_str)
+
+                # Check if this is an actual execution error vs just gas estimation
+                if "execution reverted" in error_str.lower():
+                    # Try to extract revert reason
+                    if "insufficient" in error_str.lower():
+                        raise PlatformError(
+                            f"Insufficient balance for this trade. Check your USDC.e balance.",
+                            Platform.MYRIAD
+                        )
+                    raise PlatformError(f"Transaction would fail: {error_str[:200]}", Platform.MYRIAD)
+
+                # Use default gas limit if estimation just failed
                 gas_limit = 500000
 
             tx_params["gas"] = gas_limit
