@@ -1903,7 +1903,15 @@ Select which prediction market you want to trade on:
             # New format: bridge:dest:chain, bridge:source:source:dest, bridge:amount:source:dest:percent
             # Legacy format: bridge:start:source, bridge:amount:source:percent, bridge:custom:source
             logger.info("Bridge callback received", callback_data=data, parts=parts)
-            if parts[1] == "dest":
+            if parts[1] == "action":
+                # bridge:action:usdc/swap/gas - simplified action menu
+                if parts[2] == "usdc":
+                    await handle_bridge_usdc_menu(query, update.effective_user.id, context)
+                elif parts[2] == "swap":
+                    await handle_swap_menu(query, update.effective_user.id, context)
+                elif parts[2] == "gas":
+                    await handle_gas_bridge_menu(query, update.effective_user.id, context)
+            elif parts[1] == "dest":
                 # bridge:dest:chain - user selected destination chain
                 await handle_bridge_dest(query, parts[2], update.effective_user.id, context)
             elif parts[1] == "source":
@@ -3321,17 +3329,14 @@ You haven't created your wallets yet.
 
 
 async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show bridge & swap menu with valid routes only."""
+    """Show simplified bridge & swap menu with action-first flow."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
         return
 
     try:
-        from src.services.bridge import (
-            bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS,
-            VALID_BRIDGE_ROUTES, SWAP_SUPPORTED_CHAINS
-        )
+        from src.services.bridge import bridge_service, BridgeChain
         from src.db.database import get_user_wallets
 
         # Initialize bridge service if needed
@@ -3341,7 +3346,6 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
         # Get user's wallets
         wallets = await get_user_wallets(user.id)
         evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
-        solana_wallet = next((w for w in wallets if w.chain_family == ChainFamily.SOLANA), None)
 
         if not evm_wallet:
             await query.edit_message_text(
@@ -3350,160 +3354,27 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
             )
             return
 
-        # Get USDC balances on all chains
+        # Get total USDC balance across all chains
         balances = bridge_service.get_all_usdc_balances(evm_wallet.public_key)
-
-        # Get native token balances for swap and gas bridge options
-        # Include all chains that support swapping OR have valid gas bridge routes
-        native_balances = {}
-        native_check_chains = set(SWAP_SUPPORTED_CHAINS) | {
-            BridgeChain.ETHEREUM,  # Can bridge ETH to Abstract/Linea
-            BridgeChain.OPTIMISM,  # Can bridge ETH to Abstract
-        }
-        for chain in native_check_chains:
-            try:
-                native_bal = bridge_service.get_native_balance(chain, evm_wallet.public_key)
-                if native_bal > Decimal("0.0001"):  # Only show if meaningful balance
-                    native_balances[chain] = native_bal
-            except Exception:
-                pass
+        total_usdc = sum(balances.values())
 
         # Get BSC USDT balance
         bsc_usdt_balance = bridge_service.get_bsc_usdt_balance(evm_wallet.public_key)
 
-        chain_emoji = {
-            BridgeChain.BASE: "🔵",
-            BridgeChain.ARBITRUM: "🔷",
-            BridgeChain.OPTIMISM: "🔴",
-            BridgeChain.ETHEREUM: "⚪",
-            BridgeChain.POLYGON: "🟣",
-            BridgeChain.MONAD: "🟢",
-            BridgeChain.BSC: "🟡",
-            BridgeChain.ABSTRACT: "🌀",
-            BridgeChain.LINEA: "🔷",
-            BridgeChain.SOLANA: "🟠",
-        }
-
         text = "🌉 <b>Bridge & Swap</b>\n\n"
-
-        # Show USDC balances
-        text += "<b>💰 Your USDC Balances:</b>\n"
-        for chain, balance in balances.items():
-            emoji = chain_emoji.get(chain, "🔹")
-            text += f"{emoji} {chain.value.title()}: ${float(balance):.2f}\n"
-
+        text += f"💰 <b>Total USDC:</b> ${float(total_usdc):.2f}\n"
         if bsc_usdt_balance > 0:
-            text += f"🟡 BSC (USDT): ${float(bsc_usdt_balance):.2f}\n"
+            text += f"💰 <b>BSC USDT:</b> ${float(bsc_usdt_balance):.2f}\n"
+        text += "\n<i>What would you like to do?</i>"
 
-        buttons = []
-
-        # === BRIDGE SECTION ===
-        text += "\n<b>🌉 Bridge USDC</b>\n"
-        text += "<i>Move USDC between chains</i>\n"
-
-        # Destination chains with platform labels
-        dest_options = [
-            (BridgeChain.POLYGON, "Polymarket"),
-            (BridgeChain.BASE, "Limitless"),
-            (BridgeChain.BSC, "Opinion Labs"),
-            (BridgeChain.ABSTRACT, "Myriad"),
-            (BridgeChain.SOLANA, "Kalshi"),
+        buttons = [
+            [
+                InlineKeyboardButton("🌉 Bridge USDC", callback_data="bridge:action:usdc"),
+                InlineKeyboardButton("💱 Swap", callback_data="bridge:action:swap"),
+            ],
+            [InlineKeyboardButton("⛽ Get Gas Tokens", callback_data="bridge:action:gas")],
+            [InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")],
         ]
-
-        # Only show destinations that have valid source chains with balance
-        for dest_chain, platform in dest_options:
-            # Skip Solana if no Solana wallet
-            if dest_chain == BridgeChain.SOLANA and not solana_wallet:
-                continue
-
-            # Find valid source chains that have balance
-            valid_sources = bridge_service.get_valid_source_chains(dest_chain)
-            sources_with_balance = [
-                src for src in valid_sources
-                if balances.get(src, Decimal(0)) > Decimal("0.01")
-            ]
-
-            if sources_with_balance:
-                emoji = chain_emoji.get(dest_chain, "🔹")
-                buttons.append([
-                    InlineKeyboardButton(
-                        f"{emoji} → {dest_chain.value.title()} ({platform})",
-                        callback_data=f"bridge:dest:{dest_chain.value}"
-                    )
-                ])
-
-        if not any("bridge:dest" in str(b) for row in buttons for b in row):
-            text += "\n<i>⚠️ No bridgeable USDC balance on supported chains</i>\n"
-
-        # === SWAP SECTION ===
-        text += "\n<b>💱 Swap to USDC</b>\n"
-        text += "<i>Convert native tokens to USDC (same chain)</i>\n"
-
-        swap_buttons = []
-
-        # Native → USDC swaps
-        for chain, native_bal in native_balances.items():
-            symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
-            emoji = chain_emoji.get(chain, "🔹")
-            out_token = "USDT" if chain == BridgeChain.BSC else "USDC"
-            swap_buttons.append([
-                InlineKeyboardButton(
-                    f"{emoji} {symbol} → {out_token} ({float(native_bal):.4f} {symbol})",
-                    callback_data=f"swap:native:{chain.value}"
-                )
-            ])
-
-        # BSC USDC → USDT swap
-        bsc_usdc_balance = balances.get(BridgeChain.BSC, Decimal(0))
-        if bsc_usdc_balance > Decimal("0.01"):
-            swap_buttons.append([
-                InlineKeyboardButton(
-                    f"🟡 BSC USDC → USDT (${float(bsc_usdc_balance):.2f})",
-                    callback_data="bridge:swap:bsc_usdt"
-                )
-            ])
-
-        if swap_buttons:
-            buttons.extend(swap_buttons)
-        else:
-            text += "<i>No native tokens to swap</i>\n"
-
-        # === BRIDGE GAS SECTION ===
-        text += "\n<b>⛽ Bridge Gas Tokens</b>\n"
-        text += "<i>Bridge ETH/POL between chains for gas fees</i>\n"
-
-        gas_bridge_buttons = []
-
-        # Check each chain with native balance for valid bridge destinations
-        for source_chain, native_bal in native_balances.items():
-            if native_bal < Decimal("0.001"):  # Skip tiny balances
-                continue
-
-            # Get valid destinations for this source
-            valid_dests = bridge_service.get_valid_native_dest_chains(source_chain)
-            if valid_dests:
-                symbol = NATIVE_TOKEN_SYMBOLS.get(source_chain, "TOKEN")
-                emoji = chain_emoji.get(source_chain, "🔹")
-                # Show button to select destination
-                gas_bridge_buttons.append([
-                    InlineKeyboardButton(
-                        f"⛽ Bridge {symbol} from {source_chain.value.title()} ({float(native_bal):.4f})",
-                        callback_data=f"gas_bridge:source:{source_chain.value}"
-                    )
-                ])
-
-        if gas_bridge_buttons:
-            buttons.extend(gas_bridge_buttons)
-        else:
-            text += "<i>No gas tokens available to bridge</i>\n"
-
-        # Solana wallet hint
-        if not solana_wallet:
-            text += "\n<i>💡 Create a Solana wallet in /wallet to bridge to Kalshi</i>\n"
-
-        text += "\n<i>⏱ Bridge times: ~30s (fast) to ~15min (standard)</i>"
-
-        buttons.append([InlineKeyboardButton("« Back to Wallet", callback_data="wallet:refresh")])
 
         await query.edit_message_text(
             text,
@@ -3527,6 +3398,273 @@ async def handle_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFA
             )
         except Exception:
             pass
+
+
+async def handle_bridge_usdc_menu(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show destination selection for USDC bridging."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain
+        from src.db.database import get_user_wallets
+
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+        solana_wallet = next((w for w in wallets if w.chain_family == ChainFamily.SOLANA), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        balances = bridge_service.get_all_usdc_balances(evm_wallet.public_key)
+
+        chain_emoji = {
+            BridgeChain.POLYGON: "🟣",
+            BridgeChain.BASE: "🔵",
+            BridgeChain.BSC: "🟡",
+            BridgeChain.ABSTRACT: "🌀",
+            BridgeChain.SOLANA: "🟠",
+        }
+
+        # Platform destinations
+        dest_options = [
+            (BridgeChain.POLYGON, "Polymarket"),
+            (BridgeChain.BASE, "Limitless"),
+            (BridgeChain.BSC, "Opinion Labs"),
+            (BridgeChain.ABSTRACT, "Myriad"),
+            (BridgeChain.SOLANA, "Kalshi"),
+        ]
+
+        text = "🌉 <b>Bridge USDC</b>\n\n"
+        text += "<i>Select destination:</i>\n"
+
+        buttons = []
+        available_routes = False
+
+        for dest_chain, platform in dest_options:
+            if dest_chain == BridgeChain.SOLANA and not solana_wallet:
+                continue
+
+            valid_sources = bridge_service.get_valid_source_chains(dest_chain)
+            sources_with_balance = [
+                src for src in valid_sources
+                if balances.get(src, Decimal(0)) > Decimal("0.01")
+            ]
+
+            if sources_with_balance:
+                available_routes = True
+                emoji = chain_emoji.get(dest_chain, "🔹")
+                # Show current balance on dest chain
+                dest_bal = balances.get(dest_chain, Decimal(0))
+                bal_text = f" (${float(dest_bal):.2f})" if dest_bal > 0 else ""
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{emoji} {platform}{bal_text}",
+                        callback_data=f"bridge:dest:{dest_chain.value}"
+                    )
+                ])
+
+        if not available_routes:
+            text += "\n⚠️ <i>No USDC available to bridge.</i>\n"
+            text += "<i>Deposit USDC to any supported chain first.</i>"
+
+        if not solana_wallet:
+            text += "\n\n<i>💡 Create a Solana wallet to bridge to Kalshi</i>"
+
+        buttons.append([InlineKeyboardButton("« Back", callback_data="wallet:bridge")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to load bridge USDC menu", error=str(e))
+        await query.edit_message_text(
+            f"❌ Error: {friendly_error(str(e))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+
+
+async def handle_swap_menu(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show swap options menu."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS, SWAP_SUPPORTED_CHAINS
+        from src.db.database import get_user_wallets
+
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        chain_emoji = {
+            BridgeChain.BASE: "🔵",
+            BridgeChain.POLYGON: "🟣",
+            BridgeChain.BSC: "🟡",
+            BridgeChain.ABSTRACT: "🌀",
+            BridgeChain.ARBITRUM: "🔷",
+            BridgeChain.OPTIMISM: "🔴",
+            BridgeChain.LINEA: "🔷",
+        }
+
+        text = "💱 <b>Swap</b>\n\n"
+        text += "<i>Convert tokens to USDC:</i>\n"
+
+        buttons = []
+        has_swaps = False
+
+        # Native token swaps
+        for chain in SWAP_SUPPORTED_CHAINS:
+            try:
+                native_bal = bridge_service.get_native_balance(chain, evm_wallet.public_key)
+                if native_bal > Decimal("0.001"):
+                    has_swaps = True
+                    symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
+                    emoji = chain_emoji.get(chain, "🔹")
+                    out_token = "USDT" if chain == BridgeChain.BSC else "USDC"
+                    buttons.append([
+                        InlineKeyboardButton(
+                            f"{emoji} {symbol} → {out_token} ({float(native_bal):.4f})",
+                            callback_data=f"swap:native:{chain.value}"
+                        )
+                    ])
+            except Exception:
+                pass
+
+        # BSC USDC → USDT swap
+        bsc_usdc = bridge_service.get_usdc_balance(BridgeChain.BSC, evm_wallet.public_key)
+        if bsc_usdc > Decimal("0.01"):
+            has_swaps = True
+            buttons.append([
+                InlineKeyboardButton(
+                    f"🟡 USDC → USDT (${float(bsc_usdc):.2f})",
+                    callback_data="bridge:swap:bsc_usdt"
+                )
+            ])
+
+        if not has_swaps:
+            text += "\n⚠️ <i>No tokens available to swap.</i>"
+
+        buttons.append([InlineKeyboardButton("« Back", callback_data="wallet:bridge")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to load swap menu", error=str(e))
+        await query.edit_message_text(
+            f"❌ Error: {friendly_error(str(e))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+
+
+async def handle_gas_bridge_menu(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show gas token bridging options."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS, SWAP_SUPPORTED_CHAINS
+        from src.db.database import get_user_wallets
+
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        chain_emoji = {
+            BridgeChain.ETHEREUM: "⚪",
+            BridgeChain.BASE: "🔵",
+            BridgeChain.POLYGON: "🟣",
+            BridgeChain.OPTIMISM: "🔴",
+            BridgeChain.ARBITRUM: "🔷",
+            BridgeChain.ABSTRACT: "🌀",
+            BridgeChain.LINEA: "🔷",
+        }
+
+        text = "⛽ <b>Bridge Gas Tokens</b>\n\n"
+        text += "<i>Bridge ETH between chains for gas:</i>\n"
+
+        buttons = []
+        has_gas = False
+
+        # Check chains that can bridge gas
+        native_check_chains = set(SWAP_SUPPORTED_CHAINS) | {
+            BridgeChain.ETHEREUM,
+            BridgeChain.OPTIMISM,
+        }
+
+        for source_chain in native_check_chains:
+            try:
+                native_bal = bridge_service.get_native_balance(source_chain, evm_wallet.public_key)
+                if native_bal < Decimal("0.001"):
+                    continue
+
+                valid_dests = bridge_service.get_valid_native_dest_chains(source_chain)
+                if valid_dests:
+                    has_gas = True
+                    symbol = NATIVE_TOKEN_SYMBOLS.get(source_chain, "TOKEN")
+                    emoji = chain_emoji.get(source_chain, "🔹")
+                    buttons.append([
+                        InlineKeyboardButton(
+                            f"{emoji} {source_chain.value.title()} ({float(native_bal):.4f} {symbol})",
+                            callback_data=f"gas_bridge:source:{source_chain.value}"
+                        )
+                    ])
+            except Exception:
+                pass
+
+        if not has_gas:
+            text += "\n⚠️ <i>No gas tokens available to bridge.</i>\n"
+            text += "<i>Deposit ETH to Ethereum, Base, or Polygon first.</i>"
+
+        buttons.append([InlineKeyboardButton("« Back", callback_data="wallet:bridge")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to load gas bridge menu", error=str(e))
+        await query.edit_message_text(
+            f"❌ Error: {friendly_error(str(e))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
 
 
 async def handle_bsc_usdc_swap(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
