@@ -232,12 +232,10 @@ class MyriadPlatform(BasePlatform):
         value: int = 0,
     ) -> str:
         """
-        Send a transaction using ZKsync SDK for Abstract chain.
+        Send a transaction on Abstract chain using EIP-1559 format.
+        Abstract is ZKsync-based but accepts standard EIP-1559 transactions.
         Returns transaction hash.
         """
-        if not ZKSYNC_AVAILABLE:
-            raise PlatformError("ZKsync SDK not available. Install zksync2 package.", Platform.MYRIAD)
-
         config = MYRIAD_NETWORKS.get(network_id)
         if not config:
             raise PlatformError(f"Unknown network ID: {network_id}", Platform.MYRIAD)
@@ -246,52 +244,62 @@ class MyriadPlatform(BasePlatform):
         if settings.abstract_rpc_url:
             rpc_url = settings.abstract_rpc_url
 
-        # Run ZKsync operations in thread to not block async loop
+        # Use synchronous Web3 for simpler transaction handling
         def send_tx():
-            from zksync2.module.module_builder import ZkSyncBuilder
-            from zksync2.signer.eth_signer import PrivateKeyEthSigner
-            from eth_account import Account
+            from web3 import Web3 as SyncWeb3
 
-            # Create ZKsync client
-            zk_web3 = ZkSyncBuilder.build(rpc_url)
+            w3 = SyncWeb3(SyncWeb3.HTTPProvider(rpc_url))
+            user_address = private_key.address
+            chain_id = w3.eth.chain_id
 
-            # Get account info
-            account = Account.from_key(private_key.key)
-            chain_id = zk_web3.zksync.chain_id
+            # Get nonce
+            nonce = w3.eth.get_transaction_count(user_address)
 
-            # Create signer
-            signer = PrivateKeyEthSigner(account, chain_id)
-
-            # Get gas parameters
-            gas_price = zk_web3.zksync.gas_price
-
-            # Build transaction
-            tx = {
-                "from": account.address,
-                "to": Web3.to_checksum_address(to_address),
-                "data": data if data.startswith("0x") else f"0x{data}",
-                "value": value,
-                "chainId": chain_id,
-                "nonce": zk_web3.zksync.get_transaction_count(
-                    account.address, EthBlockParams.LATEST.value
-                ),
-                "gasPrice": gas_price,
-                "gas": 500000,  # Will be adjusted
-            }
-
-            # Estimate gas with ZKsync-specific method
+            # Get EIP-1559 gas parameters
             try:
-                gas_estimate = zk_web3.zksync.eth_estimate_gas(tx)
-                tx["gas"] = int(gas_estimate * 1.2)  # 20% buffer
+                latest_block = w3.eth.get_block('latest')
+                base_fee = latest_block.get('baseFeePerGas', w3.eth.gas_price)
+                max_priority_fee = w3.to_wei(0.1, 'gwei')  # Low priority fee for L2
+                max_fee = base_fee * 2 + max_priority_fee
+
+                tx = {
+                    "from": user_address,
+                    "to": Web3.to_checksum_address(to_address),
+                    "data": data if data.startswith("0x") else f"0x{data}",
+                    "value": value,
+                    "chainId": chain_id,
+                    "nonce": nonce,
+                    "maxFeePerGas": max_fee,
+                    "maxPriorityFeePerGas": max_priority_fee,
+                    "gas": 500000,
+                    "type": 2,  # EIP-1559
+                }
             except Exception as e:
-                logger.warning(f"ZKsync gas estimation failed: {e}, using default")
+                # Fallback to legacy transaction
+                logger.warning(f"EIP-1559 failed, using legacy: {e}")
+                gas_price = w3.eth.gas_price
+                tx = {
+                    "from": user_address,
+                    "to": Web3.to_checksum_address(to_address),
+                    "data": data if data.startswith("0x") else f"0x{data}",
+                    "value": value,
+                    "chainId": chain_id,
+                    "nonce": nonce,
+                    "gasPrice": gas_price,
+                    "gas": 500000,
+                }
+
+            # Estimate gas
+            try:
+                gas_estimate = w3.eth.estimate_gas(tx)
+                tx["gas"] = int(gas_estimate * 1.3)  # 30% buffer
+            except Exception as e:
+                logger.warning(f"Gas estimation failed: {e}, using default 500000")
                 tx["gas"] = 500000
 
-            # Sign with ZKsync signer (handles EIP-712)
-            signed = signer.sign_typed_data(zk_web3.zksync.get_eip712_hash(tx), tx)
-
-            # Send raw transaction
-            tx_hash = zk_web3.zksync.send_raw_transaction(signed)
+            # Sign and send
+            signed = w3.eth.account.sign_transaction(tx, private_key.key)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
             return tx_hash.hex()
 
         # Run in thread pool
@@ -304,7 +312,7 @@ class MyriadPlatform(BasePlatform):
         tx_hash: str,
         timeout: int = 120,
     ) -> dict:
-        """Wait for ZKsync transaction receipt."""
+        """Wait for transaction receipt on Abstract chain."""
         config = MYRIAD_NETWORKS.get(network_id)
         if not config:
             raise PlatformError(f"Unknown network ID: {network_id}", Platform.MYRIAD)
@@ -314,11 +322,9 @@ class MyriadPlatform(BasePlatform):
             rpc_url = settings.abstract_rpc_url
 
         def wait_receipt():
-            from zksync2.module.module_builder import ZkSyncBuilder
-            zk_web3 = ZkSyncBuilder.build(rpc_url)
-            receipt = zk_web3.zksync.wait_for_transaction_receipt(
-                tx_hash, timeout=timeout
-            )
+            from web3 import Web3 as SyncWeb3
+            w3 = SyncWeb3(SyncWeb3.HTTPProvider(rpc_url))
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
             return dict(receipt)
 
         return await asyncio.to_thread(wait_receipt)
