@@ -3,7 +3,7 @@ Myriad Protocol platform implementation.
 Multi-chain prediction market using Polkamarkets smart contracts.
 
 Supported chains:
-- Abstract (primary)
+- Abstract (primary) - uses ZKsync transaction format
 - Linea
 - BNB Chain (BSC)
 - Celo (coming soon)
@@ -17,6 +17,16 @@ from datetime import datetime
 import httpx
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
+
+# ZKsync SDK for Abstract chain
+try:
+    from zksync2.module.module_builder import ZkSyncBuilder
+    from zksync2.core.types import EthBlockParams
+    from zksync2.signer.eth_signer import PrivateKeyEthSigner
+    from zksync2.transaction.transaction_builders import TxFunctionCall
+    ZKSYNC_AVAILABLE = True
+except ImportError:
+    ZKSYNC_AVAILABLE = False
 
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
@@ -207,6 +217,111 @@ class MyriadPlatform(BasePlatform):
             self._web3_clients[network_id] = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
 
         return self._web3_clients[network_id]
+
+    def _is_zksync_network(self, network_id: int) -> bool:
+        """Check if network uses ZKsync transaction format (Abstract)."""
+        # Abstract mainnet and testnet use ZKsync
+        return network_id in (2741, 11124)
+
+    async def _send_zksync_transaction(
+        self,
+        network_id: int,
+        private_key: LocalAccount,
+        to_address: str,
+        data: str,
+        value: int = 0,
+    ) -> str:
+        """
+        Send a transaction using ZKsync SDK for Abstract chain.
+        Returns transaction hash.
+        """
+        if not ZKSYNC_AVAILABLE:
+            raise PlatformError("ZKsync SDK not available. Install zksync2 package.", Platform.MYRIAD)
+
+        config = MYRIAD_NETWORKS.get(network_id)
+        if not config:
+            raise PlatformError(f"Unknown network ID: {network_id}", Platform.MYRIAD)
+
+        rpc_url = config["rpc"]
+        if settings.abstract_rpc_url:
+            rpc_url = settings.abstract_rpc_url
+
+        # Run ZKsync operations in thread to not block async loop
+        def send_tx():
+            from zksync2.module.module_builder import ZkSyncBuilder
+            from zksync2.signer.eth_signer import PrivateKeyEthSigner
+            from eth_account import Account
+
+            # Create ZKsync client
+            zk_web3 = ZkSyncBuilder.build(rpc_url)
+
+            # Get account info
+            account = Account.from_key(private_key.key)
+            chain_id = zk_web3.zksync.chain_id
+
+            # Create signer
+            signer = PrivateKeyEthSigner(account, chain_id)
+
+            # Get gas parameters
+            gas_price = zk_web3.zksync.gas_price
+
+            # Build transaction
+            tx = {
+                "from": account.address,
+                "to": Web3.to_checksum_address(to_address),
+                "data": data if data.startswith("0x") else f"0x{data}",
+                "value": value,
+                "chainId": chain_id,
+                "nonce": zk_web3.zksync.get_transaction_count(
+                    account.address, EthBlockParams.LATEST.value
+                ),
+                "gasPrice": gas_price,
+                "gas": 500000,  # Will be adjusted
+            }
+
+            # Estimate gas with ZKsync-specific method
+            try:
+                gas_estimate = zk_web3.zksync.eth_estimate_gas(tx)
+                tx["gas"] = int(gas_estimate * 1.2)  # 20% buffer
+            except Exception as e:
+                logger.warning(f"ZKsync gas estimation failed: {e}, using default")
+                tx["gas"] = 500000
+
+            # Sign with ZKsync signer (handles EIP-712)
+            signed = signer.sign_typed_data(zk_web3.zksync.get_eip712_hash(tx), tx)
+
+            # Send raw transaction
+            tx_hash = zk_web3.zksync.send_raw_transaction(signed)
+            return tx_hash.hex()
+
+        # Run in thread pool
+        tx_hash = await asyncio.to_thread(send_tx)
+        return tx_hash
+
+    async def _wait_for_zksync_receipt(
+        self,
+        network_id: int,
+        tx_hash: str,
+        timeout: int = 120,
+    ) -> dict:
+        """Wait for ZKsync transaction receipt."""
+        config = MYRIAD_NETWORKS.get(network_id)
+        if not config:
+            raise PlatformError(f"Unknown network ID: {network_id}", Platform.MYRIAD)
+
+        rpc_url = config["rpc"]
+        if settings.abstract_rpc_url:
+            rpc_url = settings.abstract_rpc_url
+
+        def wait_receipt():
+            from zksync2.module.module_builder import ZkSyncBuilder
+            zk_web3 = ZkSyncBuilder.build(rpc_url)
+            receipt = zk_web3.zksync.wait_for_transaction_receipt(
+                tx_hash, timeout=timeout
+            )
+            return dict(receipt)
+
+        return await asyncio.to_thread(wait_receipt)
 
     async def _api_request(
         self,
@@ -673,7 +788,31 @@ class MyriadPlatform(BasePlatform):
 
         logger.info("Approving token spend", token=token_address, spender=spender_address)
 
-        # Build approval transaction
+        # Build approval calldata
+        approve_data = token.encodeABI(
+            fn_name="approve",
+            args=[Web3.to_checksum_address(spender_address), max_approval]
+        )
+
+        # Use ZKsync SDK for Abstract chain
+        if self._is_zksync_network(network_id):
+            logger.info("Using ZKsync transaction for Abstract chain approval")
+            tx_hash = await self._send_zksync_transaction(
+                network_id=network_id,
+                private_key=private_key,
+                to_address=token_address,
+                data=approve_data,
+            )
+
+            # Wait for confirmation
+            receipt = await self._wait_for_zksync_receipt(network_id, tx_hash, timeout=60)
+            if receipt.get("status") != 1:
+                raise PlatformError("Approval transaction failed", Platform.MYRIAD)
+
+            logger.info("ZKsync approval confirmed", tx_hash=tx_hash)
+            return tx_hash
+
+        # Standard EVM transaction for other chains
         nonce = await web3.eth.get_transaction_count(user_address)
         gas_price = await web3.eth.gas_price
 
@@ -786,8 +925,47 @@ class MyriadPlatform(BasePlatform):
                 side=quote.side,
                 outcome=quote.outcome.value,
                 amount=str(quote.input_amount),
-                gas_limit=gas_limit,
+                is_zksync=self._is_zksync_network(network_id),
             )
+
+            # Use ZKsync SDK for Abstract chain
+            if self._is_zksync_network(network_id):
+                logger.info("Using ZKsync transaction for Abstract chain trade")
+                tx_hash_hex = await self._send_zksync_transaction(
+                    network_id=network_id,
+                    private_key=private_key,
+                    to_address=prediction_market,
+                    data=calldata,
+                )
+
+                logger.info("ZKsync trade submitted", tx_hash=tx_hash_hex)
+
+                # Wait for confirmation
+                receipt = await self._wait_for_zksync_receipt(network_id, tx_hash_hex, timeout=120)
+
+                if receipt.get("status") != 1:
+                    return TradeResult(
+                        success=False,
+                        tx_hash=tx_hash_hex,
+                        input_amount=quote.input_amount,
+                        output_amount=None,
+                        error_message="Transaction reverted",
+                        explorer_url=f"{network_config['explorer']}/tx/{tx_hash_hex}",
+                    )
+
+                logger.info("ZKsync trade confirmed", tx_hash=tx_hash_hex, gas_used=receipt.get("gasUsed"))
+
+                return TradeResult(
+                    success=True,
+                    tx_hash=tx_hash_hex,
+                    input_amount=quote.input_amount,
+                    output_amount=quote.expected_output,
+                    error_message=None,
+                    explorer_url=f"{network_config['explorer']}/tx/{tx_hash_hex}",
+                )
+
+            # Standard EVM transaction for other chains
+            tx_params["gas"] = gas_limit
 
             # Sign and send
             signed = private_key.sign_transaction(tx_params)
