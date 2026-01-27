@@ -5816,8 +5816,9 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
                 ))
         buttons.append(row)
 
-    # Add 15-minute markets button
-    buttons.append([InlineKeyboardButton("⏱️ 15m Markets", callback_data="markets:15m")])
+    # Add 15-minute markets button (only for Kalshi - they're the only platform with 15m markets)
+    if user.active_platform == Platform.KALSHI:
+        buttons.append([InlineKeyboardButton("⏱️ 15m Markets", callback_data="markets:15m")])
     buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
 
     await query.edit_message_text(
