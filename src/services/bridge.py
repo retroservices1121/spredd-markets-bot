@@ -314,6 +314,8 @@ SWAP_SUPPORTED_CHAINS = {
     BridgeChain.BASE,     # ETH → USDC
     BridgeChain.ARBITRUM, # ETH → USDC
     BridgeChain.BSC,      # BNB → USDC/USDT
+    BridgeChain.ABSTRACT, # ETH → USDC.e (for Myriad trading)
+    BridgeChain.LINEA,    # ETH → USDC
 }
 
 # Native token symbols per chain
