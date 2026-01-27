@@ -2202,22 +2202,45 @@ class BridgeService:
             if progress_callback:
                 progress_callback(f"⏳ Waiting for confirmation...", 40, 120)
 
-            # Wait for receipt
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
-
-            if receipt["status"] != 1:
-                return BridgeResult(
-                    success=False,
-                    source_chain=source_chain,
-                    dest_chain=dest_chain,
-                    amount=native_amount,
-                    tx_hash=tx_hash_hex,
-                    error_message="Transaction failed on-chain"
-                )
-
             # Get explorer URL
             explorer_base = CHAIN_CONFIG[source_chain].get("explorer", "")
             explorer_url = f"{explorer_base}/tx/{tx_hash_hex}" if explorer_base else None
+
+            # Wait for receipt with error handling
+            # Even if this fails, the tx was already sent successfully
+            try:
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+
+                if receipt["status"] != 1:
+                    return BridgeResult(
+                        success=False,
+                        source_chain=source_chain,
+                        dest_chain=dest_chain,
+                        amount=native_amount,
+                        tx_hash=tx_hash_hex,
+                        explorer_url=explorer_url,
+                        error_message="Transaction failed on-chain"
+                    )
+            except Exception as receipt_error:
+                # Transaction was sent but we couldn't confirm it
+                # This is still a success - user should check explorer
+                logger.warning(
+                    "Could not confirm transaction receipt, but tx was sent",
+                    tx_hash=tx_hash_hex,
+                    error=str(receipt_error)
+                )
+                if progress_callback:
+                    progress_callback(f"✅ Transaction sent! Check explorer for confirmation.", 100, 120)
+
+                return BridgeResult(
+                    success=True,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=native_amount,
+                    received_amount=quote.output_amount,
+                    tx_hash=tx_hash_hex,
+                    explorer_url=explorer_url,
+                )
 
             if progress_callback:
                 progress_callback(f"✅ Bridge initiated! Funds arriving on {dest_chain.value} soon.", 100, 120)
@@ -2234,12 +2257,18 @@ class BridgeService:
 
         except Exception as e:
             logger.error("Native bridge execution failed", error=str(e))
+            error_msg = str(e)
+            # Make common errors more user-friendly
+            if "too many requests" in error_msg.lower() or "rate limit" in error_msg.lower():
+                error_msg = "Too many requests. Please wait a moment and try again."
+            elif "insufficient funds" in error_msg.lower():
+                error_msg = "Insufficient ETH balance for this bridge + gas fees."
             return BridgeResult(
                 success=False,
                 source_chain=source_chain,
                 dest_chain=dest_chain,
                 amount=native_amount,
-                error_message=str(e)
+                error_message=error_msg
             )
 
     def supports_swap(self, chain: BridgeChain) -> bool:
