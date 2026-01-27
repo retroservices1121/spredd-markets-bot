@@ -2085,20 +2085,68 @@ class BridgeService:
             value = int(tx_request.get("value", "0"), 16) if isinstance(tx_request.get("value"), str) else int(tx_request.get("value", 0))
             gas_limit = int(tx_request.get("gasLimit", "500000"), 16) if isinstance(tx_request.get("gasLimit"), str) else int(tx_request.get("gasLimit", 500000))
 
-            # Get current gas price
-            gas_price = w3.eth.gas_price
-            nonce = w3.eth.get_transaction_count(wallet)
+            # Get nonce with retry
+            nonce = None
+            for attempt in range(3):
+                try:
+                    nonce = w3.eth.get_transaction_count(wallet)
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise Exception(f"Failed to get nonce after 3 attempts: {e}")
+                    import time
+                    time.sleep(1)
 
-            tx = {
-                "from": wallet,
-                "to": to_address,
-                "data": data,
-                "value": value,
-                "gas": gas_limit,
-                "gasPrice": gas_price,
-                "nonce": nonce,
-                "chainId": CHAIN_CONFIG[source_chain]["chain_id"],
-            }
+            chain_id = CHAIN_CONFIG[source_chain]["chain_id"]
+
+            # Use EIP-1559 for Ethereum mainnet (chain 1), legacy for others
+            if chain_id == 1:
+                # Get EIP-1559 gas parameters
+                try:
+                    latest_block = w3.eth.get_block('latest')
+                    base_fee = latest_block.get('baseFeePerGas', 0)
+                    max_priority_fee = w3.eth.max_priority_fee
+                    max_fee = base_fee * 2 + max_priority_fee
+
+                    tx = {
+                        "from": wallet,
+                        "to": to_address,
+                        "data": data,
+                        "value": value,
+                        "gas": gas_limit,
+                        "maxFeePerGas": max_fee,
+                        "maxPriorityFeePerGas": max_priority_fee,
+                        "nonce": nonce,
+                        "chainId": chain_id,
+                        "type": 2,  # EIP-1559
+                    }
+                except Exception as e:
+                    # Fallback to legacy if EIP-1559 fails
+                    logger.warning(f"EIP-1559 gas fetch failed, using legacy: {e}")
+                    gas_price = w3.eth.gas_price
+                    tx = {
+                        "from": wallet,
+                        "to": to_address,
+                        "data": data,
+                        "value": value,
+                        "gas": gas_limit,
+                        "gasPrice": gas_price,
+                        "nonce": nonce,
+                        "chainId": chain_id,
+                    }
+            else:
+                # Legacy transaction for L2s
+                gas_price = w3.eth.gas_price
+                tx = {
+                    "from": wallet,
+                    "to": to_address,
+                    "data": data,
+                    "value": value,
+                    "gas": gas_limit,
+                    "gasPrice": gas_price,
+                    "nonce": nonce,
+                    "chainId": chain_id,
+                }
 
             if progress_callback:
                 progress_callback(f"✍️ Signing transaction...", 20, 120)
@@ -2109,7 +2157,39 @@ class BridgeService:
             if progress_callback:
                 progress_callback(f"📤 Sending bridge transaction...", 30, 120)
 
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            # Send with retry
+            tx_hash = None
+            last_error = None
+            for attempt in range(3):
+                try:
+                    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+                    break
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e)
+                    logger.warning(f"Send transaction attempt {attempt + 1} failed: {error_str}")
+
+                    # Don't retry if it's a nonce or already known error
+                    if "nonce" in error_str.lower() or "already known" in error_str.lower():
+                        break
+
+                    if attempt < 2:
+                        import time
+                        time.sleep(2)  # Wait before retry
+
+            if tx_hash is None:
+                error_msg = str(last_error) if last_error else "Failed to send transaction"
+                # Make error message more user-friendly
+                if "no response" in error_msg.lower() or "-32603" in error_msg:
+                    error_msg = "RPC node not responding. The Ethereum network may be congested. Please try again in a few minutes."
+                return BridgeResult(
+                    success=False,
+                    source_chain=source_chain,
+                    dest_chain=dest_chain,
+                    amount=native_amount,
+                    error_message=error_msg
+                )
+
             tx_hash_hex = tx_hash.hex()
 
             logger.info(
