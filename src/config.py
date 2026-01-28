@@ -214,9 +214,9 @@ class Settings(BaseSettings):
         default="https://api-v2.myriadprotocol.com",
         description="Myriad Protocol API base URL (use staging: https://api-v2.staging.myriadprotocol.com)"
     )
-    myriad_referral_code: Optional[str] = Field(
-        default=None,
-        description="Myriad referral code for builder revenue sharing"
+    myriad_referral_code: str = Field(
+        default="spredd",
+        description="Myriad builder code for revenue sharing"
     )
     # Myriad network configuration - Abstract is primary
     myriad_network_id: int = Field(
