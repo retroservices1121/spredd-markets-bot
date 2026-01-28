@@ -774,9 +774,9 @@ class MyriadPlatform(BasePlatform):
             "slippage": 0.01,  # 1% slippage
         }
 
-        # Add builder/referral code for revenue sharing
+        # Add builder code for revenue sharing (triggers referralBuy calldata)
         if settings.myriad_referral_code:
-            quote_request["referrer"] = settings.myriad_referral_code
+            quote_request["builder"] = settings.myriad_referral_code
 
         # For buy: specify value (amount to spend)
         # For sell: can specify value (amount to receive) or shares
