@@ -397,8 +397,14 @@ class MyriadPlatform(BasePlatform):
             # If no filter defined for this network, allow all markets
             return True
 
-        # Check tokenAddress field (common API field name)
-        token_address = data.get("tokenAddress") or data.get("token") or data.get("collateral")
+        # Extract token address - API may return it as string or as object
+        token_data = data.get("token") or data.get("tokenAddress") or data.get("collateral")
+
+        # If token is a dict (object), extract the address field
+        if isinstance(token_data, dict):
+            token_address = token_data.get("address") or token_data.get("id")
+        else:
+            token_address = token_data
 
         if not token_address:
             # If no token field, check if it's Abstract network
@@ -410,7 +416,7 @@ class MyriadPlatform(BasePlatform):
             return True
 
         # Normalize addresses for comparison (lowercase)
-        token_address_lower = token_address.lower()
+        token_address_lower = str(token_address).lower()
         allowed_lower = [addr.lower() for addr in allowed_tokens]
 
         is_allowed = token_address_lower in allowed_lower
