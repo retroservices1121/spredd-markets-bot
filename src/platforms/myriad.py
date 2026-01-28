@@ -46,6 +46,31 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Allowed collateral tokens per network (filter out PTS/PENGU markets)
+# Only USDC/USDT markets are tradeable through Spredd
+ALLOWED_COLLATERAL_TOKENS = {
+    # Abstract mainnet - only USDC.e (exclude PTS and PENGU)
+    2741: [
+        "0x84A71ccD554Cc1b02749b35d22F684CC8ec987e1",  # USDC.e
+    ],
+    # Abstract testnet
+    11124: [
+        "0x8820c84FD53663C2e2EA26e7a4c2b79dCc479765",  # USDC testnet
+    ],
+    # Linea mainnet - USDC only
+    59144: [
+        "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",  # USDC
+    ],
+    # BNB Chain mainnet - USDT only
+    56: [
+        "0x55d398326f99059fF775485246999027B3197955",  # USDT
+    ],
+    # BNB Chain testnet
+    97: [
+        "0x49Ff827F0C8835ebd8109Cc3b51b80435ce44F09",  # USDT testnet
+    ],
+}
+
 # Network configurations
 MYRIAD_NETWORKS = {
     # Abstract mainnet
@@ -363,6 +388,41 @@ class MyriadPlatform(BasePlatform):
         except httpx.HTTPStatusError as e:
             raise PlatformError(f"API error: {e.response.status_code}", Platform.MYRIAD)
 
+    def _is_usdc_market(self, data: dict) -> bool:
+        """Check if market uses USDC/USDT collateral (filter out PTS/PENGU markets)."""
+        network_id = data.get("networkId", self._network_id)
+        allowed_tokens = ALLOWED_COLLATERAL_TOKENS.get(network_id, [])
+
+        if not allowed_tokens:
+            # If no filter defined for this network, allow all markets
+            return True
+
+        # Check tokenAddress field (common API field name)
+        token_address = data.get("tokenAddress") or data.get("token") or data.get("collateral")
+
+        if not token_address:
+            # If no token field, check if it's Abstract network
+            # Abstract has PTS/PENGU markets, so be conservative and skip unknown markets
+            if network_id in [2741, 11124]:  # Abstract mainnet/testnet
+                logger.debug("Skipping market without token address on Abstract", market_id=data.get("id"))
+                return False
+            # For other networks, allow (they only have USDC/USDT)
+            return True
+
+        # Normalize addresses for comparison (lowercase)
+        token_address_lower = token_address.lower()
+        allowed_lower = [addr.lower() for addr in allowed_tokens]
+
+        is_allowed = token_address_lower in allowed_lower
+        if not is_allowed:
+            logger.debug(
+                "Filtering out non-USDC market",
+                market_id=data.get("id"),
+                token=token_address,
+                network_id=network_id
+            )
+        return is_allowed
+
     def _parse_market(self, data: dict) -> Market:
         """Parse Myriad API market response into Market object."""
         network_id = data.get("networkId", self._network_id)
@@ -466,6 +526,9 @@ class MyriadPlatform(BasePlatform):
 
             for item in items:
                 try:
+                    # Filter out non-USDC markets (PTS, PENGU on Abstract)
+                    if not self._is_usdc_market(item):
+                        continue
                     markets.append(self._parse_market(item))
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
@@ -496,6 +559,9 @@ class MyriadPlatform(BasePlatform):
 
             for item in items:
                 try:
+                    # Filter out non-USDC markets (PTS, PENGU on Abstract)
+                    if not self._is_usdc_market(item):
+                        continue
                     markets.append(self._parse_market(item))
                 except Exception as e:
                     logger.warning("Failed to parse market in search", error=str(e))
@@ -520,6 +586,10 @@ class MyriadPlatform(BasePlatform):
         # First try as slug (more likely to work)
         try:
             data = await self._api_request("GET", f"/markets/{market_id}")
+            # For direct lookups, still filter non-USDC markets
+            if not self._is_usdc_market(data):
+                logger.info("Market uses non-USDC collateral, not supported", market_id=market_id)
+                return None
             return self._parse_market(data)
         except MarketNotFoundError:
             pass
@@ -537,6 +607,9 @@ class MyriadPlatform(BasePlatform):
                 items = data.get("data", data.get("markets", []))
                 for item in items:
                     if str(item.get("id")) == market_id:
+                        if not self._is_usdc_market(item):
+                            logger.info("Market uses non-USDC collateral", market_id=market_id)
+                            return None
                         return self._parse_market(item)
 
                 # Also check closed markets if needed
@@ -546,6 +619,8 @@ class MyriadPlatform(BasePlatform):
                     items = data.get("data", data.get("markets", []))
                     for item in items:
                         if str(item.get("id")) == market_id:
+                            if not self._is_usdc_market(item):
+                                return None
                             return self._parse_market(item)
 
             except Exception as e:
@@ -603,6 +678,9 @@ class MyriadPlatform(BasePlatform):
 
             for item in items:
                 try:
+                    # Filter out non-USDC markets (PTS, PENGU on Abstract)
+                    if not self._is_usdc_market(item):
+                        continue
                     markets.append(self._parse_market(item))
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
