@@ -1036,9 +1036,15 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 )
 
                 if winning_str and winning_str == outcome_str:
-                    # Won - mark as redeemable but still show for redemption
-                    logger.info(f"Position {pos.id} won! market={pos.market_id}")
-                    active_positions.append(pos)
+                    # Won - check if platform auto-settles
+                    if pos.platform == Platform.KALSHI:
+                        # Kalshi auto-settles - funds already in wallet, mark as redeemed
+                        await update_position(pos.id, status=PositionStatus.REDEEMED, token_amount="0")
+                        logger.info(f"Auto-marked Kalshi position {pos.id} as redeemed (auto-settled)")
+                    else:
+                        # Other platforms require manual redemption
+                        logger.info(f"Position {pos.id} won! market={pos.market_id}")
+                        active_positions.append(pos)
                 elif winning_str and winning_str != outcome_str:
                     # Lost - auto-close the position (only if we KNOW they lost)
                     await update_position(pos.id, status=PositionStatus.CLOSED, token_amount="0")
