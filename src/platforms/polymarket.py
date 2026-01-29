@@ -1884,7 +1884,8 @@ class PolymarketPlatform(BasePlatform):
                 )
 
             # Get condition ID - market_id might be truncated
-            market = await self.get_market(market_id)
+            # IMPORTANT: include_closed=True to find resolved/closed markets
+            market = await self.get_market(market_id, include_closed=True)
             if not market or not market.raw_data:
                 return MarketResolution(
                     is_resolved=False,

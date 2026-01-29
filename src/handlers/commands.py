@@ -1140,6 +1140,18 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         short_title = pos.market_title[:20] + "..." if len(pos.market_title) > 20 else pos.market_title
         outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
 
+        # Fetch fresh market price for resolution check
+        fresh_price = None
+        try:
+            lookup_id = pos.event_id if pos.event_id else pos.market_id
+            market = await platform.get_market(lookup_id, search_title=pos.market_title, include_closed=True)
+            if not market and pos.event_id:
+                market = await platform.get_market(pos.market_id, search_title=pos.market_title, include_closed=True)
+            if market:
+                fresh_price = market.yes_price if outcome_str == "YES" else market.no_price
+        except Exception:
+            pass
+
         # Check if market is resolved for redemption
         # IMPORTANT: Use market_id (specific outcome) not event_id (group) for multi-outcome markets
         try:
@@ -1152,22 +1164,21 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 is_resolved=resolution.is_resolved,
                 winning_outcome=resolution.winning_outcome,
                 position_outcome=outcome_str,
-                current_price=str(pos.current_price) if pos.current_price else "N/A",
+                fresh_price=str(fresh_price) if fresh_price else "N/A",
             )
 
             # Fallback: If price is ~$1 (100¢), market is effectively resolved
             # This catches cases where API resolution check fails
             from src.platforms.base import MarketResolution
             is_resolved = resolution.is_resolved
-            if not is_resolved and pos.current_price:
-                current_price_decimal = Decimal(str(pos.current_price)) if not isinstance(pos.current_price, Decimal) else pos.current_price
+            if not is_resolved and fresh_price:
                 # Price of 0.99+ or 0.01- indicates resolution
-                if current_price_decimal >= Decimal("0.99"):
-                    logger.info("Detected resolved market via price (winner)", position_id=pos.id, price=str(current_price_decimal))
+                if fresh_price >= Decimal("0.99"):
+                    logger.info("Detected resolved market via price (winner)", position_id=pos.id, price=str(fresh_price))
                     is_resolved = True
                     resolution = MarketResolution(is_resolved=True, winning_outcome=outcome_str.lower(), resolution_time=None)
-                elif current_price_decimal <= Decimal("0.01"):
-                    logger.info("Detected resolved market via price (loser)", position_id=pos.id, price=str(current_price_decimal))
+                elif fresh_price <= Decimal("0.01"):
+                    logger.info("Detected resolved market via price (loser)", position_id=pos.id, price=str(fresh_price))
                     is_resolved = True
                     resolution = MarketResolution(is_resolved=True, winning_outcome="no" if outcome_str == "YES" else "yes", resolution_time=None)
 
