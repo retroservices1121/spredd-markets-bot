@@ -1295,7 +1295,11 @@ async def show_orders(target, telegram_id: int, page: int = 0, is_callback: bool
         text += f"{i}. {status} {side} {outcome}{price_str} • {amount}\n"
         text += f"   <i>{market_title}</i>\n"
         if order.tx_hash:
-            text += f"   <a href='{get_platform(user.active_platform).get_explorer_url(order.tx_hash)}'>View TX</a>\n"
+            # Polymarket uses CLOB - tx_hash is order ID, not blockchain tx
+            if order.platform == Platform.POLYMARKET:
+                text += f"   Order: <code>{order.tx_hash[:16]}...</code>\n"
+            else:
+                text += f"   <a href='{get_platform(order.platform).get_explorer_url(order.tx_hash)}'>View TX</a>\n"
         text += "\n"
 
     # Build pagination buttons
