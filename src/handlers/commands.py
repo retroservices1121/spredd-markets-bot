@@ -1144,15 +1144,34 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         # IMPORTANT: Use market_id (specific outcome) not event_id (group) for multi-outcome markets
         try:
             resolution = await platform.get_market_resolution(pos.market_id)
-            logger.debug(
+            logger.info(
                 "Position resolution check",
                 position_id=pos.id,
-                market_id=pos.market_id[:20],
+                market_id=pos.market_id[:20] if pos.market_id else "N/A",
+                platform=pos.platform.value if hasattr(pos.platform, 'value') else str(pos.platform),
                 is_resolved=resolution.is_resolved,
                 winning_outcome=resolution.winning_outcome,
                 position_outcome=outcome_str,
+                current_price=str(pos.current_price) if pos.current_price else "N/A",
             )
-            if resolution.is_resolved:
+
+            # Fallback: If price is ~$1 (100¢), market is effectively resolved
+            # This catches cases where API resolution check fails
+            from src.platforms.base import MarketResolution
+            is_resolved = resolution.is_resolved
+            if not is_resolved and pos.current_price:
+                current_price_decimal = Decimal(str(pos.current_price)) if not isinstance(pos.current_price, Decimal) else pos.current_price
+                # Price of 0.99+ or 0.01- indicates resolution
+                if current_price_decimal >= Decimal("0.99"):
+                    logger.info("Detected resolved market via price (winner)", position_id=pos.id, price=str(current_price_decimal))
+                    is_resolved = True
+                    resolution = MarketResolution(is_resolved=True, winning_outcome=outcome_str.lower(), resolution_time=None)
+                elif current_price_decimal <= Decimal("0.01"):
+                    logger.info("Detected resolved market via price (loser)", position_id=pos.id, price=str(current_price_decimal))
+                    is_resolved = True
+                    resolution = MarketResolution(is_resolved=True, winning_outcome="no" if outcome_str == "YES" else "yes", resolution_time=None)
+
+            if is_resolved:
                 # Show Redeem button for resolved markets
                 if resolution.winning_outcome and resolution.winning_outcome.upper() == outcome_str:
                     buttons.append([
