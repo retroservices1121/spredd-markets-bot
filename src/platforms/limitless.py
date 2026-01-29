@@ -140,11 +140,71 @@ CTF_REDEEM_ABI = [
     }
 ]
 
+# FixedProductMarketMaker ABI for AMM trading (Gnosis-style)
+FPMM_ABI = [
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "investmentAmount", "type": "uint256"},
+            {"name": "outcomeIndex", "type": "uint256"},
+            {"name": "minOutcomeTokensToBuy", "type": "uint256"}
+        ],
+        "name": "buy",
+        "outputs": [],
+        "type": "function"
+    },
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "returnAmount", "type": "uint256"},
+            {"name": "outcomeIndex", "type": "uint256"},
+            {"name": "maxOutcomeTokensToSell", "type": "uint256"}
+        ],
+        "name": "sell",
+        "outputs": [],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "investmentAmount", "type": "uint256"},
+            {"name": "outcomeIndex", "type": "uint256"}
+        ],
+        "name": "calcBuyAmount",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "returnAmount", "type": "uint256"},
+            {"name": "outcomeIndex", "type": "uint256"}
+        ],
+        "name": "calcSellAmount",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "collateralToken",
+        "outputs": [{"name": "", "type": "address"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "fee",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    }
+]
+
 
 class LimitlessPlatform(BasePlatform):
     """
     Limitless Exchange prediction market platform.
-    Uses CLOB API on Base chain.
+    Uses CLOB API on Base chain, with support for AMM markets.
     """
 
     platform = Platform.LIMITLESS
@@ -1069,49 +1129,104 @@ class LimitlessPlatform(BasePlatform):
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.LIMITLESS)
 
-        # Check if this is an AMM market (not yet supported)
+        # Check if this is an AMM market
+        is_amm = False
         if market.raw_data:
             trade_type = market.raw_data.get("tradeType", "").lower()
-            if trade_type == "amm":
-                raise PlatformError(
-                    "This market uses AMM (liquidity pool) trading which is not yet supported. "
-                    "Please try a different market with orderbook trading.",
-                    Platform.LIMITLESS,
-                )
+            is_amm = trade_type == "amm"
 
         # Get token ID
         if not token_id:
             token_id = market.yes_token if outcome == Outcome.YES else market.no_token
 
-        # Get orderbook for pricing (pass slug for fallback lookup)
-        orderbook = await self.get_orderbook(market_id, outcome, token_id=token_id, slug=market.event_id)
+        # Outcome index: 0 = YES, 1 = NO (standard for conditional tokens)
+        outcome_index = 0 if outcome == Outcome.YES else 1
 
-        # For FOK market orders, use realistic prices for display/estimation
-        # takerAmount=1 in the signed order triggers market order semantics
-        if side == "buy":
-            price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
-            expected_output = amount / price
-            input_token = USDC_BASE
-            output_token = token_id or "outcome_token"
-            available_liquidity = orderbook.asks
+        if is_amm:
+            # AMM market - get pricing from contract or tradePrices
+            venue = market.raw_data.get("venue", {})
+            amm_address = venue.get("exchange") or venue.get("address")
+
+            if not amm_address:
+                raise PlatformError("AMM pool address not found for this market", Platform.LIMITLESS)
+
+            # Use tradePrices from market data for pricing
+            trade_prices = market.raw_data.get("tradePrices", {})
+            if side == "buy":
+                buy_prices = trade_prices.get("buy", {}).get("market", [])
+                if buy_prices and len(buy_prices) > outcome_index:
+                    price = Decimal(str(buy_prices[outcome_index]))
+                else:
+                    price = market.yes_price if outcome == Outcome.YES else market.no_price
+                price = price or Decimal("0.5")
+                expected_output = amount / price
+                input_token = USDC_BASE
+                output_token = token_id or "outcome_token"
+            else:
+                sell_prices = trade_prices.get("sell", {}).get("market", [])
+                if sell_prices and len(sell_prices) > outcome_index:
+                    price = Decimal(str(sell_prices[outcome_index]))
+                else:
+                    price = market.yes_price if outcome == Outcome.YES else market.no_price
+                price = price or Decimal("0.5")
+                expected_output = amount * price
+                input_token = token_id or "outcome_token"
+                output_token = USDC_BASE
+
+            # AMM markets always have liquidity (it's a pool)
+            has_liquidity = True
+            total_liquidity = market.liquidity or Decimal("1000")
+            liquidity_warning = None
+
         else:
-            price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
-            expected_output = amount * price
-            input_token = token_id or "outcome_token"
-            output_token = USDC_BASE
-            available_liquidity = orderbook.bids
+            # CLOB market - use orderbook for pricing
+            orderbook = await self.get_orderbook(market_id, outcome, token_id=token_id, slug=market.event_id)
 
-        # Calculate total available liquidity for user feedback
-        total_liquidity = sum(size for _, size in available_liquidity[:5]) if available_liquidity else Decimal("0")
-        has_liquidity = bool(available_liquidity) and total_liquidity > 0
+            # For FOK market orders, use realistic prices for display/estimation
+            # takerAmount=1 in the signed order triggers market order semantics
+            if side == "buy":
+                price = orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+                expected_output = amount / price
+                input_token = USDC_BASE
+                output_token = token_id or "outcome_token"
+                available_liquidity = orderbook.asks
+            else:
+                price = orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+                expected_output = amount * price
+                input_token = token_id or "outcome_token"
+                output_token = USDC_BASE
+                available_liquidity = orderbook.bids
 
-        # Warn if low liquidity (less than 50% of what user wants)
-        needed_tokens = amount / price if side == "buy" else amount
-        liquidity_warning = None
-        if not has_liquidity:
-            liquidity_warning = "No orderbook liquidity - market orders may fail. Consider using a limit order."
-        elif total_liquidity < needed_tokens * Decimal("0.5"):
-            liquidity_warning = f"Low liquidity ({total_liquidity:.1f} tokens available). Order may partially fill or fail."
+            # Calculate total available liquidity for user feedback
+            total_liquidity = sum(size for _, size in available_liquidity[:5]) if available_liquidity else Decimal("0")
+            has_liquidity = bool(available_liquidity) and total_liquidity > 0
+
+            # Warn if low liquidity (less than 50% of what user wants)
+            needed_tokens = amount / price if side == "buy" else amount
+            liquidity_warning = None
+            if not has_liquidity:
+                liquidity_warning = "No orderbook liquidity - market orders may fail. Consider using a limit order."
+            elif total_liquidity < needed_tokens * Decimal("0.5"):
+                liquidity_warning = f"Low liquidity ({total_liquidity:.1f} tokens available). Order may partially fill or fail."
+
+        # Build quote_data
+        quote_data = {
+            "token_id": token_id,
+            "market_slug": market.event_id or market_id,  # Use actual slug, not numeric ID
+            "price": str(price),
+            "market": market.raw_data,
+            "order_type": order_type,  # "market" or "limit"
+            "has_liquidity": has_liquidity,
+            "available_liquidity": str(total_liquidity),
+            "liquidity_warning": liquidity_warning,
+            "is_amm": is_amm,
+            "outcome_index": outcome_index,
+        }
+
+        # Add AMM-specific data
+        if is_amm:
+            venue = market.raw_data.get("venue", {})
+            quote_data["amm_address"] = venue.get("exchange") or venue.get("address")
 
         return Quote(
             platform=Platform.LIMITLESS,
@@ -1128,16 +1243,7 @@ class LimitlessPlatform(BasePlatform):
             platform_fee=(amount * Decimal(self._fee_bps) / Decimal(10000)),
             network_fee_estimate=Decimal("0.001"),  # ETH on Base
             expires_at=None,
-            quote_data={
-                "token_id": token_id,
-                "market_slug": market.event_id or market_id,  # Use actual slug, not numeric ID
-                "price": str(price),
-                "market": market.raw_data,
-                "order_type": order_type,  # "market" or "limit"
-                "has_liquidity": has_liquidity,
-                "available_liquidity": str(total_liquidity),
-                "liquidity_warning": liquidity_warning,
-            },
+            quote_data=quote_data,
         )
 
     async def _get_ctf_address(self, exchange_address: str) -> Optional[str]:
@@ -1582,7 +1688,20 @@ class LimitlessPlatform(BasePlatform):
                     explorer_url=None,
                 )
 
-            # Ensure approvals
+            # Check if this is an AMM market
+            is_amm = quote.quote_data.get("is_amm", False)
+            outcome_index = quote.quote_data.get("outcome_index", 0)
+
+            if is_amm:
+                # AMM trading - direct contract interaction
+                return await self._execute_amm_trade(
+                    quote=quote,
+                    private_key=private_key,
+                    amm_address=exchange,
+                    outcome_index=outcome_index,
+                )
+
+            # CLOB trading - ensure approvals
             if quote.side == "buy":
                 # USDC approval for buys
                 await self._ensure_approval(private_key, exchange)
@@ -1875,6 +1994,181 @@ class LimitlessPlatform(BasePlatform):
         except Exception as e:
             logger.error("Fee collection failed", error=str(e))
             return False, None, str(e)
+
+    async def _execute_amm_trade(
+        self,
+        quote: Quote,
+        private_key: LocalAccount,
+        amm_address: str,
+        outcome_index: int,
+    ) -> TradeResult:
+        """Execute a trade on an AMM market using the FixedProductMarketMaker contract."""
+        import asyncio
+
+        def sync_amm_trade():
+            if not self._sync_web3:
+                raise PlatformError("Web3 not initialized", Platform.LIMITLESS)
+
+            wallet = Web3.to_checksum_address(private_key.address)
+            amm_checksum = Web3.to_checksum_address(amm_address)
+
+            # Create contract instance
+            amm_contract = self._sync_web3.eth.contract(
+                address=amm_checksum,
+                abi=FPMM_ABI
+            )
+
+            # Calculate amounts (USDC has 6 decimals)
+            amount_raw = int(quote.input_amount * Decimal(10 ** 6))
+
+            if quote.side == "buy":
+                # Ensure USDC is approved for the AMM
+                usdc = self._sync_web3.eth.contract(
+                    address=Web3.to_checksum_address(USDC_BASE),
+                    abi=ERC20_ABI
+                )
+
+                # Check and set approval if needed
+                current_allowance = usdc.functions.allowance(wallet, amm_checksum).call()
+                if current_allowance < amount_raw:
+                    nonce = self._sync_web3.eth.get_transaction_count(wallet)
+                    gas_price = self._sync_web3.eth.gas_price
+
+                    approve_tx = usdc.functions.approve(
+                        amm_checksum,
+                        2**256 - 1  # Max approval
+                    ).build_transaction({
+                        "from": wallet,
+                        "nonce": nonce,
+                        "gasPrice": int(gas_price * 1.2),
+                        "gas": 100000,
+                        "chainId": 8453,
+                    })
+
+                    signed_approve = self._sync_web3.eth.account.sign_transaction(approve_tx, private_key.key)
+                    approve_hash = self._sync_web3.eth.send_raw_transaction(signed_approve.raw_transaction)
+                    self._sync_web3.eth.wait_for_transaction_receipt(approve_hash, timeout=60)
+                    logger.info("USDC approved for AMM", amm=amm_address)
+
+                # Calculate minimum output (with 2% slippage tolerance)
+                try:
+                    expected_tokens = amm_contract.functions.calcBuyAmount(amount_raw, outcome_index).call()
+                    min_tokens = int(expected_tokens * 0.98)  # 2% slippage
+                except Exception as calc_err:
+                    logger.warning("calcBuyAmount failed, using estimate", error=str(calc_err))
+                    min_tokens = 1  # Fallback to minimum
+
+                # Execute buy
+                nonce = self._sync_web3.eth.get_transaction_count(wallet)
+                gas_price = self._sync_web3.eth.gas_price
+
+                buy_tx = amm_contract.functions.buy(
+                    amount_raw,
+                    outcome_index,
+                    min_tokens
+                ).build_transaction({
+                    "from": wallet,
+                    "nonce": nonce,
+                    "gasPrice": int(gas_price * 1.2),
+                    "gas": 300000,
+                    "chainId": 8453,
+                })
+
+                signed_buy = self._sync_web3.eth.account.sign_transaction(buy_tx, private_key.key)
+                tx_hash = self._sync_web3.eth.send_raw_transaction(signed_buy.raw_transaction)
+
+                # Wait for confirmation
+                receipt = self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+                return {
+                    "success": receipt.status == 1,
+                    "tx_hash": tx_hash.hex(),
+                    "output_amount": Decimal(expected_tokens) / Decimal(10 ** 18) if expected_tokens else quote.expected_output,
+                }
+
+            else:
+                # Sell: need to approve outcome tokens to AMM
+                # For sells, we need to calculate how many tokens to sell for the desired USDC return
+                try:
+                    tokens_to_sell = amm_contract.functions.calcSellAmount(amount_raw, outcome_index).call()
+                    max_tokens = int(tokens_to_sell * 1.02)  # 2% slippage
+                except Exception as calc_err:
+                    logger.warning("calcSellAmount failed, using estimate", error=str(calc_err))
+                    # Estimate: tokens_to_sell ≈ amount / price
+                    tokens_to_sell = int(quote.input_amount * Decimal(10 ** 18))
+                    max_tokens = int(tokens_to_sell * 1.02)
+
+                # Execute sell
+                nonce = self._sync_web3.eth.get_transaction_count(wallet)
+                gas_price = self._sync_web3.eth.gas_price
+
+                sell_tx = amm_contract.functions.sell(
+                    amount_raw,  # returnAmount (USDC we want)
+                    outcome_index,
+                    max_tokens  # maxOutcomeTokensToSell
+                ).build_transaction({
+                    "from": wallet,
+                    "nonce": nonce,
+                    "gasPrice": int(gas_price * 1.2),
+                    "gas": 300000,
+                    "chainId": 8453,
+                })
+
+                signed_sell = self._sync_web3.eth.account.sign_transaction(sell_tx, private_key.key)
+                tx_hash = self._sync_web3.eth.send_raw_transaction(signed_sell.raw_transaction)
+
+                # Wait for confirmation
+                receipt = self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+                return {
+                    "success": receipt.status == 1,
+                    "tx_hash": tx_hash.hex(),
+                    "output_amount": quote.input_amount,  # For sells, output is USDC
+                }
+
+        try:
+            result = await asyncio.to_thread(sync_amm_trade)
+
+            if result["success"]:
+                tx_hash = result["tx_hash"]
+                return TradeResult(
+                    success=True,
+                    tx_hash=tx_hash,
+                    input_amount=quote.input_amount,
+                    output_amount=result["output_amount"],
+                    error_message=None,
+                    explorer_url=f"https://basescan.org/tx/{tx_hash}",
+                )
+            else:
+                return TradeResult(
+                    success=False,
+                    tx_hash=result.get("tx_hash"),
+                    input_amount=quote.input_amount,
+                    output_amount=None,
+                    error_message="AMM transaction failed",
+                    explorer_url=None,
+                )
+
+        except Exception as e:
+            error_str = str(e)
+            logger.error("AMM trade failed", error=error_str)
+
+            # Provide user-friendly error messages
+            if "insufficient" in error_str.lower():
+                error_msg = "Insufficient balance for this trade"
+            elif "slippage" in error_str.lower() or "min" in error_str.lower():
+                error_msg = "Trade failed due to price movement (slippage). Try again or use a smaller amount."
+            else:
+                error_msg = f"AMM trade failed: {error_str[:100]}"
+
+            return TradeResult(
+                success=False,
+                tx_hash=None,
+                input_amount=quote.input_amount,
+                output_amount=None,
+                error_message=error_msg,
+                explorer_url=None,
+            )
 
     # ===================
     # Resolution & Redemption
