@@ -47,6 +47,13 @@ class OpinionPlatform(BasePlatform):
     collateral_symbol = "USDT"
     collateral_decimals = 18  # USDT on BSC has 18 decimals
 
+    # Contract addresses for BSC mainnet
+    USDT_ADDRESS = "0x55d398326f99059fF775485246999027B3197955"
+    # Default CTF exchange (will be fetched from API)
+    DEFAULT_CTF_EXCHANGE = "0x5F45344126D6488025B0b84A3A8189F2487a7246"
+    # Conditional tokens contract
+    CONDITIONAL_TOKENS = "0xbB5f35D40132A0478f6aa91e79962e9F752167EA"
+
     def __init__(self):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._web3: Optional[AsyncWeb3] = None
@@ -55,8 +62,10 @@ class OpinionPlatform(BasePlatform):
         self._readonly_sdk_client: Any = None
         # Cache SDK clients per wallet address for faster repeat trades
         self._sdk_client_cache: dict[str, Any] = {}
-        # Track wallets that have already enabled trading
+        # Track wallets that have already enabled trading (approved tokens)
         self._trading_enabled_wallets: set[str] = set()
+        # Cache for CTF exchange address
+        self._ctf_exchange_address: Optional[str] = None
     
     async def initialize(self) -> None:
         """Initialize Opinion Labs API client."""
@@ -107,7 +116,191 @@ class OpinionPlatform(BasePlatform):
             self._readonly_sdk_client = None
 
         logger.info("Opinion Labs platform initialized")
-    
+
+    async def _get_ctf_exchange_address(self) -> str:
+        """Get the CTF exchange address from the Opinion API."""
+        if self._ctf_exchange_address:
+            return self._ctf_exchange_address
+
+        try:
+            # Fetch quote tokens to get the CTF exchange address
+            data = await self._api_request("GET", "/openapi/quoteToken", params={"chainId": "56"})
+            quote_tokens = data.get("result", {}).get("list", [])
+
+            for token in quote_tokens:
+                if token.get("quoteTokenAddress", "").lower() == self.USDT_ADDRESS.lower():
+                    self._ctf_exchange_address = token.get("ctfExchangeAddress", self.DEFAULT_CTF_EXCHANGE)
+                    logger.info("Found CTF exchange address", address=self._ctf_exchange_address)
+                    return self._ctf_exchange_address
+
+            # Fallback to default
+            self._ctf_exchange_address = self.DEFAULT_CTF_EXCHANGE
+            return self._ctf_exchange_address
+        except Exception as e:
+            logger.warning("Failed to get CTF exchange address, using default", error=str(e))
+            return self.DEFAULT_CTF_EXCHANGE
+
+    async def _enable_trading_eoa(self, private_key: "LocalAccount") -> bool:
+        """
+        Manually enable trading for an EOA (Externally Owned Account) wallet.
+
+        The Opinion SDK's enable_trading() uses Gnosis Safe multi-sig contracts,
+        which doesn't work for regular EOA wallets created by the bot. This method
+        does the token approvals directly via web3.
+
+        Args:
+            private_key: EVM LocalAccount with the wallet's private key
+
+        Returns:
+            True if approvals were successful, False otherwise
+        """
+        from web3 import Web3
+        from web3.middleware import ExtraDataToPOAMiddleware
+
+        wallet_address = private_key.address
+        wallet_lower = wallet_address.lower()
+
+        # Skip if already enabled
+        if wallet_lower in self._trading_enabled_wallets:
+            logger.debug("Trading already enabled for wallet", wallet=wallet_address[:10])
+            return True
+
+        try:
+            # Create web3 instance
+            w3 = Web3(Web3.HTTPProvider(settings.bsc_rpc_url))
+            w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+
+            # ERC20 ABI for approve
+            erc20_abi = [
+                {
+                    "inputs": [
+                        {"name": "spender", "type": "address"},
+                        {"name": "amount", "type": "uint256"}
+                    ],
+                    "name": "approve",
+                    "outputs": [{"name": "", "type": "bool"}],
+                    "stateMutability": "nonpayable",
+                    "type": "function"
+                },
+                {
+                    "inputs": [
+                        {"name": "owner", "type": "address"},
+                        {"name": "spender", "type": "address"}
+                    ],
+                    "name": "allowance",
+                    "outputs": [{"name": "", "type": "uint256"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                }
+            ]
+
+            # Conditional tokens ABI for setApprovalForAll
+            ct_abi = [
+                {
+                    "inputs": [
+                        {"name": "operator", "type": "address"},
+                        {"name": "approved", "type": "bool"}
+                    ],
+                    "name": "setApprovalForAll",
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                    "type": "function"
+                },
+                {
+                    "inputs": [
+                        {"name": "owner", "type": "address"},
+                        {"name": "operator", "type": "address"}
+                    ],
+                    "name": "isApprovedForAll",
+                    "outputs": [{"name": "", "type": "bool"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                }
+            ]
+
+            # Get CTF exchange address
+            ctf_exchange = await self._get_ctf_exchange_address()
+            ctf_exchange = Web3.to_checksum_address(ctf_exchange)
+            usdt_address = Web3.to_checksum_address(self.USDT_ADDRESS)
+            conditional_tokens = Web3.to_checksum_address(self.CONDITIONAL_TOKENS)
+            wallet_checksum = Web3.to_checksum_address(wallet_address)
+
+            usdt_contract = w3.eth.contract(address=usdt_address, abi=erc20_abi)
+            ct_contract = w3.eth.contract(address=conditional_tokens, abi=ct_abi)
+
+            # Unlimited approval amount
+            max_uint256 = 2**256 - 1
+            # Minimum threshold (1 billion USDT with 18 decimals)
+            min_threshold = 1_000_000_000 * 10**18
+
+            # Check current nonce
+            nonce = w3.eth.get_transaction_count(wallet_checksum)
+
+            # 1. Approve USDT for CTF exchange
+            allowance_ctf = usdt_contract.functions.allowance(wallet_checksum, ctf_exchange).call()
+            if allowance_ctf < min_threshold:
+                logger.info("Approving USDT for CTF exchange", wallet=wallet_address[:10], ctf_exchange=ctf_exchange[:10])
+                tx = usdt_contract.functions.approve(ctf_exchange, max_uint256).build_transaction({
+                    "from": wallet_checksum,
+                    "nonce": nonce,
+                    "gas": 100000,
+                    "gasPrice": w3.eth.gas_price,
+                })
+                signed = w3.eth.account.sign_transaction(tx, private_key.key)
+                tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                if receipt["status"] != 1:
+                    raise Exception(f"USDT approval for CTF exchange failed: {tx_hash.hex()}")
+                logger.info("USDT approved for CTF exchange", tx_hash=tx_hash.hex())
+                nonce += 1
+
+            # 2. Approve USDT for Conditional Tokens contract
+            allowance_ct = usdt_contract.functions.allowance(wallet_checksum, conditional_tokens).call()
+            if allowance_ct < min_threshold:
+                logger.info("Approving USDT for Conditional Tokens", wallet=wallet_address[:10])
+                tx = usdt_contract.functions.approve(conditional_tokens, max_uint256).build_transaction({
+                    "from": wallet_checksum,
+                    "nonce": nonce,
+                    "gas": 100000,
+                    "gasPrice": w3.eth.gas_price,
+                })
+                signed = w3.eth.account.sign_transaction(tx, private_key.key)
+                tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                if receipt["status"] != 1:
+                    raise Exception(f"USDT approval for Conditional Tokens failed: {tx_hash.hex()}")
+                logger.info("USDT approved for Conditional Tokens", tx_hash=tx_hash.hex())
+                nonce += 1
+
+            # 3. SetApprovalForAll on Conditional Tokens for CTF exchange
+            is_approved = ct_contract.functions.isApprovedForAll(wallet_checksum, ctf_exchange).call()
+            if not is_approved:
+                logger.info("Setting approval for all on Conditional Tokens", wallet=wallet_address[:10])
+                tx = ct_contract.functions.setApprovalForAll(ctf_exchange, True).build_transaction({
+                    "from": wallet_checksum,
+                    "nonce": nonce,
+                    "gas": 100000,
+                    "gasPrice": w3.eth.gas_price,
+                })
+                signed = w3.eth.account.sign_transaction(tx, private_key.key)
+                tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                if receipt["status"] != 1:
+                    raise Exception(f"SetApprovalForAll failed: {tx_hash.hex()}")
+                logger.info("SetApprovalForAll completed", tx_hash=tx_hash.hex())
+
+            # Mark wallet as enabled
+            self._trading_enabled_wallets.add(wallet_lower)
+            logger.info("Trading enabled for EOA wallet", wallet=wallet_address[:10])
+            return True
+
+        except Exception as e:
+            logger.error("Failed to enable trading for EOA wallet", error=str(e), wallet=wallet_address[:10])
+            raise PlatformError(
+                f"Failed to approve tokens on Opinion. Ensure wallet has BNB for gas. Error: {str(e)[:100]}",
+                Platform.OPINION,
+            )
+
     async def close(self) -> None:
         """Close connections."""
         if self._http_client:
@@ -751,15 +944,18 @@ class OpinionPlatform(BasePlatform):
 
             wallet_address = private_key.address.lower()
 
+            # Enable trading (token approvals) using direct web3 transactions
+            # This is required because the SDK's enable_trading() uses Gnosis Safe,
+            # which doesn't work for regular EOA wallets created by the bot.
+            await self._enable_trading_eoa(private_key)
+
             # Use cached SDK client or create new one
             if wallet_address in self._sdk_client_cache:
                 client = self._sdk_client_cache[wallet_address]
                 logger.debug("Using cached Opinion SDK client", wallet=wallet_address[:10])
             else:
                 # Initialize SDK client
-                # Use configured multi_sig_addr, or user's wallet address if not set
-                # (zero address causes "approve from the zero address" error)
-                multi_sig = settings.opinion_multi_sig_addr or private_key.address
+                # Use the user's wallet address as multi_sig_addr (SDK requirement)
                 # Private key needs "0x" prefix for the SDK
                 pk_hex = private_key.key.hex()
                 if not pk_hex.startswith("0x"):
@@ -770,40 +966,10 @@ class OpinionPlatform(BasePlatform):
                     chain_id=56,  # BNB Chain mainnet
                     rpc_url=settings.bsc_rpc_url,
                     private_key=pk_hex,
-                    multi_sig_addr=multi_sig,
+                    multi_sig_addr=private_key.address,
                 )
                 self._sdk_client_cache[wallet_address] = client
-                logger.debug("Created new Opinion SDK client", wallet=wallet_address[:10], multi_sig=multi_sig[:10])
-
-            # Enable trading only if not already done for this wallet
-            if wallet_address not in self._trading_enabled_wallets:
-                try:
-                    client.enable_trading()
-                    self._trading_enabled_wallets.add(wallet_address)
-                    logger.debug("Trading enabled for wallet", wallet=wallet_address[:10])
-                except Exception as e:
-                    error_str = str(e).lower()
-                    # Check for known non-critical errors (already approved, etc.)
-                    non_critical_phrases = [
-                        "already approved",
-                        "allowance",
-                        "already enabled",
-                        "nonce too low",  # Transaction already processed
-                    ]
-                    is_non_critical = any(phrase in error_str for phrase in non_critical_phrases)
-
-                    if is_non_critical:
-                        # Safe to continue - wallet may already be set up
-                        self._trading_enabled_wallets.add(wallet_address)
-                        logger.debug("enable_trading (already set up)", wallet=wallet_address[:10])
-                    else:
-                        # Critical error - cannot proceed with trading
-                        self._sdk_client_cache.pop(wallet_address, None)
-                        logger.error("enable_trading failed", error=str(e)[:200])
-                        raise PlatformError(
-                            f"Failed to enable trading on Opinion. Please ensure your wallet has some BNB for gas and try again. Error: {str(e)[:100]}",
-                            Platform.OPINION,
-                        )
+                logger.debug("Created new Opinion SDK client", wallet=wallet_address[:10])
 
             token_id = quote.quote_data["token_id"]
             market_id = int(quote.quote_data["market_id"])
@@ -836,7 +1002,9 @@ class OpinionPlatform(BasePlatform):
                 amount=amount_str,
             )
 
-            result = client.place_order(order, check_approval=True)
+            # check_approval=False because we already did manual approvals via _enable_trading_eoa()
+            # The SDK's check_approval uses Gnosis Safe which doesn't work for EOA wallets
+            result = client.place_order(order, check_approval=False)
 
             if result.errno != 0:
                 raise PlatformError(
