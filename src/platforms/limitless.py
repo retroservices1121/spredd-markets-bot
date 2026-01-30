@@ -1134,6 +1134,12 @@ class LimitlessPlatform(BasePlatform):
         if market.raw_data:
             trade_type = market.raw_data.get("tradeType", "").lower()
             is_amm = trade_type == "amm"
+            logger.debug(
+                "Market trade type detected",
+                market_id=market_id,
+                trade_type=trade_type or "unknown",
+                is_amm=is_amm,
+            )
 
         # Get token ID
         if not token_id:
@@ -1747,10 +1753,10 @@ class LimitlessPlatform(BasePlatform):
                             input_amount=quote.input_amount,
                             output_amount=None,
                             error_message=(
-                                f"No liquidity available for market orders on this market. "
-                                f"The orderbook has no {'asks' if quote.side == 'buy' else 'bids'} "
-                                f"for {quote.outcome.value.upper()}. "
-                                f"Try using a limit order instead, or try a different market."
+                                f"No orderbook liquidity for {quote.outcome.value.upper()}. "
+                                f"This market has no {'sellers' if quote.side == 'buy' else 'buyers'} right now.\n\n"
+                                f"💡 Use a LIMIT ORDER to place your order at a specific price - "
+                                f"it will fill when someone matches it."
                             ),
                             explorer_url=None,
                         )
