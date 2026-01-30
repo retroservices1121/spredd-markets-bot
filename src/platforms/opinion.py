@@ -783,18 +783,27 @@ class OpinionPlatform(BasePlatform):
                     logger.debug("Trading enabled for wallet", wallet=wallet_address[:10])
                 except Exception as e:
                     error_str = str(e).lower()
-                    # Check for critical errors that indicate SDK misconfiguration
-                    if "zero address" in error_str or "invalid address" in error_str:
-                        # Clear cached client as it's broken
+                    # Check for known non-critical errors (already approved, etc.)
+                    non_critical_phrases = [
+                        "already approved",
+                        "allowance",
+                        "already enabled",
+                        "nonce too low",  # Transaction already processed
+                    ]
+                    is_non_critical = any(phrase in error_str for phrase in non_critical_phrases)
+
+                    if is_non_critical:
+                        # Safe to continue - wallet may already be set up
+                        self._trading_enabled_wallets.add(wallet_address)
+                        logger.debug("enable_trading (already set up)", wallet=wallet_address[:10])
+                    else:
+                        # Critical error - cannot proceed with trading
                         self._sdk_client_cache.pop(wallet_address, None)
+                        logger.error("enable_trading failed", error=str(e)[:200])
                         raise PlatformError(
-                            f"SDK initialization failed: {e}. Check API key and wallet configuration.",
+                            f"Failed to enable trading on Opinion. Please ensure your wallet has some BNB for gas and try again. Error: {str(e)[:100]}",
                             Platform.OPINION,
                         )
-                    # Non-critical errors (e.g., already enabled, allowance already set)
-                    # are safe to ignore - mark as done
-                    self._trading_enabled_wallets.add(wallet_address)
-                    logger.debug("enable_trading call (continuing)", note=str(e)[:100])
 
             token_id = quote.quote_data["token_id"]
             market_id = int(quote.quote_data["market_id"])
