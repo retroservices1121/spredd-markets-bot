@@ -257,7 +257,11 @@ Platform: {alert.platform.value.title()}
         """
         Find arbitrage opportunities across all 5 platforms:
         Polymarket, Kalshi, Limitless, Opinion Labs, and Myriad.
-        Compares YES prices for matching markets.
+
+        Uses real orderbook prices for accurate arbitrage calculation:
+        - Buy price = best ask (what you pay to buy)
+        - Sell price = best bid (what you get when selling)
+        - Real spread = sell_bid - buy_ask
         """
         opportunities = []
 
@@ -268,6 +272,16 @@ Platform: {alert.platform.value.title()}
             from src.platforms.limitless import limitless_platform
             from src.platforms.opinion import opinion_platform
             from src.platforms.myriad import myriad_platform
+            from src.db.models import Outcome
+
+            # Platform instances for orderbook fetching
+            platform_instances = {
+                Platform.POLYMARKET: polymarket_platform,
+                Platform.KALSHI: kalshi_platform,
+                Platform.LIMITLESS: limitless_platform,
+                Platform.OPINION: opinion_platform,
+                Platform.MYRIAD: myriad_platform,
+            }
 
             # Fetch all markets in parallel
             results = await asyncio.gather(
@@ -302,6 +316,7 @@ Platform: {alert.platform.value.title()}
                 kalshi=len(platform_markets[Platform.KALSHI]),
                 limitless=len(platform_markets[Platform.LIMITLESS]),
                 opinion=len(platform_markets[Platform.OPINION]),
+                myriad=len(platform_markets[Platform.MYRIAD]),
             )
 
             # Extract key identifiers from titles for matching
@@ -317,6 +332,34 @@ Platform: {alert.platform.value.title()}
                 stop_words = {"the", "a", "an", "to", "in", "on", "at", "be", "or", "and", "?", "of", "for", "-", "by"}
                 return {w for w in words if w not in stop_words and len(w) > 2}
 
+            # Helper to fetch real orderbook prices for a market
+            async def get_orderbook_prices(platform: Platform, market) -> tuple[Decimal | None, Decimal | None]:
+                """
+                Fetch real orderbook prices for a market.
+                Returns (best_ask, best_bid) - what you pay to buy, what you get to sell.
+                """
+                try:
+                    platform_instance = platform_instances.get(platform)
+                    if not platform_instance:
+                        return market.yes_price, market.yes_price
+
+                    # Get slug for platforms that need it (Limitless, Myriad)
+                    slug = None
+                    if market.raw_data and isinstance(market.raw_data, dict):
+                        slug = market.raw_data.get("slug") or market.event_id
+
+                    orderbook = await platform_instance.get_orderbook(market.market_id, Outcome.YES, slug=slug)
+
+                    if orderbook:
+                        best_ask = orderbook.best_ask or market.yes_price
+                        best_bid = orderbook.best_bid or market.yes_price
+                        return best_ask, best_bid
+
+                    return market.yes_price, market.yes_price
+                except Exception as e:
+                    logger.debug(f"Orderbook fetch failed for {platform.value}:{market.market_id[:10]}", error=str(e)[:50])
+                    return market.yes_price, market.yes_price
+
             # Pre-compute match keys for all markets
             market_keys: dict[Platform, list[tuple]] = {}
             for platform, markets in platform_markets.items():
@@ -326,8 +369,9 @@ Platform: {alert.platform.value.title()}
                     if m.yes_price is not None
                 ]
 
-            # Compare all platform pairs
-            seen_pairs = set()  # Track seen market pairs to avoid duplicates
+            # First pass: find candidate pairs based on title similarity
+            candidate_pairs = []
+            seen_pairs = set()
 
             for i, platform_a in enumerate(platforms_list):
                 for platform_b in platforms_list[i + 1:]:  # Only compare each pair once
@@ -351,60 +395,99 @@ Platform: {alert.platform.value.title()}
                             if similarity < 0.4 or len(common) < 3:
                                 continue
 
-                            # Get prices and calculate spread
-                            price_a = market_a.yes_price
-                            price_b = market_b.yes_price
-                            spread_decimal = abs(price_a - price_b)
-                            spread_cents = int(spread_decimal * 100)
-
-                            # Skip if spread is too small
-                            if spread_decimal < self.min_arbitrage_spread:
-                                continue
-
-                            # Determine buy/sell direction (buy low, sell high)
-                            if price_a < price_b:
-                                buy_platform, sell_platform = platform_a, platform_b
-                                buy_market, sell_market = market_a, market_b
-                                buy_price, sell_price = price_a, price_b
-                            else:
-                                buy_platform, sell_platform = platform_b, platform_a
-                                buy_market, sell_market = market_b, market_a
-                                buy_price, sell_price = price_b, price_a
-
-                            # Calculate profit potential after fees (~4% round-trip)
-                            estimated_fees = Decimal("0.04")
-                            profit_potential = spread_decimal - estimated_fees
-                            profit_percent = (profit_potential * 100) if profit_potential > 0 else Decimal("0")
-
-                            # Create unique ID
-                            opp_id = f"{buy_market.market_id[:6]}-{sell_market.market_id[:6]}"
-
                             # Skip if we've seen this pair
-                            pair_key = (buy_market.market_id, sell_market.market_id)
+                            pair_key = (market_a.market_id, market_b.market_id)
                             if pair_key in seen_pairs:
                                 continue
                             seen_pairs.add(pair_key)
 
-                            opp = ArbitrageOpportunity(
-                                id=opp_id,
-                                market_title=buy_market.title[:80],
-                                buy_platform=buy_platform,
-                                sell_platform=sell_platform,
-                                buy_market_id=buy_market.market_id,
-                                sell_market_id=sell_market.market_id,
-                                buy_price=buy_price,
-                                sell_price=sell_price,
-                                spread_cents=spread_cents,
-                                profit_potential=profit_percent,
-                                buy_title=buy_market.title[:50],
-                                sell_title=sell_market.title[:50],
-                            )
+                            # Quick check: if mid-prices are too close, skip orderbook fetch
+                            mid_spread = abs(market_a.yes_price - market_b.yes_price)
+                            if mid_spread < Decimal("0.02"):  # Less than 2% spread in mid-price
+                                continue
 
-                            # Check cache for significant changes
-                            cached = self._arbitrage_cache.get(opp_id)
-                            if not cached or abs(cached.spread_cents - spread_cents) >= 2:
-                                self._arbitrage_cache[opp_id] = opp
-                                opportunities.append(opp)
+                            candidate_pairs.append((platform_a, market_a, platform_b, market_b))
+
+            logger.info(f"Found {len(candidate_pairs)} candidate arbitrage pairs, fetching orderbooks...")
+
+            # Second pass: fetch real orderbook prices for candidates
+            for platform_a, market_a, platform_b, market_b in candidate_pairs[:20]:  # Limit to top 20 to avoid API spam
+                try:
+                    # Fetch orderbooks for both markets
+                    (ask_a, bid_a), (ask_b, bid_b) = await asyncio.gather(
+                        get_orderbook_prices(platform_a, market_a),
+                        get_orderbook_prices(platform_b, market_b),
+                    )
+
+                    if not all([ask_a, bid_a, ask_b, bid_b]):
+                        continue
+
+                    # Calculate real arbitrage spread
+                    # Option 1: Buy on A (pay ask_a), sell on B (get bid_b)
+                    spread_a_to_b = bid_b - ask_a
+                    # Option 2: Buy on B (pay ask_b), sell on A (get bid_a)
+                    spread_b_to_a = bid_a - ask_b
+
+                    # Pick the better direction
+                    if spread_a_to_b > spread_b_to_a:
+                        buy_platform, sell_platform = platform_a, platform_b
+                        buy_market, sell_market = market_a, market_b
+                        buy_price, sell_price = ask_a, bid_b  # Buy at ask, sell at bid
+                        spread_decimal = spread_a_to_b
+                    else:
+                        buy_platform, sell_platform = platform_b, platform_a
+                        buy_market, sell_market = market_b, market_a
+                        buy_price, sell_price = ask_b, bid_a
+                        spread_decimal = spread_b_to_a
+
+                    spread_cents = int(spread_decimal * 100)
+
+                    # Skip if spread is too small (must be > 3% to cover fees)
+                    if spread_decimal < self.min_arbitrage_spread:
+                        continue
+
+                    # Calculate profit potential after fees (~4% round-trip)
+                    estimated_fees = Decimal("0.04")
+                    profit_potential = spread_decimal - estimated_fees
+                    profit_percent = (profit_potential * 100) if profit_potential > 0 else Decimal("0")
+
+                    # Create unique ID
+                    opp_id = f"{buy_market.market_id[:6]}-{sell_market.market_id[:6]}"
+
+                    opp = ArbitrageOpportunity(
+                        id=opp_id,
+                        market_title=buy_market.title[:80],
+                        buy_platform=buy_platform,
+                        sell_platform=sell_platform,
+                        buy_market_id=buy_market.market_id,
+                        sell_market_id=sell_market.market_id,
+                        buy_price=buy_price,
+                        sell_price=sell_price,
+                        spread_cents=spread_cents,
+                        profit_potential=profit_percent,
+                        buy_title=buy_market.title[:50],
+                        sell_title=sell_market.title[:50],
+                    )
+
+                    # Check cache for significant changes
+                    cached = self._arbitrage_cache.get(opp_id)
+                    if not cached or abs(cached.spread_cents - spread_cents) >= 2:
+                        self._arbitrage_cache[opp_id] = opp
+                        opportunities.append(opp)
+
+                    logger.info(
+                        "Arbitrage opportunity found",
+                        buy_platform=buy_platform.value,
+                        sell_platform=sell_platform.value,
+                        buy_price=str(buy_price),
+                        sell_price=str(sell_price),
+                        spread_cents=spread_cents,
+                        title=buy_market.title[:40],
+                    )
+
+                except Exception as e:
+                    logger.warning("Error processing arbitrage pair", error=str(e)[:100])
+                    continue
 
             # Sort by profit potential (highest first)
             opportunities.sort(key=lambda x: x.profit_potential, reverse=True)
