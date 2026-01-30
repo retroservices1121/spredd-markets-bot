@@ -757,8 +757,9 @@ class OpinionPlatform(BasePlatform):
                 logger.debug("Using cached Opinion SDK client", wallet=wallet_address[:10])
             else:
                 # Initialize SDK client
-                # Use configured multi_sig_addr or a valid dummy address if not set
-                multi_sig = settings.opinion_multi_sig_addr or ("0x" + "0" * 40)
+                # Use configured multi_sig_addr, or user's wallet address if not set
+                # (zero address causes "approve from the zero address" error)
+                multi_sig = settings.opinion_multi_sig_addr or private_key.address
                 # Private key needs "0x" prefix for the SDK
                 pk_hex = private_key.key.hex()
                 if not pk_hex.startswith("0x"):
@@ -772,7 +773,7 @@ class OpinionPlatform(BasePlatform):
                     multi_sig_addr=multi_sig,
                 )
                 self._sdk_client_cache[wallet_address] = client
-                logger.debug("Created new Opinion SDK client", wallet=wallet_address[:10], pk_prefix=pk_hex[:6])
+                logger.debug("Created new Opinion SDK client", wallet=wallet_address[:10], multi_sig=multi_sig[:10])
 
             # Enable trading only if not already done for this wallet
             if wallet_address not in self._trading_enabled_wallets:
