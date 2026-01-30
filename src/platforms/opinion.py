@@ -759,16 +759,20 @@ class OpinionPlatform(BasePlatform):
                 # Initialize SDK client
                 # Use configured multi_sig_addr or a valid dummy address if not set
                 multi_sig = settings.opinion_multi_sig_addr or ("0x" + "0" * 40)
+                # Private key needs "0x" prefix for the SDK
+                pk_hex = private_key.key.hex()
+                if not pk_hex.startswith("0x"):
+                    pk_hex = "0x" + pk_hex
                 client = Client(
                     host=settings.opinion_api_url,
                     apikey=(settings.opinion_api_key or "").strip(),
                     chain_id=56,  # BNB Chain mainnet
                     rpc_url=settings.bsc_rpc_url,
-                    private_key=private_key.key.hex(),
+                    private_key=pk_hex,
                     multi_sig_addr=multi_sig,
                 )
                 self._sdk_client_cache[wallet_address] = client
-                logger.debug("Created new Opinion SDK client", wallet=wallet_address[:10])
+                logger.debug("Created new Opinion SDK client", wallet=wallet_address[:10], pk_prefix=pk_hex[:6])
 
             # Enable trading only if not already done for this wallet
             if wallet_address not in self._trading_enabled_wallets:
@@ -777,9 +781,19 @@ class OpinionPlatform(BasePlatform):
                     self._trading_enabled_wallets.add(wallet_address)
                     logger.debug("Trading enabled for wallet", wallet=wallet_address[:10])
                 except Exception as e:
-                    # If it fails, wallet might already be enabled - mark as done
+                    error_str = str(e).lower()
+                    # Check for critical errors that indicate SDK misconfiguration
+                    if "zero address" in error_str or "invalid address" in error_str:
+                        # Clear cached client as it's broken
+                        self._sdk_client_cache.pop(wallet_address, None)
+                        raise PlatformError(
+                            f"SDK initialization failed: {e}. Check API key and wallet configuration.",
+                            Platform.OPINION,
+                        )
+                    # Non-critical errors (e.g., already enabled, allowance already set)
+                    # are safe to ignore - mark as done
                     self._trading_enabled_wallets.add(wallet_address)
-                    logger.debug("enable_trading call", note=str(e))
+                    logger.debug("enable_trading call (continuing)", note=str(e)[:100])
 
             token_id = quote.quote_data["token_id"]
             market_id = int(quote.quote_data["market_id"])
@@ -791,14 +805,16 @@ class OpinionPlatform(BasePlatform):
             # Price: use limit_price for limit orders, "0" for market orders
             price = str(limit_price) if order_type == "limit" and limit_price else "0"
 
+            # Amount should be passed as string per SDK docs
+            amount_str = str(quote.input_amount)
             order = PlaceOrderDataInput(
                 marketId=market_id,
                 tokenId=token_id,
                 side=order_side,
                 orderType=sdk_order_type,
                 price=price,
-                makerAmountInQuoteToken=float(quote.input_amount) if quote.side == "buy" else None,
-                makerAmountInBaseToken=float(quote.input_amount) if quote.side == "sell" else None,
+                makerAmountInQuoteToken=amount_str if quote.side == "buy" else None,
+                makerAmountInBaseToken=amount_str if quote.side == "sell" else None,
             )
 
             logger.info(
@@ -807,7 +823,7 @@ class OpinionPlatform(BasePlatform):
                 token_id=token_id,
                 side=quote.side,
                 order_type=order_type,
-                amount=float(quote.input_amount),
+                amount=amount_str,
             )
 
             result = client.place_order(order, check_approval=True)
