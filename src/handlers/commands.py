@@ -1090,6 +1090,25 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
     else:
         text = f"📊 <b>Your {platform_info['name']} Positions</b>\n\n"
 
+    # Helper to check if outcome name is custom (not just Yes/No)
+    def get_display_outcome(outcome_str: str, market) -> str:
+        """Get display name for outcome, using custom name if available."""
+        if not market:
+            return outcome_str
+
+        # Get the outcome name from market
+        if outcome_str == "YES" and market.yes_outcome_name:
+            name = market.yes_outcome_name.strip()
+            # Only use custom name if it's not just "Yes"/"No"
+            if name.lower() not in ("yes", "no", "y", "n"):
+                return name[:15] + "..." if len(name) > 15 else name
+        elif outcome_str == "NO" and market.no_outcome_name:
+            name = market.no_outcome_name.strip()
+            if name.lower() not in ("yes", "no", "y", "n"):
+                return name[:15] + "..." if len(name) > 15 else name
+
+        return outcome_str
+
     for i, pos in enumerate(positions, start=start_idx + 1):
         title = escape_html(pos.market_title[:40] + "..." if len(pos.market_title) > 40 else pos.market_title)
         outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
@@ -1106,6 +1125,7 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
 
         # Fetch current price from platform
         current_price = None
+        market = None
         try:
             # Try event_id (slug) first for Limitless, then fall back to market_id with title search
             # Use include_closed=True to get prices for resolved/closed markets
@@ -1123,6 +1143,9 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         except Exception:
             pass
 
+        # Get display name for outcome (use custom name if available)
+        display_outcome = get_display_outcome(outcome_str, market)
+
         current = format_price(current_price) if current_price else "N/A"
 
         # Calculate P&L
@@ -1135,7 +1158,7 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
             pnl_emoji = "⚪"
 
         text += f"<b>{i}. {title}</b>\n"
-        text += f"  {outcome_str} ({spent_str}) • Entry: {entry} • Now: {current}\n"
+        text += f"  {display_outcome} ({spent_str}) • Entry: {entry} • Now: {current}\n"
         text += f"  {pnl_emoji} P&L: {pnl_str}\n\n"
 
     # Build buttons - sell/redeem button for each position + pagination
@@ -1148,6 +1171,7 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
 
         # Fetch fresh market price for resolution check
         fresh_price = None
+        market = None
         try:
             lookup_id = pos.event_id if pos.event_id else pos.market_id
             market = await platform.get_market(lookup_id, search_title=pos.market_title, include_closed=True)
@@ -1157,6 +1181,9 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 fresh_price = market.yes_price if outcome_str == "YES" else market.no_price
         except Exception:
             pass
+
+        # Get display name for outcome (use custom name if available)
+        btn_outcome = get_display_outcome(outcome_str, market)
 
         # Check if market is resolved for redemption
         # IMPORTANT: Use market_id (specific outcome) not event_id (group) for multi-outcome markets
@@ -1193,7 +1220,7 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 if resolution.winning_outcome and resolution.winning_outcome.upper() == outcome_str:
                     buttons.append([
                         InlineKeyboardButton(
-                            f"🏆 Redeem {outcome_str}: {short_title}",
+                            f"🏆 Redeem {btn_outcome}: {short_title}",
                             callback_data=f"redeem:{pos.id}"
                         ),
                         InlineKeyboardButton(
@@ -1213,7 +1240,7 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 # Show Sell button for active markets
                 buttons.append([
                     InlineKeyboardButton(
-                        f"💰 Sell {outcome_str}: {short_title}",
+                        f"💰 Sell {btn_outcome}: {short_title}",
                         callback_data=f"sell:{pos.id}"
                     )
                 ])
@@ -1222,7 +1249,7 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
             # Default to Sell if we can't check resolution
             buttons.append([
                 InlineKeyboardButton(
-                    f"💰 Sell {outcome_str}: {short_title}",
+                    f"💰 Sell {btn_outcome}: {short_title}",
                     callback_data=f"sell:{pos.id}"
                 )
             ])
