@@ -2647,13 +2647,26 @@ Expires: {expiration_text}
             has_ou_keywords(question_text)
         )
 
+        # Check if market has custom outcome names (not just "Yes"/"No")
+        def is_custom_outcome_name(name: str) -> bool:
+            """Check if outcome name is different from default Yes/No."""
+            if not name:
+                return False
+            normalized = name.strip().lower()
+            return normalized not in ("yes", "no", "y", "n")
+
+        has_custom_outcomes = (
+            market.yes_outcome_name and market.no_outcome_name and
+            (is_custom_outcome_name(market.yes_outcome_name) or is_custom_outcome_name(market.no_outcome_name))
+        )
+
         if is_player_prop:
             # Player prop - show Over/Under labels
             yes_label = "⬆️ Over"
             no_label = "⬇️ Under"
             yes_btn_label = f"⬆️ Buy OVER ({format_probability(yes_ask_price)})"
             no_btn_label = f"⬇️ Buy UNDER ({format_probability(no_ask_price)})"
-        elif market.yes_outcome_name and market.no_outcome_name:
+        elif has_custom_outcomes:
             # Matchup market with named outcomes (e.g., "Magic vs Cavaliers")
             yes_name = market.yes_outcome_name
             no_name = market.no_outcome_name
