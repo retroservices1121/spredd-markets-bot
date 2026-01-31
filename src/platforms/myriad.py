@@ -135,6 +135,30 @@ MYRIAD_NETWORKS = {
     },
 }
 
+# ERC-1155 ABI for outcome token approvals (setApprovalForAll)
+ERC1155_ABI = [
+    {
+        "inputs": [
+            {"name": "operator", "type": "address"},
+            {"name": "approved", "type": "bool"}
+        ],
+        "name": "setApprovalForAll",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "account", "type": "address"},
+            {"name": "operator", "type": "address"}
+        ],
+        "name": "isApprovedForAll",
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+]
+
 # ERC20 ABI for approvals
 ERC20_ABI = [
     {
@@ -938,6 +962,87 @@ class MyriadPlatform(BasePlatform):
         logger.info("Approval confirmed", tx_hash=tx_hash.hex())
         return tx_hash.hex()
 
+    async def _ensure_erc1155_approval(
+        self,
+        private_key: LocalAccount,
+        network_id: int,
+        token_contract: str,
+        operator_address: str,
+    ) -> Optional[str]:
+        """
+        Ensure ERC-1155 approval for operator (needed for selling outcome tokens).
+        The prediction market contract is both the token contract and the operator.
+        Returns tx hash if approval was needed.
+        """
+        web3 = await self._ensure_web3(network_id)
+        user_address = private_key.address
+
+        token = web3.eth.contract(
+            address=Web3.to_checksum_address(token_contract),
+            abi=ERC1155_ABI,
+        )
+
+        # Check if already approved
+        is_approved = await token.functions.isApprovedForAll(
+            Web3.to_checksum_address(user_address),
+            Web3.to_checksum_address(operator_address),
+        ).call()
+
+        if is_approved:
+            logger.debug("ERC-1155 already approved for operator", operator=operator_address[:10])
+            return None
+
+        logger.info("Setting ERC-1155 approval for sells", token=token_contract[:10], operator=operator_address[:10])
+
+        # Use ZKsync SDK for Abstract chain
+        if self._is_zksync_network(network_id):
+            sync_token = Web3().eth.contract(
+                address=Web3.to_checksum_address(token_contract),
+                abi=ERC1155_ABI,
+            )
+            approve_data = sync_token.encode_abi(
+                "setApprovalForAll",
+                [Web3.to_checksum_address(operator_address), True]
+            )
+
+            tx_hash = await self._send_zksync_transaction(
+                network_id=network_id,
+                private_key=private_key,
+                to_address=token_contract,
+                data=approve_data,
+            )
+
+            receipt = await self._wait_for_zksync_receipt(network_id, tx_hash, timeout=60)
+            if receipt.get("status") != 1:
+                raise PlatformError("ERC-1155 approval transaction failed", Platform.MYRIAD)
+
+            logger.info("ZKsync ERC-1155 approval confirmed", tx_hash=tx_hash)
+            return tx_hash
+
+        # Standard EVM transaction
+        nonce = await web3.eth.get_transaction_count(user_address)
+        gas_price = await web3.eth.gas_price
+
+        tx = await token.functions.setApprovalForAll(
+            Web3.to_checksum_address(operator_address),
+            True,
+        ).build_transaction({
+            "from": user_address,
+            "nonce": nonce,
+            "gasPrice": gas_price,
+            "gas": 100000,
+        })
+
+        signed = private_key.sign_transaction(tx)
+        tx_hash = await web3.eth.send_raw_transaction(signed.raw_transaction)
+
+        receipt = await web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        if receipt["status"] != 1:
+            raise PlatformError("ERC-1155 approval transaction failed", Platform.MYRIAD)
+
+        logger.info("ERC-1155 approval confirmed", tx_hash=tx_hash.hex())
+        return tx_hash.hex()
+
     async def execute_trade(
         self,
         quote: Quote,
@@ -967,7 +1072,7 @@ class MyriadPlatform(BasePlatform):
             web3 = await self._ensure_web3(network_id)
             user_address = private_key.address
 
-            # For buy orders, ensure collateral approval
+            # For buy orders, ensure collateral (USDC) approval
             if quote.side == "buy":
                 # Convert amount to token units
                 amount_units = int(quote.input_amount * (10 ** collateral_decimals))
@@ -982,6 +1087,19 @@ class MyriadPlatform(BasePlatform):
 
                 if approval_tx:
                     logger.info("Token approval completed", tx_hash=approval_tx)
+
+            # For sell orders, ensure ERC-1155 approval for outcome tokens
+            # The prediction market contract needs approval to transfer user's shares
+            if quote.side == "sell":
+                approval_tx = await self._ensure_erc1155_approval(
+                    private_key=private_key,
+                    network_id=network_id,
+                    token_contract=prediction_market,  # Myriad: PM contract is also the token contract
+                    operator_address=prediction_market,
+                )
+
+                if approval_tx:
+                    logger.info("ERC-1155 approval completed for sell", tx_hash=approval_tx)
 
             # Build transaction with calldata
             nonce = await web3.eth.get_transaction_count(user_address)
@@ -1001,16 +1119,22 @@ class MyriadPlatform(BasePlatform):
                 gas_limit = int(gas_estimate * 1.2)  # 20% buffer
             except Exception as e:
                 error_str = str(e)
-                logger.warning("Gas estimation failed", error=error_str)
+                logger.warning("Gas estimation failed", error=error_str, side=quote.side)
 
                 # Check if this is an actual execution error vs just gas estimation
                 if "execution reverted" in error_str.lower():
-                    # Try to extract revert reason
+                    # Try to extract revert reason - differentiate buy vs sell errors
                     if "insufficient" in error_str.lower():
-                        raise PlatformError(
-                            f"Insufficient balance for this trade. Check your USDC.e balance.",
-                            Platform.MYRIAD
-                        )
+                        if quote.side == "sell":
+                            raise PlatformError(
+                                f"Insufficient shares to sell. You may not have enough outcome tokens for this position.",
+                                Platform.MYRIAD
+                            )
+                        else:
+                            raise PlatformError(
+                                f"Insufficient balance for this trade. Check your {network_config.get('collateral_symbol', 'USDC')} balance.",
+                                Platform.MYRIAD
+                            )
                     raise PlatformError(f"Transaction would fail: {error_str[:200]}", Platform.MYRIAD)
 
                 # Use default gas limit if estimation just failed
