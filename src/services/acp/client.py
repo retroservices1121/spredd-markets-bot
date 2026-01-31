@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Optional
 
+import re
+
 from src.utils.logging import get_logger
 from src.config import settings
 from src.services.acp.schemas import JobType, JOB_OFFERINGS, get_job_schema
@@ -17,6 +19,21 @@ from src.services.acp.handlers import acp_job_handler
 from src.services.acp.wallet_manager import acp_wallet_manager
 
 logger = get_logger(__name__)
+
+
+def _normalize_job_type(job_type_str: str) -> str:
+    """
+    Normalize job type string from camelCase to snake_case.
+
+    ACP butler sends camelCase (e.g., 'searchMarkets') but our
+    internal schema uses snake_case (e.g., 'search_markets').
+    """
+    if not job_type_str:
+        return ""
+    # Convert camelCase to snake_case
+    # e.g., 'searchMarkets' -> 'search_markets'
+    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', job_type_str)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
 
 
 class SpreddACPService:
@@ -186,11 +203,14 @@ class SpreddACPService:
                 phase = phase.value
             phase = str(phase).upper()
 
+            # Normalize for logging
+            normalized_type = _normalize_job_type(job_type_str)
             logger.info(
                 "Processing ACP job",
                 job_id=job_id,
                 phase=phase,
                 job_type=job_type_str,
+                normalized_type=normalized_type,
             )
 
             if phase == "REQUEST":
@@ -218,12 +238,19 @@ class SpreddACPService:
         service_req = getattr(job, "service_requirements", {}) or getattr(job, "requirements", {})
         client_address = getattr(job, "client_address", None) or getattr(job, "buyer_agent_id", "")
 
+        # Normalize job type (camelCase -> snake_case)
+        normalized_job_type = _normalize_job_type(job_type_str)
+
         # Map to our job type
         try:
-            job_type = JobType(job_type_str)
+            job_type = JobType(normalized_job_type)
         except ValueError:
-            await self._reject_job(job, f"Unknown job type: {job_type_str}")
-            return
+            # Try original string as fallback
+            try:
+                job_type = JobType(job_type_str)
+            except ValueError:
+                await self._reject_job(job, f"Unknown job type: {job_type_str}")
+                return
 
         # Get job schema to determine if it's a fund transfer job
         schema = get_job_schema(job_type)
@@ -297,11 +324,18 @@ class SpreddACPService:
             service_req = getattr(job, "service_requirements", {}) or getattr(job, "requirements", {})
             client_address = getattr(job, "client_address", None) or getattr(job, "buyer_agent_id", "unknown")
 
+            # Normalize job type (camelCase -> snake_case)
+            normalized_job_type = _normalize_job_type(job_type_str)
+
             try:
-                job_type = JobType(job_type_str)
+                job_type = JobType(normalized_job_type)
             except ValueError:
-                await self._reject_job(job, f"Unknown job type: {job_type_str}")
-                return
+                # Try original string as fallback
+                try:
+                    job_type = JobType(job_type_str)
+                except ValueError:
+                    await self._reject_job(job, f"Unknown job type: {job_type_str}")
+                    return
 
             job_info = {
                 "job_type": job_type,
