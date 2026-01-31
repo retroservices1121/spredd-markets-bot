@@ -111,16 +111,32 @@ class SpreddACPService:
             else:
                 config = BASE_TESTNET_ACP_CONFIG_V2
 
-            # Initialize the client with on_new_task callback
-            self._acp_client = VirtualsACP(
-                wallet_private_key=settings.acp_agent_wallet_private_key,
-                agent_wallet_address=settings.acp_agent_wallet_address,
-                entity_id=settings.acp_entity_id,
-                config=config,
-                on_new_task=self._on_new_task,
-            )
+            # Try new SDK structure with ACPContractClientV2
+            try:
+                from virtuals_acp.contract import ACPContractClientV2
 
-            logger.info("ACP SDK client initialized (v2)")
+                self._acp_client = VirtualsACP(
+                    acp_contract_clients=ACPContractClientV2(
+                        wallet_private_key=settings.acp_agent_wallet_private_key,
+                        agent_wallet_address=settings.acp_agent_wallet_address,
+                        entity_id=settings.acp_entity_id,
+                        config=config,
+                    ),
+                    on_new_task=self._on_new_task,
+                )
+                logger.info("ACP SDK client initialized (v2 with ACPContractClientV2)")
+
+            except (ImportError, TypeError) as e:
+                # Fallback to direct initialization for older SDK versions
+                logger.warning(f"Falling back to direct VirtualsACP init: {e}")
+                self._acp_client = VirtualsACP(
+                    wallet_private_key=settings.acp_agent_wallet_private_key,
+                    agent_wallet_address=settings.acp_agent_wallet_address,
+                    entity_id=settings.acp_entity_id,
+                    config=config,
+                    on_new_task=self._on_new_task,
+                )
+                logger.info("ACP SDK client initialized (v2 direct)")
 
         except ImportError as e:
             logger.warning(
