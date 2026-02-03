@@ -23,6 +23,8 @@ from api.schemas import (
     TagResponse,
     TrendingTagResponse,
     HealthResponse,
+    ArbitrageResponse,
+    ArbitrageOpportunityResponse,
 )
 
 # Import platform code from bot
@@ -32,6 +34,7 @@ from src.platforms import (
     kalshi_platform,
     opinion_platform,
     limitless_platform,
+    myriad_platform,
 )
 from src.db.models import Platform, Outcome
 from src.config import settings
@@ -71,6 +74,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[WARN] Limitless init failed: {e}")
 
+    try:
+        await myriad_platform.initialize()
+        print("[OK] Myriad initialized")
+    except Exception as e:
+        print(f"[WARN] Myriad init failed: {e}")
+
     platforms_initialized = True
     print("API ready")
 
@@ -81,6 +90,7 @@ async def lifespan(app: FastAPI):
     await kalshi_platform.close()
     await opinion_platform.close()
     await limitless_platform.close()
+    await myriad_platform.close()
 
 
 app = FastAPI(
@@ -179,7 +189,7 @@ async def polymarket_health():
 
 @app.get("/polymarket/markets", response_model=list[MarketResponse])
 async def get_polymarket_markets(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     active: bool = Query(True),
     order: str = Query("volume"),
@@ -329,7 +339,7 @@ async def get_polymarket_market(market_id: str = Path(...)):
             if not found_market:
                 for search_params in [
                     {"active": "true", "limit": 500, "order": "volume24hr", "ascending": "false"},
-                    {"closed": "true", "limit": 200, "order": "volume24hr", "ascending": "false"},
+                    {"closed": "true", "limit": 500, "order": "volume24hr", "ascending": "false"},
                 ]:
                     resp = await client.get(gamma_url, params=search_params)
                     if resp.status_code == 200:
@@ -835,7 +845,7 @@ async def get_polymarket_event(event_id: str = Path(...)):
                 print("Searching through closed events...")
                 resp = await client.get(gamma_url, params={
                     "closed": "true",
-                    "limit": 200,
+                    "limit": 500,
                     "order": "volume24hr",
                     "ascending": "false"
                 })
@@ -977,7 +987,7 @@ async def get_sports_categories():
 
 @app.get("/kalshi/markets", response_model=list[MarketResponse])
 async def get_kalshi_markets(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     active: bool = Query(True),
 ):
@@ -1064,7 +1074,7 @@ async def get_platforms():
 @app.get("/markets", response_model=list[MarketResponse])
 async def get_all_markets(
     platform: Optional[str] = Query(None, description="Filter by platform: polymarket, kalshi, all"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     search: Optional[str] = Query(None),
     active: bool = Query(True),
@@ -1079,7 +1089,7 @@ async def get_all_markets(
     if platform and platform != "all":
         platforms_to_fetch = [platform]
     else:
-        platforms_to_fetch = ["polymarket", "kalshi", "opinion", "limitless"]
+        platforms_to_fetch = ["polymarket", "kalshi", "opinion", "limitless", "myriad"]
 
     async with httpx.AsyncClient(timeout=20.0) as client:
         # Fetch Polymarket markets
@@ -1088,7 +1098,7 @@ async def get_all_markets(
                 gamma_url = "https://gamma-api.polymarket.com/events"
                 resp = await client.get(gamma_url, params={
                     "active": "true" if active else "false",
-                    "limit": 200,
+                    "limit": 500,
                     "order": "volume24hr",
                     "ascending": "false",
                 })
@@ -1096,7 +1106,14 @@ async def get_all_markets(
                 if resp.status_code == 200:
                     all_events = resp.json()
                     for event in all_events:
-                        for m in event.get("markets", []):
+                        event_markets = event.get("markets", [])
+                        event_id = str(event.get("id", ""))
+                        event_title = event.get("title", "")
+                        event_slug = event.get("slug", "")
+                        is_multi_outcome = len(event_markets) > 1  # Multiple markets = multi-outcome event
+                        outcome_count = len(event_markets)
+
+                        for m in event_markets:
                             # Parse outcome prices
                             outcome_prices_raw = m.get("outcomePrices", [])
                             if isinstance(outcome_prices_raw, str):
@@ -1123,9 +1140,13 @@ async def get_all_markets(
                                 except:
                                     outcomes_raw = ["Yes", "No"]
 
+                            # For multi-outcome markets, use groupItemTitle as question
+                            question = m.get("question") or m.get("groupItemTitle") or event_title
+                            group_item_title = m.get("groupItemTitle")
+
                             results.append(MarketResponse(
                                 id=m.get("conditionId") or str(m.get("id", "")),
-                                question=m.get("question") or m.get("groupItemTitle") or event.get("title", ""),
+                                question=question,
                                 description=m.get("description") or event.get("description"),
                                 image=event.get("image"),
                                 icon=event.get("icon"),
@@ -1141,81 +1162,101 @@ async def get_all_markets(
                                 closed=m.get("closed", False),
                                 slug=m.get("conditionId") or str(m.get("id", "")),
                                 platform="polymarket",
+                                # Event grouping fields
+                                eventId=event_id,
+                                eventTitle=event_title,
+                                eventSlug=event_slug,
+                                isMultiOutcome=is_multi_outcome,
+                                outcomeCount=outcome_count,
+                                groupItemTitle=group_item_title,
                             ))
             except Exception as e:
                 print(f"Error fetching Polymarket markets: {e}")
 
-        # Fetch Kalshi markets via DFlow API
+            # Debug: Check if event fields are set
+            if results:
+                sample = results[0]
+                print(f"DEBUG: First market eventId={sample.eventId}, isMultiOutcome={sample.isMultiOutcome}")
+
+        # Fetch Kalshi markets via events endpoint (avoids sports parlay flood)
         if "kalshi" in platforms_to_fetch:
             try:
-                # Use correct DFlow metadata API URL
-                dflow_url = "https://c.prediction-markets-api.dflow.net/api/v1/markets"
-                headers = {"x-api-key": settings.dflow_api_key} if settings.dflow_api_key else {}
+                # First get events
+                events_url = "https://api.elections.kalshi.com/trade-api/v2/events"
+                events_params = {"status": "open", "limit": 50}
+                events_resp = await client.get(events_url, params=events_params, timeout=15.0)
 
-                params = {"limit": 200}
-                if active:
-                    params["status"] = "active"
+                if events_resp.status_code == 200:
+                    events_data = events_resp.json()
+                    events = events_data.get("events", [])
+                    print(f"Got {len(events)} Kalshi events")
 
-                resp = await client.get(dflow_url, headers=headers, params=params, timeout=15.0)
+                    # Fetch markets for each event (in parallel would be better but keeping simple)
+                    kalshi_count = 0
+                    for event in events[:20]:  # Limit to top 20 events
+                        event_ticker = event.get("event_ticker", "")
+                        category = event.get("category", "Other")
 
-                print(f"Kalshi API response status: {resp.status_code}")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    kalshi_markets = data.get("markets", data.get("data", []))
-                    print(f"Got {len(kalshi_markets)} Kalshi markets from API")
-
-                    for m in kalshi_markets:
-                        # Skip inactive markets if active filter is on
-                        status = m.get("status", "").lower()
-                        if active and status not in ["open", "active", ""]:
+                        # Skip multi-variate sports events
+                        if "KXMVE" in event_ticker or "MULTIGAME" in event_ticker:
                             continue
 
-                        # Parse prices (DFlow uses camelCase: yesAsk, noAsk, yesBid, noBid)
-                        # Prices are already in decimal format (0.26 = 26%)
-                        yes_price = m.get("yesAsk") or m.get("yesBid") or 0
-                        no_price = m.get("noAsk") or m.get("noBid") or 0
+                        markets_url = f"https://api.elections.kalshi.com/trade-api/v2/markets"
+                        markets_params = {"event_ticker": event_ticker, "limit": 20}
+                        markets_resp = await client.get(markets_url, params=markets_params, timeout=10.0)
 
-                        # Infer category from ticker
-                        ticker = m.get("ticker", "")
-                        category = "Other"
-                        if any(x in ticker.upper() for x in ["TRUMP", "BIDEN", "DEM", "REP", "ELECT", "PRES", "GOV", "SENATE", "CONGRESS"]):
-                            category = "Politics"
-                        elif any(x in ticker.upper() for x in ["BTC", "ETH", "CRYPTO", "COIN"]):
-                            category = "Crypto"
-                        elif any(x in ticker.upper() for x in ["NBA", "NFL", "MLB", "NHL", "FIFA", "CFP", "SPORT"]):
-                            category = "Sports"
-                        elif any(x in ticker.upper() for x in ["FED", "CPI", "GDP", "RATE", "ECON"]):
-                            category = "Economics"
-                        elif any(x in ticker.upper() for x in ["WEATHER", "TEMP", "HURRICANE"]):
-                            category = "Weather"
+                        if markets_resp.status_code == 200:
+                            markets_data = markets_resp.json()
+                            kalshi_markets = markets_data.get("markets", [])
 
-                        # Convert timestamp to ISO string if needed
-                        end_date = m.get("closeTime") or m.get("expirationTime")
-                        if end_date and isinstance(end_date, (int, float)):
-                            from datetime import datetime
-                            end_date = datetime.fromtimestamp(end_date).isoformat()
-                        elif end_date:
-                            end_date = str(end_date)
+                            for m in kalshi_markets:
+                                ticker = m.get("ticker", "")
+                                status = m.get("status", "").lower()
 
-                        results.append(MarketResponse(
-                            id=m.get("ticker") or str(m.get("id", "")),
-                            question=m.get("title") or m.get("question", ""),
-                            description=m.get("subtitle") or m.get("description"),
-                            image=None,
-                            icon=None,
-                            category=category,
-                            outcomes=["Yes", "No"],
-                            outcomePrices=[str(yes_price or 0), str(no_price or 0)],
-                            clobTokenIds=[],
-                            volume=float(m.get("volume", 0)) if m.get("volume") else None,
-                            volume24hr=float(m.get("openInterest", 0)) if m.get("openInterest") else None,  # Use openInterest as proxy
-                            liquidity=float(m.get("openInterest", 0)) if m.get("openInterest") else None,
-                            endDate=end_date,
-                            active=status in ["open", "active", ""],
-                            closed=status in ["closed", "settled"],
-                            slug=m.get("ticker") or str(m.get("id", "")),
-                            platform="kalshi",
-                        ))
+                                # Skip closed markets if active filter is on
+                                if active and status not in ["open", "active"]:
+                                    continue
+
+                                # Parse prices - use last_price (in cents)
+                                last_price = m.get("last_price", 0) or 0
+                                yes_bid = m.get("yes_bid", 0) or 0
+                                yes_ask = m.get("yes_ask", 0) or 0
+
+                                if last_price > 0:
+                                    yes_price = last_price / 100
+                                elif yes_bid or yes_ask:
+                                    yes_price = ((yes_bid + yes_ask) / 2) / 100
+                                else:
+                                    yes_price = 0.5
+                                no_price = 1 - yes_price
+
+                                open_interest = m.get("open_interest", 0) or 0
+                                volume = float(m.get("volume", 0)) if m.get("volume") else None
+                                volume_24h = float(m.get("volume_24h", 0)) if m.get("volume_24h") else volume
+                                liquidity = float(open_interest) / 100 if open_interest else None
+
+                                results.append(MarketResponse(
+                                    id=ticker,
+                                    question=m.get("title") or event.get("title", ""),
+                                    description=m.get("subtitle") or m.get("rules_primary") or event.get("sub_title"),
+                                    image=m.get("image_url"),
+                                    icon=None,
+                                    category=category,
+                                    outcomes=["Yes", "No"],
+                                    outcomePrices=[f"{yes_price:.4f}", f"{no_price:.4f}"],
+                                    clobTokenIds=[],
+                                    volume=volume,
+                                    volume24hr=volume_24h,
+                                    liquidity=liquidity,
+                                    endDate=m.get("close_time"),
+                                    active=status in ["open", "active"],
+                                    closed=status in ["closed", "settled", "finalized"],
+                                    slug=ticker,
+                                    platform="kalshi",
+                                ))
+                                kalshi_count += 1
+
+                    print(f"Got {kalshi_count} Kalshi markets from events")
             except Exception as e:
                 print(f"Error fetching Kalshi markets: {e}")
 
@@ -1280,10 +1321,22 @@ async def get_all_markets(
         # Fetch Limitless markets
         if "limitless" in platforms_to_fetch:
             try:
-                markets = await limitless_platform.get_markets(limit=100, active_only=True)
+                markets = await limitless_platform.get_markets(limit=500, active_only=True)
                 print(f"Got {len(markets)} Limitless markets from platform")
 
                 for m in markets:
+                    # Convert close_time to ISO string if it's a timestamp
+                    end_date = m.close_time
+                    if end_date and isinstance(end_date, (int, float)):
+                        from datetime import datetime
+                        # Handle milliseconds vs seconds timestamp
+                        if end_date > 1e12:
+                            end_date = datetime.fromtimestamp(end_date / 1000).isoformat()
+                        else:
+                            end_date = datetime.fromtimestamp(end_date).isoformat()
+                    elif end_date:
+                        end_date = str(end_date)
+
                     results.append(MarketResponse(
                         id=m.market_id,
                         question=m.title or "",
@@ -1297,7 +1350,7 @@ async def get_all_markets(
                         volume=float(m.volume_24h) if m.volume_24h else None,
                         volume24hr=float(m.volume_24h) if m.volume_24h else None,
                         liquidity=float(m.liquidity) if m.liquidity else None,
-                        endDate=m.close_time,
+                        endDate=end_date,
                         active=m.is_active,
                         closed=not m.is_active,
                         slug=m.market_id,
@@ -1306,8 +1359,76 @@ async def get_all_markets(
             except Exception as e:
                 print(f"Error fetching Limitless markets: {e}")
 
-    # Sort by volume24hr descending
-    results.sort(key=lambda x: x.volume24hr or 0, reverse=True)
+        # Fetch Myriad markets
+        if "myriad" in platforms_to_fetch:
+            try:
+                markets = await myriad_platform.get_markets(limit=500, active_only=True)
+                print(f"Got {len(markets)} Myriad markets from platform")
+
+                for m in markets:
+                    # Convert close_time to ISO string if needed
+                    end_date = m.close_time
+                    if end_date and isinstance(end_date, (int, float)):
+                        from datetime import datetime
+                        if end_date > 1e12:
+                            end_date = datetime.fromtimestamp(end_date / 1000).isoformat()
+                        else:
+                            end_date = datetime.fromtimestamp(end_date).isoformat()
+                    elif end_date:
+                        end_date = str(end_date)
+
+                    # Use custom outcome names if available
+                    yes_name = getattr(m, 'yes_outcome_name', None) or "Yes"
+                    no_name = getattr(m, 'no_outcome_name', None) or "No"
+
+                    results.append(MarketResponse(
+                        id=m.market_id,
+                        question=m.title or "",
+                        description=m.description,
+                        image=getattr(m, 'image', None),
+                        icon=None,
+                        category=m.category or "Prediction",
+                        outcomes=[yes_name, no_name],
+                        outcomePrices=[str(float(m.yes_price or 0)), str(float(m.no_price or 0))],
+                        clobTokenIds=[],
+                        volume=float(m.volume_24h) if m.volume_24h else None,
+                        volume24hr=float(m.volume_24h) if m.volume_24h else None,
+                        liquidity=float(m.liquidity) if m.liquidity else None,
+                        endDate=end_date,
+                        active=m.is_active,
+                        closed=not m.is_active,
+                        slug=m.market_id,
+                        platform="myriad",
+                    ))
+            except Exception as e:
+                print(f"Error fetching Myriad markets: {e}")
+
+    # Group results by platform and sort each group by volume
+    from collections import defaultdict
+    by_platform = defaultdict(list)
+    for r in results:
+        by_platform[r.platform].append(r)
+
+    # Sort each platform's markets by volume
+    for plat in by_platform:
+        by_platform[plat].sort(key=lambda x: x.volume24hr or 0, reverse=True)
+
+    # Interleave results from all platforms (round-robin) to ensure diversity
+    interleaved = []
+    platform_order = ["polymarket", "kalshi", "limitless", "opinion", "myriad"]
+    indices = {p: 0 for p in platform_order}
+
+    while len(interleaved) < len(results):
+        added_any = False
+        for plat in platform_order:
+            if plat in by_platform and indices[plat] < len(by_platform[plat]):
+                interleaved.append(by_platform[plat][indices[plat]])
+                indices[plat] += 1
+                added_any = True
+        if not added_any:
+            break
+
+    results = interleaved
 
     # Apply search filter if provided
     if search:
@@ -1419,7 +1540,7 @@ async def get_market_by_id(market_id: str = Path(...)):
                 dflow_url = "https://c.prediction-markets-api.dflow.net/api/v1/markets"
                 headers = {"x-api-key": settings.dflow_api_key} if settings.dflow_api_key else {}
 
-                resp = await client.get(dflow_url, headers=headers, params={"limit": 200, "status": "active"})
+                resp = await client.get(dflow_url, headers=headers, params={"limit": 500, "status": "active"})
 
                 if resp.status_code == 200:
                     data = resp.json()
@@ -1506,7 +1627,7 @@ async def get_market_by_id(market_id: str = Path(...)):
                 if not found_market:
                     for search_params in [
                         {"active": "true", "limit": 500, "order": "volume24hr", "ascending": "false"},
-                        {"closed": "true", "limit": 200},
+                        {"closed": "true", "limit": 500},
                     ]:
                         resp = await client.get(gamma_url, params=search_params)
                         if resp.status_code == 200:
@@ -1588,6 +1709,11 @@ async def get_market_by_id(market_id: str = Path(...)):
                     except:
                         outcomes_raw = ["Yes", "No"]
 
+                # Determine if multi-outcome event
+                event_markets = event.get("markets", []) if event else []
+                is_multi_outcome = len(event_markets) > 1
+                outcome_count = len(event_markets)
+
                 return MarketResponse(
                     id=m.get("conditionId") or str(m.get("id", "")),
                     question=m.get("question") or m.get("groupItemTitle") or (event.get("title", "") if event else ""),
@@ -1606,6 +1732,13 @@ async def get_market_by_id(market_id: str = Path(...)):
                     closed=m.get("closed", False),
                     slug=m.get("conditionId") or str(m.get("id", "")),
                     platform="polymarket",
+                    # Event grouping fields
+                    eventId=str(event.get("id", "")) if event else None,
+                    eventTitle=event.get("title") if event else None,
+                    eventSlug=event.get("slug") if event else None,
+                    isMultiOutcome=is_multi_outcome,
+                    outcomeCount=outcome_count,
+                    groupItemTitle=m.get("groupItemTitle"),
                 )
             except HTTPException:
                 raise
@@ -1721,6 +1854,61 @@ async def execute_trade(request: TradeRequest):
         input_amount=request.amount,
         error_message="Trading requires wallet setup. Please use the Telegram bot for trading.",
     )
+
+
+# ===================
+# Arbitrage Opportunities
+# ===================
+
+@app.get("/arbitrage", response_model=ArbitrageResponse)
+async def get_arbitrage_opportunities(
+    min_spread: float = Query(0.03, description="Minimum spread (0.03 = 3%)"),
+    limit: int = Query(10, ge=1, le=50),
+):
+    """
+    Find cross-platform arbitrage opportunities.
+
+    Compares the same markets across Polymarket, Kalshi, Limitless, Opinion Labs, and Myriad
+    to find price discrepancies that could be profitable.
+    """
+    from datetime import datetime
+    from src.services.alerts import AlertsService
+
+    try:
+        alerts_service = AlertsService()
+        alerts_service.min_arbitrage_spread = float(min_spread)
+
+        opportunities = await alerts_service.find_arbitrage_opportunities()
+
+        # Convert to response format
+        response_opps = []
+        for opp in opportunities[:limit]:
+            response_opps.append(ArbitrageOpportunityResponse(
+                id=opp.id,
+                market_title=opp.market_title,
+                buy_platform=opp.buy_platform.value,
+                sell_platform=opp.sell_platform.value,
+                buy_market_id=opp.buy_market_id,
+                sell_market_id=opp.sell_market_id,
+                buy_price=float(opp.buy_price),
+                sell_price=float(opp.sell_price),
+                spread_cents=opp.spread_cents,
+                profit_potential=float(opp.profit_potential),
+                buy_title=opp.buy_title,
+                sell_title=opp.sell_title,
+                detected_at=opp.detected_at.isoformat() if opp.detected_at else None,
+            ))
+
+        return ArbitrageResponse(
+            opportunities=response_opps,
+            count=len(response_opps),
+            timestamp=datetime.utcnow().isoformat(),
+        )
+    except Exception as e:
+        print(f"Arbitrage error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ===================

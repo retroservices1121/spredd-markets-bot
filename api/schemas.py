@@ -33,6 +33,13 @@ class MarketResponse(BaseModel):
     marketType: Optional[str] = None
     subtitle: Optional[str] = None
 
+    # Event grouping fields for multi-outcome markets
+    eventId: Optional[str] = None
+    eventTitle: Optional[str] = None
+    eventSlug: Optional[str] = None
+    isMultiOutcome: bool = False  # True if part of a multi-outcome event
+    outcomeCount: Optional[int] = None  # Number of outcomes in the event
+
     class Config:
         from_attributes = True
 
@@ -124,3 +131,27 @@ class HealthResponse(BaseModel):
     """Health check response."""
     healthy: bool
     platforms: dict[str, bool] = {}
+
+
+class ArbitrageOpportunityResponse(BaseModel):
+    """Cross-platform arbitrage opportunity."""
+    id: str
+    market_title: str
+    buy_platform: str  # Platform to buy on (cheaper)
+    sell_platform: str  # Platform to sell on (more expensive)
+    buy_market_id: str
+    sell_market_id: str
+    buy_price: float  # YES price on buy platform
+    sell_price: float  # YES price on sell platform
+    spread_cents: int  # Spread in cents (e.g., 5 = 5¢)
+    profit_potential: float  # Estimated profit % after fees
+    buy_title: str = ""
+    sell_title: str = ""
+    detected_at: Optional[str] = None
+
+
+class ArbitrageResponse(BaseModel):
+    """Arbitrage opportunities response."""
+    opportunities: list[ArbitrageOpportunityResponse] = []
+    count: int = 0
+    timestamp: str
