@@ -177,23 +177,32 @@ async def test_direct_client():
 
     try:
         from virtuals_acp.client import VirtualsACP
+        from virtuals_acp.contract_clients.contract_client_v2 import ACPContractClientV2
+        from virtuals_acp.configs.configs import BASE_MAINNET_CONFIG_V2
 
         print(f"Buyer wallet: {TEST_BUYER_WALLET_ADDRESS}")
         print(f"Buyer entity: {TEST_BUYER_ENTITY_ID}")
         print(f"Target seller: {SPREDD_ENTITY_ID}")
 
-        # Try creating client
-        print("\nCreating VirtualsACP client...")
+        # Try creating client with new SDK structure
+        print("\nCreating VirtualsACP client (v2 SDK)...")
 
-        # Entity ID might need to be int
-        entity_id = TEST_BUYER_ENTITY_ID
-        if entity_id.isdigit():
-            entity_id = int(entity_id)
+        # Entity ID must be an integer
+        entity_id = int(TEST_BUYER_ENTITY_ID) if TEST_BUYER_ENTITY_ID.isdigit() else TEST_BUYER_ENTITY_ID
 
-        client = VirtualsACP(
+        # Create contract client first (v2 requires entity_id as int)
+        print(f"Entity ID type: {type(entity_id)} = {entity_id}")
+
+        contract_client = ACPContractClientV2(
             wallet_private_key=TEST_BUYER_PRIVATE_KEY,
             agent_wallet_address=TEST_BUYER_WALLET_ADDRESS,
             entity_id=entity_id,
+            config=BASE_MAINNET_CONFIG_V2,
+        )
+
+        # Then create the ACP client
+        client = VirtualsACP(
+            acp_contract_clients=contract_client,
         )
 
         print("Client created successfully!")
@@ -212,10 +221,57 @@ async def test_direct_client():
         # Try to get active jobs
         print("\nTrying to get active jobs...")
         try:
-            jobs = await client.get_active_jobs()
+            jobs = client.get_active_jobs()  # Not async
             print(f"Active jobs: {jobs}")
         except Exception as e:
             print(f"get_active_jobs error: {e}")
+
+        # Try to initiate a job to Spredd seller
+        # Need the seller's wallet address, not entity ID
+        SPREDD_WALLET = os.getenv("ACP_AGENT_WALLET_ADDRESS", "0x3dCA01b4F7De37C60423d4AEe4f36b762c5B10ce")
+        print(f"\nTrying to initiate job to seller wallet {SPREDD_WALLET}...")
+        try:
+            from virtuals_acp.fare import FareAmount
+            import json
+
+            # Use USDC fare from the config (not ETH)
+            usdc_fare = BASE_MAINNET_CONFIG_V2.base_fare
+            print(f"Using USDC fare: {usdc_fare.contract_address}")
+
+            # Check USDC balance first
+            from web3 import Web3
+            w3 = Web3(Web3.HTTPProvider('https://mainnet.base.org'))
+            ERC20_ABI = [{'constant': True, 'inputs': [{'name': '_owner', 'type': 'address'}], 'name': 'balanceOf', 'outputs': [{'name': 'balance', 'type': 'uint256'}], 'type': 'function'}]
+            usdc = w3.eth.contract(address=usdc_fare.contract_address, abi=ERC20_ABI)
+            usdc_balance = usdc.functions.balanceOf(TEST_BUYER_WALLET_ADDRESS).call()
+            print(f"USDC Balance: {usdc_balance / 10**6} USDC")
+
+            if usdc_balance == 0:
+                print("ERROR: Need USDC to create jobs!")
+                print(f"Fund USDC to: {TEST_BUYER_WALLET_ADDRESS}")
+                print(f"USDC contract: {usdc_fare.contract_address}")
+                return False
+
+            # Create fare amount (0.001 USDC = 1000 in 6 decimals)
+            fare = FareAmount(0.001, usdc_fare)
+
+            # Service requirements as JSON string
+            service_req = json.dumps({
+                "query": "bitcoin",
+                "limit": 5
+            })
+
+            job_id = await client.initiate_job(
+                provider_address=SPREDD_WALLET,
+                service_requirement=service_req,
+                fare_amount=fare,
+            )
+            print(f"Job initiated successfully!")
+            print(f"Job ID: {job_id}")
+        except Exception as e:
+            print(f"initiate_job error: {e}")
+            import traceback
+            traceback.print_exc()
 
         return True
 

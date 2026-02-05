@@ -223,8 +223,13 @@ class LimitlessPlatform(BasePlatform):
         self._sync_web3: Optional[Web3] = None
         self._fee_account = settings.evm_fee_account
         self._fee_bps = settings.evm_fee_bps
-        # Session cache per wallet
+        # API key authentication (required after Feb 17, 2026)
+        self._api_key = settings.limitless_api_key
+        self._api_url = settings.limitless_api_url or LIMITLESS_API_BASE
+        # Session cache per wallet (legacy, kept for fallback)
         self._session_cache: dict[str, dict] = {}
+        # User info cache (for API key auth)
+        self._user_info_cache: dict[str, dict] = {}
         # Market venue cache
         self._venue_cache: dict[str, dict] = {}
         # Approval cache
@@ -236,10 +241,24 @@ class LimitlessPlatform(BasePlatform):
 
     async def initialize(self) -> None:
         """Initialize Limitless API clients."""
+        # Build default headers
+        default_headers = {"Content-Type": "application/json"}
+
+        # Add API key header if configured (required after Feb 17, 2026)
+        if self._api_key:
+            default_headers["X-API-Key"] = self._api_key
+            logger.info("Limitless using API key authentication")
+        else:
+            logger.warning(
+                "Limitless API key not configured. "
+                "Cookie auth is deprecated and will stop working after Feb 17, 2026. "
+                "Get your API key from https://limitless.exchange profile -> Api keys"
+            )
+
         self._http_client = httpx.AsyncClient(
-            base_url=LIMITLESS_API_BASE,
+            base_url=self._api_url,
             timeout=30.0,
-            headers={"Content-Type": "application/json"},
+            headers=default_headers,
         )
 
         # Async Web3 for Base
@@ -253,6 +272,8 @@ class LimitlessPlatform(BasePlatform):
         fee_enabled = bool(self._fee_account and Web3.is_address(self._fee_account))
         logger.info(
             "Limitless platform initialized",
+            api_url=self._api_url,
+            api_key_configured=bool(self._api_key),
             fee_collection=fee_enabled,
             fee_bps=self._fee_bps if fee_enabled else 0,
         )
@@ -273,13 +294,19 @@ class LimitlessPlatform(BasePlatform):
         session_cookie: Optional[str] = None,
         **kwargs,
     ) -> Any:
-        """Make request to Limitless API."""
+        """Make request to Limitless API.
+
+        Authentication priority:
+        1. API key (X-API-Key header, set in client defaults if configured)
+        2. Session cookie (legacy, deprecated after Feb 17, 2026)
+        """
         if not self._http_client:
             raise RuntimeError("Client not initialized")
 
         try:
             headers = kwargs.pop("headers", {})
-            if session_cookie:
+            # Only use session cookie if API key is not configured (legacy fallback)
+            if session_cookie and not self._api_key:
                 headers["Cookie"] = f"limitless_session={session_cookie}"
 
             response = await self._http_client.request(
@@ -330,22 +357,79 @@ class LimitlessPlatform(BasePlatform):
     async def _get_session(self, private_key: LocalAccount) -> Tuple[str, str, int]:
         """Get or create authenticated session for wallet.
 
-        Returns: (session_cookie, owner_id, fee_rate_bps)
+        With API key auth (recommended):
+        - Uses X-API-Key header (already set in client defaults)
+        - Fetches user info from /auth/me endpoint
+        - No session cookie needed
+
+        With legacy cookie auth (deprecated after Feb 17, 2026):
+        - Signs message and logs in to get session cookie
+
+        Returns: (session_or_api_key, owner_id, fee_rate_bps)
         """
         wallet = private_key.address
+        checksum_address = Web3.to_checksum_address(wallet)
+
+        if not self._http_client:
+            raise RuntimeError("Client not initialized")
+
+        # ==========================================
+        # API Key Authentication (Recommended)
+        # ==========================================
+        if self._api_key:
+            # Check cache
+            cached = self._user_info_cache.get(wallet)
+            if cached and cached.get("expires_at", 0) > time.time():
+                return self._api_key, cached.get("owner_id", ""), cached.get("fee_rate_bps", 300)
+
+            # Fetch user info using API key
+            try:
+                response = await self._http_client.get("/auth/me")
+                response.raise_for_status()
+                user_data = response.json()
+
+                owner_id = user_data.get("id") or user_data.get("ownerId") or ""
+                rank_data = user_data.get("rank", {})
+                fee_rate_bps = rank_data.get("feeRateBps", 300) if rank_data else 300
+
+                logger.info(
+                    "Limitless API key auth successful",
+                    owner_id=owner_id,
+                    fee_rate_bps=fee_rate_bps,
+                )
+
+                # Cache user info (24 hours)
+                self._user_info_cache[wallet] = {
+                    "owner_id": owner_id,
+                    "fee_rate_bps": fee_rate_bps,
+                    "expires_at": time.time() + 24 * 3600,
+                }
+
+                return self._api_key, owner_id, fee_rate_bps
+
+            except Exception as e:
+                logger.warning(
+                    "Failed to get user info with API key, will use default fee rate",
+                    error=str(e),
+                )
+                # Return API key with default values
+                return self._api_key, "", 300
+
+        # ==========================================
+        # Legacy Cookie Authentication (Deprecated)
+        # ==========================================
+        logger.warning(
+            "Using deprecated cookie authentication. "
+            "Please configure LIMITLESS_API_KEY before Feb 17, 2026."
+        )
 
         # Check cache
         cached = self._session_cache.get(wallet)
         if cached and cached.get("expires_at", 0) > time.time():
             return cached["session"], cached.get("owner_id", ""), cached.get("fee_rate_bps", 300)
 
-        # Authenticate with Limitless
-        checksum_address = Web3.to_checksum_address(wallet)
-
         # Step 1: Get signing message (returns plain text, not JSON)
         logger.debug("Requesting signing message", account=checksum_address)
-        if not self._http_client:
-            raise RuntimeError("Client not initialized")
 
         response = await self._http_client.get(f"/auth/signing-message")
         response.raise_for_status()
@@ -404,7 +488,7 @@ class LimitlessPlatform(BasePlatform):
         if not session_cookie:
             raise PlatformError("Failed to get session cookie", Platform.LIMITLESS)
 
-        logger.info("Limitless authentication successful", owner_id=owner_id, fee_rate_bps=fee_rate_bps)
+        logger.info("Limitless cookie authentication successful", owner_id=owner_id, fee_rate_bps=fee_rate_bps)
 
         # Cache session (29 days)
         self._session_cache[wallet] = {

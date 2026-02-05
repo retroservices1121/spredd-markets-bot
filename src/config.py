@@ -197,6 +197,18 @@ class Settings(BaseSettings):
     polymarket_builder_passphrase: Optional[str] = Field(default=None, description="Polymarket builder passphrase")
     
     # ===================
+    # Limitless Exchange Configuration
+    # ===================
+    limitless_api_key: Optional[str] = Field(
+        default=None,
+        description="Limitless API key (format: lmts_...). Required after Feb 17, 2026. Get from https://limitless.exchange profile -> Api keys"
+    )
+    limitless_api_url: str = Field(
+        default="https://api.limitless.exchange",
+        description="Limitless Exchange API URL"
+    )
+
+    # ===================
     # Opinion Labs Configuration
     # ===================
     opinion_api_url: str = Field(
@@ -338,9 +350,9 @@ class Settings(BaseSettings):
         default=None,
         description="Private key for ACP Solana wallet (base58 format) for Kalshi trades"
     )
-    acp_entity_id: Optional[str] = Field(
+    acp_entity_id: Optional[int] = Field(
         default=None,
-        description="ACP entity ID from registration"
+        description="ACP entity ID from registration (must be a numeric integer)"
     )
     acp_environment: str = Field(
         default="sandbox",
@@ -399,7 +411,7 @@ class Settings(BaseSettings):
         elif platform == "opinion":
             return bool(self.opinion_api_key)
         elif platform == "limitless":
-            return True  # Public API
+            return bool(self.limitless_api_key)  # API key required after Feb 17, 2026
         elif platform == "myriad":
             return bool(self.myriad_api_key)
         return False

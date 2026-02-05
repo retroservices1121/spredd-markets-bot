@@ -76,6 +76,15 @@ class SpreddACPService:
             logger.warning("ACP entity ID not configured")
             return False
 
+        # Validate entity_id is numeric
+        if not isinstance(settings.acp_entity_id, int):
+            logger.error(
+                "ACP entity ID must be a numeric integer, not a string",
+                entity_id=settings.acp_entity_id,
+                hint="Get the numeric entity ID from the ACP dashboard"
+            )
+            return False
+
         try:
             # Initialize wallet manager
             acp_wallet_manager.initialize()
