@@ -6,14 +6,15 @@ Prediction market on Base chain using CLOB API.
 import asyncio
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Optional, Tuple
-from datetime import datetime
-import json
 import time
-import secrets
 
-import httpx
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
+
+from limitless_sdk.api import HttpClient as LimitlessHttpClient
+from limitless_sdk.markets import MarketFetcher
+from limitless_sdk.orders import OrderClient
+from limitless_sdk.types import Side, OrderType
 
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
@@ -218,20 +219,19 @@ class LimitlessPlatform(BasePlatform):
     collateral_decimals = 6
 
     def __init__(self):
-        self._http_client: Optional[httpx.AsyncClient] = None
+        self._sdk_client: Optional[LimitlessHttpClient] = None
+        self._market_fetcher: Optional[MarketFetcher] = None
         self._web3: Optional[AsyncWeb3] = None
         self._sync_web3: Optional[Web3] = None
         self._fee_account = settings.evm_fee_account
         self._fee_bps = settings.evm_fee_bps
-        # API key authentication (required after Feb 17, 2026)
+        # API key authentication (required)
         self._api_key = settings.limitless_api_key
         self._api_url = settings.limitless_api_url or LIMITLESS_API_BASE
-        # Session cache per wallet (legacy, kept for fallback)
-        self._session_cache: dict[str, dict] = {}
         # User info cache (for API key auth)
         self._user_info_cache: dict[str, dict] = {}
-        # Market venue cache
-        self._venue_cache: dict[str, dict] = {}
+        # Per-wallet OrderClient cache (pattern from Polymarket's _get_clob_client)
+        self._order_client_cache: dict[str, OrderClient] = {}
         # Approval cache
         self._approval_cache: dict[str, set[str]] = {}
         # ID to slug cache (numeric ID -> slug for API lookups)
@@ -240,26 +240,20 @@ class LimitlessPlatform(BasePlatform):
         self._group_market_cache: dict[str, dict] = {}
 
     async def initialize(self) -> None:
-        """Initialize Limitless API clients."""
-        # Build default headers
-        default_headers = {"Content-Type": "application/json"}
-
-        # Add API key header if configured (required after Feb 17, 2026)
-        if self._api_key:
-            default_headers["X-API-Key"] = self._api_key
-            logger.info("Limitless using API key authentication")
-        else:
-            logger.warning(
+        """Initialize Limitless SDK clients."""
+        if not self._api_key:
+            raise PlatformError(
                 "Limitless API key not configured. "
-                "Cookie auth is deprecated and will stop working after Feb 17, 2026. "
-                "Get your API key from https://limitless.exchange profile -> Api keys"
+                "Get your API key from https://limitless.exchange profile -> Api keys",
+                Platform.LIMITLESS,
             )
 
-        self._http_client = httpx.AsyncClient(
+        # Initialize SDK HttpClient and MarketFetcher
+        self._sdk_client = LimitlessHttpClient(
             base_url=self._api_url,
-            timeout=30.0,
-            headers=default_headers,
+            api_key=self._api_key,
         )
+        self._market_fetcher = MarketFetcher(http_client=self._sdk_client)
 
         # Async Web3 for Base
         self._web3 = AsyncWeb3(
@@ -271,234 +265,92 @@ class LimitlessPlatform(BasePlatform):
 
         fee_enabled = bool(self._fee_account and Web3.is_address(self._fee_account))
         logger.info(
-            "Limitless platform initialized",
+            "Limitless platform initialized (SDK)",
             api_url=self._api_url,
-            api_key_configured=bool(self._api_key),
             fee_collection=fee_enabled,
             fee_bps=self._fee_bps if fee_enabled else 0,
         )
 
     async def close(self) -> None:
         """Close connections."""
-        if self._http_client:
-            await self._http_client.aclose()
+        if self._sdk_client:
+            await self._sdk_client.close()
 
     # ===================
     # API Helpers
     # ===================
 
-    async def _api_request(
-        self,
-        method: str,
-        endpoint: str,
-        session_cookie: Optional[str] = None,
-        **kwargs,
-    ) -> Any:
-        """Make request to Limitless API.
+    async def _sdk_get(self, endpoint: str, **kwargs) -> Any:
+        """Make GET request via SDK HttpClient with error handling."""
+        if not self._sdk_client:
+            raise RuntimeError("SDK client not initialized")
+        try:
+            return await self._sdk_client.get(endpoint, **kwargs)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "429" in error_str or "rate limit" in error_str:
+                raise RateLimitError("Rate limit exceeded", Platform.LIMITLESS)
+            raise PlatformError(f"API error: {e}", Platform.LIMITLESS)
 
-        Authentication priority:
-        1. API key (X-API-Key header, set in client defaults if configured)
-        2. Session cookie (legacy, deprecated after Feb 17, 2026)
+    async def _sdk_post(self, endpoint: str, **kwargs) -> Any:
+        """Make POST request via SDK HttpClient with error handling."""
+        if not self._sdk_client:
+            raise RuntimeError("SDK client not initialized")
+        try:
+            return await self._sdk_client.post(endpoint, **kwargs)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "429" in error_str or "rate limit" in error_str:
+                raise RateLimitError("Rate limit exceeded", Platform.LIMITLESS)
+            raise PlatformError(f"API error: {e}", Platform.LIMITLESS)
+
+    async def _get_user_info(self, wallet: str) -> Tuple[str, int]:
+        """Get user info (owner_id, fee_rate_bps) via SDK client.
+
+        Returns: (owner_id, fee_rate_bps)
         """
-        if not self._http_client:
-            raise RuntimeError("Client not initialized")
+        # Check cache
+        cached = self._user_info_cache.get(wallet)
+        if cached and cached.get("expires_at", 0) > time.time():
+            return cached.get("owner_id", ""), cached.get("fee_rate_bps", 300)
 
         try:
-            headers = kwargs.pop("headers", {})
-            # Only use session cookie if API key is not configured (legacy fallback)
-            if session_cookie and not self._api_key:
-                headers["Cookie"] = f"limitless_session={session_cookie}"
+            user_data = await self._sdk_get("/auth/me")
 
-            response = await self._http_client.request(
-                method, endpoint, headers=headers, **kwargs
+            owner_id = user_data.get("id") or user_data.get("ownerId") or ""
+            rank_data = user_data.get("rank", {})
+            fee_rate_bps = rank_data.get("feeRateBps", 300) if rank_data else 300
+
+            logger.info(
+                "Limitless user info fetched",
+                owner_id=owner_id,
+                fee_rate_bps=fee_rate_bps,
             )
 
-            if response.status_code == 429:
-                raise RateLimitError("Rate limit exceeded", Platform.LIMITLESS)
+            # Cache user info (24 hours)
+            self._user_info_cache[wallet] = {
+                "owner_id": owner_id,
+                "fee_rate_bps": fee_rate_bps,
+                "expires_at": time.time() + 24 * 3600,
+            }
 
-            response.raise_for_status()
+            return owner_id, fee_rate_bps
 
-            # Handle empty responses
-            if not response.content:
-                return {}
-
-            # Try to parse JSON
-            try:
-                return response.json()
-            except Exception as e:
-                # Log the raw response for debugging
-                logger.debug(
-                    "Non-JSON response from Limitless API",
-                    endpoint=endpoint,
-                    status=response.status_code,
-                    content_preview=response.text[:200] if response.text else "empty",
-                )
-                raise
-
-        except httpx.HTTPStatusError as e:
-            # Log the error response body for debugging
-            error_body = ""
-            try:
-                error_body = e.response.text[:500] if e.response.text else ""
-            except:
-                pass
-            logger.error(
-                "Limitless API error",
-                status=e.response.status_code,
-                endpoint=endpoint,
-                error_body=error_body,
+        except Exception as e:
+            logger.warning(
+                "Failed to get user info, will use default fee rate",
+                error=str(e),
             )
-            raise PlatformError(
-                f"API error: {e.response.status_code} - {error_body[:100]}",
-                Platform.LIMITLESS,
-                str(e.response.status_code),
-            )
+            return "", 300
 
-    async def _get_session(self, private_key: LocalAccount) -> Tuple[str, str, int]:
-        """Get or create authenticated session for wallet.
-
-        With API key auth (recommended):
-        - Uses X-API-Key header (already set in client defaults)
-        - Fetches user info from /auth/me endpoint
-        - No session cookie needed
-
-        With legacy cookie auth (deprecated after Feb 17, 2026):
-        - Signs message and logs in to get session cookie
-
-        Returns: (session_or_api_key, owner_id, fee_rate_bps)
-        """
+    def _get_order_client(self, private_key: LocalAccount) -> OrderClient:
+        """Get or create cached OrderClient for a wallet."""
         wallet = private_key.address
-        checksum_address = Web3.to_checksum_address(wallet)
-
-        if not self._http_client:
-            raise RuntimeError("Client not initialized")
-
-        # ==========================================
-        # API Key Authentication (Recommended)
-        # ==========================================
-        if self._api_key:
-            # Check cache
-            cached = self._user_info_cache.get(wallet)
-            if cached and cached.get("expires_at", 0) > time.time():
-                return self._api_key, cached.get("owner_id", ""), cached.get("fee_rate_bps", 300)
-
-            # Fetch user info using API key
-            try:
-                response = await self._http_client.get("/auth/me")
-                response.raise_for_status()
-                user_data = response.json()
-
-                owner_id = user_data.get("id") or user_data.get("ownerId") or ""
-                rank_data = user_data.get("rank", {})
-                fee_rate_bps = rank_data.get("feeRateBps", 300) if rank_data else 300
-
-                logger.info(
-                    "Limitless API key auth successful",
-                    owner_id=owner_id,
-                    fee_rate_bps=fee_rate_bps,
-                )
-
-                # Cache user info (24 hours)
-                self._user_info_cache[wallet] = {
-                    "owner_id": owner_id,
-                    "fee_rate_bps": fee_rate_bps,
-                    "expires_at": time.time() + 24 * 3600,
-                }
-
-                return self._api_key, owner_id, fee_rate_bps
-
-            except Exception as e:
-                logger.warning(
-                    "Failed to get user info with API key, will use default fee rate",
-                    error=str(e),
-                )
-                # Return API key with default values
-                return self._api_key, "", 300
-
-        # ==========================================
-        # Legacy Cookie Authentication (Deprecated)
-        # ==========================================
-        logger.warning(
-            "Using deprecated cookie authentication. "
-            "Please configure LIMITLESS_API_KEY before Feb 17, 2026."
-        )
-
-        # Check cache
-        cached = self._session_cache.get(wallet)
-        if cached and cached.get("expires_at", 0) > time.time():
-            return cached["session"], cached.get("owner_id", ""), cached.get("fee_rate_bps", 300)
-
-        # Step 1: Get signing message (returns plain text, not JSON)
-        logger.debug("Requesting signing message", account=checksum_address)
-
-        response = await self._http_client.get(f"/auth/signing-message")
-        response.raise_for_status()
-        signing_message = response.text.strip()
-
-        if not signing_message:
-            logger.warning("Empty signing message response")
-            raise PlatformError("Failed to get signing message", Platform.LIMITLESS)
-
-        logger.debug("Got signing message", message_preview=signing_message[:50])
-
-        # Step 2: Sign the message using EIP-191 (personal_sign)
-        from eth_account.messages import encode_defunct
-        message = encode_defunct(text=signing_message)
-        signed = private_key.sign_message(message)
-
-        # Step 3: Submit for session
-        # Both message and signature need 0x prefix
-        message_hex = "0x" + signing_message.encode("utf-8").hex()
-        signature_hex = signed.signature.hex()
-        if not signature_hex.startswith("0x"):
-            signature_hex = "0x" + signature_hex
-
-        login_response = await self._http_client.post(
-            "/auth/login",
-            headers={
-                "x-account": checksum_address,
-                "x-signing-message": message_hex,
-                "x-signature": signature_hex,
-            },
-            json={"client": "eoa"}
-        )
-        login_response.raise_for_status()
-
-        login_data = login_response.json()
-        logger.debug("Login response", data=login_data)
-
-        # Extract owner_id from response
-        owner_id = login_data.get("id") or login_data.get("ownerId") or ""
-
-        # Extract feeRateBps from user's rank
-        rank_data = login_data.get("rank", {})
-        fee_rate_bps = rank_data.get("feeRateBps", 300) if rank_data else 300
-
-        # Extract session cookie
-        session_cookie = None
-        for cookie in login_response.cookies.jar:
-            if cookie.name == "limitless_session":
-                session_cookie = cookie.value
-                break
-
-        if not session_cookie:
-            # Try to get from response
-            session_cookie = login_data.get("session") or login_data.get("token")
-
-        if not session_cookie:
-            raise PlatformError("Failed to get session cookie", Platform.LIMITLESS)
-
-        logger.info("Limitless cookie authentication successful", owner_id=owner_id, fee_rate_bps=fee_rate_bps)
-
-        # Cache session (29 days)
-        self._session_cache[wallet] = {
-            "session": session_cookie,
-            "owner_id": owner_id,
-            "fee_rate_bps": fee_rate_bps,
-            "expires_at": time.time() + 29 * 24 * 3600,
-        }
-
-        return session_cookie, owner_id, fee_rate_bps
+        if wallet in self._order_client_cache:
+            return self._order_client_cache[wallet]
+        client = OrderClient(http_client=self._sdk_client, wallet=private_key)
+        self._order_client_cache[wallet] = client
+        return client
 
     # ===================
     # Market Discovery
@@ -777,7 +629,7 @@ class LimitlessPlatform(BasePlatform):
         }
 
         try:
-            data = await self._api_request("GET", "/markets/active", params=params)
+            data = await self._sdk_get("/markets/active", params=params)
         except Exception as e:
             logger.error("Failed to fetch markets", error=str(e))
             return []
@@ -841,8 +693,7 @@ class LimitlessPlatform(BasePlatform):
         # API limit is 25 max
         api_limit = min(limit, 25)
         try:
-            data = await self._api_request(
-                "GET",
+            data = await self._sdk_get(
                 "/markets/search",
                 params={"query": query, "limit": api_limit}
             )
@@ -906,7 +757,7 @@ class LimitlessPlatform(BasePlatform):
         # This handles group markets with nested outcomes (e.g., NBA Champion)
         if not market:
             try:
-                data = await self._api_request("GET", f"/markets/{lookup_id}")
+                data = await self._sdk_get(f"/markets/{lookup_id}")
                 # Check if this is a group market with nested outcomes
                 if self._is_group_market(data):
                     logger.info("Detected group market", slug=lookup_id)
@@ -928,7 +779,7 @@ class LimitlessPlatform(BasePlatform):
         # If we haven't tried the original market_id yet (different from lookup_id), try it
         if not market and lookup_id != market_id:
             try:
-                data = await self._api_request("GET", f"/markets/{market_id}")
+                data = await self._sdk_get(f"/markets/{market_id}")
                 # Check if this is a group market with nested outcomes
                 if self._is_group_market(data):
                     logger.info("Detected group market", slug=market_id)
@@ -1020,7 +871,7 @@ class LimitlessPlatform(BasePlatform):
         # Try to fetch directly as a group market (slug lookup)
         # This handles cases where event_id is the market slug
         try:
-            data = await self._api_request("GET", f"/markets/{event_id}")
+            data = await self._sdk_get(f"/markets/{event_id}")
             if self._is_group_market(data):
                 logger.info("Fetched group market for related markets", event_id=event_id)
                 self._group_market_cache[event_id] = data
@@ -1055,8 +906,7 @@ class LimitlessPlatform(BasePlatform):
         # API limit is 25 max
         api_limit = min(limit, 25)
         try:
-            data = await self._api_request(
-                "GET",
+            data = await self._sdk_get(
                 f"/markets/active/{category}",
                 params={"limit": api_limit, "page": 1}
             )
@@ -1131,7 +981,7 @@ class LimitlessPlatform(BasePlatform):
         data = None
         for endpoint_id in endpoints_to_try:
             try:
-                data = await self._api_request("GET", f"/markets/{endpoint_id}/orderbook")
+                data = await self._sdk_get(f"/markets/{endpoint_id}/orderbook")
                 break
             except Exception as e:
                 logger.debug(f"Orderbook lookup failed for {endpoint_id}", error=str(e))
@@ -1380,19 +1230,29 @@ class LimitlessPlatform(BasePlatform):
         return ctf_address
 
     async def _get_venue(self, market_id: str) -> dict:
-        """Get venue (exchange contract) info for a market."""
-        if market_id in self._venue_cache:
-            cached = self._venue_cache[market_id]
-            logger.debug("Using cached venue", market_id=market_id, exchange=cached.get("exchange"))
-            return cached
+        """Get venue (exchange contract) info for a market.
 
+        Uses SDK's MarketFetcher which caches venue data internally.
+        Falls back to raw API call if MarketFetcher doesn't return venue.
+        """
+        # Try SDK MarketFetcher first (handles caching internally)
+        if self._market_fetcher:
+            try:
+                sdk_market = await self._market_fetcher.get_market(market_id)
+                if sdk_market and hasattr(sdk_market, "venue") and sdk_market.venue:
+                    venue = sdk_market.venue if isinstance(sdk_market.venue, dict) else {"exchange": sdk_market.venue}
+                    logger.debug("Got venue via SDK MarketFetcher", market_id=market_id, exchange=venue.get("exchange"))
+                    return venue
+            except Exception as e:
+                logger.debug("SDK MarketFetcher venue lookup failed", market_id=market_id, error=str(e))
+
+        # Fallback to raw API call
         market = await self.get_market(market_id)
         if not market or not market.raw_data:
             raise PlatformError("Market not found", Platform.LIMITLESS)
 
         venue = market.raw_data.get("venue", {})
         logger.debug("Got venue from market", market_id=market_id, venue=venue, exchange=venue.get("exchange"))
-        self._venue_cache[market_id] = venue
         return venue
 
     async def _ensure_approval(
@@ -1531,201 +1391,6 @@ class LimitlessPlatform(BasePlatform):
 
         await asyncio.to_thread(sync_approve)
 
-    def _build_eip712_order(
-        self,
-        private_key: LocalAccount,
-        market: dict,
-        token_id: str,
-        side: str,
-        amount: Decimal,
-        price: Decimal,
-        venue: dict,
-        fee_rate_bps: int = 300,
-        is_market_order: bool = True,
-    ) -> dict:
-        """Build and sign EIP-712 order for Limitless.
-
-        Args:
-            is_market_order: If True, use FOK (market order with takerAmount=1).
-                            If False, use GTC limit order with calculated takerAmount.
-        """
-        from eth_abi import encode as abi_encode
-        from eth_utils import keccak
-
-        wallet = Web3.to_checksum_address(private_key.address)
-        exchange = venue.get("exchange", venue.get("address"))
-
-        logger.debug("Building EIP-712 order", venue=venue, exchange=exchange, is_market_order=is_market_order)
-
-        if not exchange:
-            raise PlatformError("Exchange address not found in venue", Platform.LIMITLESS)
-
-        exchange_checksum = Web3.to_checksum_address(exchange)
-
-        # Calculate amounts (USDC has 6 decimals)
-        # For FOK (market) orders: Limitless API requires takerAmount=1
-        # For GTC (limit) orders: use calculated takerAmount for price protection
-
-        if side == "buy":
-            # makerAmount = USDC to spend
-            maker_amount = int(amount * Decimal(10 ** 6))
-            order_side = 0  # BUY
-
-            if is_market_order:
-                # FOK orders MUST have takerAmount=1 per Limitless API
-                taker_amount = 1
-                logger.debug(
-                    "Buy FOK order amounts",
-                    maker_amount_usdc=amount,
-                    quoted_price=price,
-                    taker_amount=taker_amount,
-                )
-            else:
-                # GTC limit order - calculate taker amount for price protection
-                taker_amount = int((amount / price) * Decimal(10 ** 6))
-                logger.debug(
-                    "Buy GTC order amounts",
-                    maker_amount_usdc=amount,
-                    price=price,
-                    min_tokens=Decimal(taker_amount) / Decimal(10 ** 6),
-                )
-        else:
-            # makerAmount = tokens to sell
-            maker_amount = int(amount * Decimal(10 ** 6))
-            order_side = 1  # SELL
-
-            if is_market_order:
-                # FOK orders MUST have takerAmount=1 per Limitless API
-                taker_amount = 1
-                logger.debug(
-                    "Sell FOK order amounts",
-                    maker_amount_tokens=amount,
-                    quoted_price=price,
-                    taker_amount=taker_amount,
-                )
-            else:
-                # GTC limit order - calculate taker amount for price protection
-                taker_amount = int(Decimal(maker_amount) * price)
-                logger.debug(
-                    "Sell GTC order amounts",
-                    maker_amount_tokens=amount,
-                    price=price,
-                    min_usdc=Decimal(taker_amount) / Decimal(10 ** 6),
-                )
-
-        # Parse tokenId as integer (can be very large uint256)
-        if str(token_id).isdigit():
-            token_id_int = int(token_id)
-        elif str(token_id).startswith("0x"):
-            token_id_int = int(token_id, 16)
-        else:
-            token_id_int = 0
-
-        # Generate salt - use 2^53 range for JSON number precision safety
-        # JSON numbers are IEEE 754 doubles, safe up to 2^53 - 1
-        salt = secrets.randbelow(2 ** 53)
-
-        # Build order struct for API
-        order = {
-            "salt": salt,  # Number within JSON safe range
-            "maker": wallet,
-            "signer": wallet,
-            "taker": "0x0000000000000000000000000000000000000000",
-            "tokenId": str(token_id),  # Must be string for large uint256
-            "makerAmount": maker_amount,  # Must be number
-            "takerAmount": taker_amount,  # Must be number
-            "expiration": "0",  # Must be "0" - expiration not currently supported
-            "nonce": 0,  # Must be 0 per API requirement
-            "feeRateBps": fee_rate_bps,  # Must be number
-            "side": order_side,
-            "signatureType": 0,  # EOA
-        }
-
-        # EIP-712 Type Hashes (must match the contract exactly)
-        EIP712_DOMAIN_TYPEHASH = keccak(
-            text="EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
-        )
-        ORDER_TYPEHASH = keccak(
-            text="Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)"
-        )
-
-        # Compute domain separator
-        domain_separator = keccak(
-            abi_encode(
-                ["bytes32", "bytes32", "bytes32", "uint256", "address"],
-                [
-                    EIP712_DOMAIN_TYPEHASH,
-                    keccak(text="Limitless CTF Exchange"),
-                    keccak(text="1"),
-                    8453,  # Base chain ID
-                    exchange_checksum,  # Address as checksummed string
-                ]
-            )
-        )
-
-        # Zero address for taker
-        zero_address = "0x0000000000000000000000000000000000000000"
-
-        # Compute struct hash
-        struct_hash = keccak(
-            abi_encode(
-                ["bytes32", "uint256", "address", "address", "address", "uint256", "uint256", "uint256", "uint256", "uint256", "uint256", "uint8", "uint8"],
-                [
-                    ORDER_TYPEHASH,
-                    salt,
-                    wallet,       # maker
-                    wallet,       # signer
-                    zero_address, # taker
-                    token_id_int,
-                    maker_amount,
-                    taker_amount,
-                    0,  # expiration
-                    0,  # nonce
-                    fee_rate_bps,
-                    order_side,
-                    0,  # signatureType (EOA)
-                ]
-            )
-        )
-
-        # Compute final digest: keccak256("\x19\x01" + domainSeparator + structHash)
-        digest = keccak(b"\x19\x01" + domain_separator + struct_hash)
-
-        logger.debug(
-            "EIP-712 signing",
-            domain_separator=domain_separator.hex(),
-            struct_hash=struct_hash.hex(),
-            digest=digest.hex(),
-            wallet=wallet,
-            exchange=exchange_checksum,
-            salt=salt,
-            token_id=token_id_int,
-            maker_amount=maker_amount,
-            taker_amount=taker_amount,
-            fee_rate_bps=fee_rate_bps,
-        )
-
-        # Sign the digest directly using Account._sign_hash
-        from eth_account import Account
-        signed = Account._sign_hash(digest, private_key.key)
-
-        # Format signature: r (32 bytes) + s (32 bytes) + v (1 byte)
-        signature_hex = "0x" + signed.signature.hex()
-        order["signature"] = signature_hex
-
-        logger.debug(
-            "Order signed",
-            signature=signature_hex[:20] + "...",
-            v=signed.v,
-            recovered_address=Account._recover_hash(digest, signature=signed.signature),
-        )
-
-        # Add price field only for GTC orders (FOK market orders don't have price)
-        if not is_market_order:
-            order["price"] = float(price)
-
-        return order
-
     async def execute_trade(
         self,
         quote: Quote,
@@ -1760,23 +1425,14 @@ class LimitlessPlatform(BasePlatform):
                     explorer_url=None,
                 )
 
-            # Get session for authenticated request (need fee_rate_bps for order)
-            session = None
+            # Get user info (fee rate) for order
             owner_id = None
             fee_rate_bps = 300  # default
             try:
-                session, owner_id, fee_rate_bps = await self._get_session(private_key)
-                logger.debug("Got session", has_session=bool(session), owner_id=owner_id, fee_rate_bps=fee_rate_bps)
+                owner_id, fee_rate_bps = await self._get_user_info(private_key.address)
+                logger.debug("Got user info", owner_id=owner_id, fee_rate_bps=fee_rate_bps)
             except Exception as e:
-                logger.error("Session auth failed", error=str(e))
-                return TradeResult(
-                    success=False,
-                    tx_hash=None,
-                    input_amount=quote.input_amount,
-                    output_amount=Decimal(0),
-                    error_message=f"Authentication failed: {str(e)}",
-                    explorer_url=None,
-                )
+                logger.warning("Failed to get user info, using defaults", error=str(e))
 
             # Check if this is an AMM market
             is_amm = quote.quote_data.get("is_amm", False)
@@ -1873,48 +1529,24 @@ class LimitlessPlatform(BasePlatform):
                     logger.warning("Could not check orderbook liquidity", error=str(ob_err))
                     # Continue anyway - the order might still work
 
+            # Create order via SDK OrderClient
+            order_client = self._get_order_client(private_key)
+
+            # Ensure venue is cached by fetching market via SDK
+            if self._market_fetcher:
+                try:
+                    await self._market_fetcher.get_market(market_slug)
+                except Exception:
+                    pass  # Venue already fetched above, this just ensures SDK cache
+
+            sdk_side = Side.BUY if quote.side == "buy" else Side.SELL
+
             logger.info(
-                "Building order",
+                "Creating order via SDK",
                 order_type=order_type,
                 is_market_order=is_market_order,
                 price=price,
-            )
-
-            # Build EIP-712 signed order
-            order = self._build_eip712_order(
-                private_key=private_key,
-                market=quote.quote_data.get("market", {}),
-                token_id=token_id or "0",
-                side=quote.side,
-                amount=quote.input_amount,
-                price=price,
-                venue=venue,
-                fee_rate_bps=fee_rate_bps,
-                is_market_order=is_market_order,
-            )
-
-            # Submit order - FOK for market orders (immediate), GTC for limit orders
-            api_order_type = "FOK" if is_market_order else "GTC"
-            payload = {
-                "order": order,
-                "orderType": api_order_type,
-                "marketSlug": market_slug,
-            }
-
-            # Add ownerId if we have it (must be integer)
-            if owner_id:
-                payload["ownerId"] = int(owner_id) if isinstance(owner_id, str) else owner_id
-
-            logger.debug(
-                "Submitting order",
                 market_slug=market_slug,
-                owner_id=payload.get("ownerId"),
-                order_side=order.get("side"),
-                order_price=order.get("price"),
-                token_id=order.get("tokenId"),
-                order_type=api_order_type,
-                maker_amount=order.get("makerAmount"),
-                taker_amount=order.get("takerAmount"),
             )
 
             # Submit with retry for allowance propagation delay
@@ -1922,19 +1554,31 @@ class LimitlessPlatform(BasePlatform):
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    result = await self._api_request(
-                        "POST",
-                        "/orders",
-                        session_cookie=session,
-                        json=payload,
-                    )
+                    if is_market_order:
+                        result = await order_client.create_order(
+                            token_id=token_id or "0",
+                            maker_amount=float(quote.input_amount),
+                            side=sdk_side,
+                            order_type=OrderType.FOK,
+                            market_slug=market_slug,
+                        )
+                    else:
+                        # GTC limit order - calculate size from amount and price
+                        size = float(quote.input_amount / price) if quote.side == "buy" else float(quote.input_amount)
+                        result = await order_client.create_order(
+                            token_id=token_id or "0",
+                            price=float(price),
+                            size=size,
+                            side=sdk_side,
+                            order_type=OrderType.GTC,
+                            market_slug=market_slug,
+                        )
                     break  # Success
                 except Exception as api_err:
                     error_str = str(api_err).lower()
 
                     # Handle specific Limitless API errors with better messages
                     if "order_id" in error_str and "null" in error_str:
-                        # FOK order failed due to no matching liquidity
                         logger.warning(
                             "FOK order rejected - no matching liquidity",
                             market_slug=market_slug,
@@ -1954,7 +1598,6 @@ class LimitlessPlatform(BasePlatform):
                         )
 
                     if "allowance" in error_str and attempt < max_retries - 1:
-                        # Allowance not yet visible to API, wait and retry
                         logger.info(
                             "Allowance not yet visible, retrying...",
                             attempt=attempt + 1,
@@ -1964,34 +1607,45 @@ class LimitlessPlatform(BasePlatform):
                         continue
                     raise  # Re-raise if not handled error or max retries
 
-            order_id = result.get("orderId") or result.get("id") or result.get("transactionHash", "")
+            # Map SDK response to our TradeResult
+            order_obj = getattr(result, "order", None)
+            order_id = ""
+            order_status = ""
+            maker_matches = []
 
-            # Check if order was filled
-            # FOK orders return makerMatches when filled
-            order_status = result.get("status", "").upper()
-            maker_matches = result.get("makerMatches", [])
-            filled_amount = result.get("filledAmount") or result.get("matchedAmount") or result.get("filled")
+            if order_obj:
+                order_id = str(getattr(order_obj, "id", "")) or ""
+                order_status = str(getattr(order_obj, "status", "")).upper()
+
+            if hasattr(result, "maker_matches"):
+                maker_matches = result.maker_matches or []
+            elif hasattr(result, "makerMatches"):
+                maker_matches = result.makerMatches or []
+
+            # Fallback: try dict access if result is dict-like
+            if not order_id and isinstance(result, dict):
+                order_id = result.get("orderId") or result.get("id") or result.get("transactionHash", "")
+                order_status = result.get("status", "").upper()
+                maker_matches = result.get("makerMatches", [])
 
             # Calculate actual filled amount from matches
-            total_matched = sum(int(m.get("matchedSize", 0)) for m in maker_matches)
+            total_matched = 0
+            for m in maker_matches:
+                matched_size = getattr(m, "matchedSize", None) or (m.get("matchedSize", 0) if isinstance(m, dict) else 0)
+                total_matched += int(matched_size)
 
             logger.info(
-                "Trade executed",
+                "Trade executed via SDK",
                 platform="limitless",
                 market_id=market_slug,
                 order_id=order_id,
                 order_status=order_status,
-                filled_amount=filled_amount,
                 maker_matches_count=len(maker_matches),
                 total_matched=total_matched,
             )
 
-            # FOK orders are filled if they have makerMatches
-            is_filled = bool(maker_matches) or order_status in ("MATCHED", "FILLED", "COMPLETE", "COMPLETED")
-
             # Determine actual output - use matched size if available
             if total_matched > 0:
-                # Convert from 6 decimal USDC to actual amount
                 actual_output = Decimal(total_matched) / Decimal(10 ** 6)
             else:
                 actual_output = quote.expected_output

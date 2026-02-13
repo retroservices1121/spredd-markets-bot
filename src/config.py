@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # ===================
     limitless_api_key: Optional[str] = Field(
         default=None,
-        description="Limitless API key (format: lmts_...). Required after Feb 17, 2026. Get from https://limitless.exchange profile -> Api keys"
+        description="Limitless API key (format: lmts_...). Required. Get from https://limitless.exchange profile -> Api keys"
     )
     limitless_api_url: str = Field(
         default="https://api.limitless.exchange",
@@ -411,7 +411,7 @@ class Settings(BaseSettings):
         elif platform == "opinion":
             return bool(self.opinion_api_key)
         elif platform == "limitless":
-            return bool(self.limitless_api_key)  # API key required after Feb 17, 2026
+            return bool(self.limitless_api_key)  # API key required
         elif platform == "myriad":
             return bool(self.myriad_api_key)
         return False
