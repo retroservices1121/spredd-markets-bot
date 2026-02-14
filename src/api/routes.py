@@ -3,6 +3,7 @@ FastAPI routes for Spredd Mini App.
 Exposes bot functionality via REST API.
 """
 
+import time
 import uuid
 from decimal import Decimal
 from typing import Any, Optional
@@ -510,6 +511,11 @@ async def get_all_markets(
     return results[:limit]
 
 
+# Search cache: (query, platform) -> (timestamp, results)
+_search_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+_SEARCH_CACHE_TTL = 120  # 2 minutes
+
+
 @router.get("/markets/search")
 async def search_markets(
     q: str = Query(..., min_length=1),
@@ -518,6 +524,13 @@ async def search_markets(
 ):
     """Search markets across platforms."""
     from ..platforms import platform_registry
+
+    # Check cache
+    cache_key = (q.lower().strip(), (platform or "all").lower())
+    now = time.time()
+    cached = _search_cache.get(cache_key)
+    if cached and (now - cached[0]) < _SEARCH_CACHE_TTL:
+        return {"markets": cached[1][:limit]}
 
     results = []
 
@@ -550,6 +563,14 @@ async def search_markets(
                 })
         except Exception as e:
             print(f"Error searching {plat}: {e}")
+
+    # Update cache (store full results, slice on return)
+    _search_cache[cache_key] = (now, results)
+
+    # Evict stale entries to prevent unbounded growth
+    stale_keys = [k for k, v in _search_cache.items() if (now - v[0]) > _SEARCH_CACHE_TTL * 5]
+    for k in stale_keys:
+        del _search_cache[k]
 
     return {"markets": results[:limit]}
 
