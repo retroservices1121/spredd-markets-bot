@@ -669,14 +669,16 @@ class BridgeService:
         self,
         wallet_address: str,
         required_amount: Decimal,
+        dest_chain: Optional[BridgeChain] = None,
         exclude_chain: Optional[BridgeChain] = None,
     ) -> Optional[Tuple[BridgeChain, Decimal]]:
         """
-        Find a chain that has sufficient USDC balance.
+        Find a chain that has sufficient USDC balance and a valid bridge route.
 
         Args:
             wallet_address: User's wallet address
             required_amount: Amount of USDC needed
+            dest_chain: Destination chain (to validate bridge route exists)
             exclude_chain: Chain to exclude (usually the destination chain)
 
         Returns:
@@ -684,10 +686,18 @@ class BridgeService:
         """
         balances = self.get_all_usdc_balances(wallet_address)
 
-        for chain, balance in balances.items():
+        # Sort by balance descending so we pick the chain with most funds
+        sorted_balances = sorted(balances.items(), key=lambda x: x[1], reverse=True)
+
+        for chain, balance in sorted_balances:
             if chain == exclude_chain:
                 continue
+            if chain == dest_chain:
+                continue
             if balance >= required_amount:
+                # Validate a bridge route exists to destination
+                if dest_chain and (chain, dest_chain) not in VALID_BRIDGE_ROUTES:
+                    continue
                 return (chain, balance)
 
         return None

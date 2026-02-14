@@ -90,19 +90,8 @@ class Settings(BaseSettings):
     # ===================
     auto_bridge_enabled: bool = Field(
         default=True,
-        description="Enable automatic cross-chain bridging via CCTP"
+        description="Enable automatic cross-chain bridging when trading"
     )
-    bridge_source_chains: str = Field(
-        default="base,abstract",
-        description="Comma-separated list of source chains for auto-bridging (base,abstract,arbitrum,optimism)"
-    )
-
-    @property
-    def enabled_bridge_chains(self) -> list[str]:
-        """Parse enabled bridge chains from config."""
-        if not self.bridge_source_chains:
-            return []
-        return [c.strip().lower() for c in self.bridge_source_chains.split(",") if c.strip()]
 
     @property
     def polygon_rpc_urls(self) -> list[str]:

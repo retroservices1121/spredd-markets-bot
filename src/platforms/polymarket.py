@@ -594,12 +594,12 @@ class PolymarketPlatform(BasePlatform):
             if not bridge_service._initialized:
                 bridge_service.initialize()
 
-            # Check which chains have sufficient balance (run in thread to avoid blocking)
+            # Check which chains have sufficient balance and a valid route to Polygon
             source_chain_with_balance = await asyncio.to_thread(
                 bridge_service.find_chain_with_balance,
                 private_key.address,
                 required_amount,
-                BridgeChain.POLYGON,  # exclude_chain
+                dest_chain=BridgeChain.POLYGON,
             )
 
             if not source_chain_with_balance:
@@ -607,34 +607,48 @@ class PolymarketPlatform(BasePlatform):
 
             source_chain, balance = source_chain_with_balance
 
-            # Only bridge from enabled chains
-            enabled_chains = settings.enabled_bridge_chains
-            if source_chain.value not in enabled_chains:
-                logger.info(
-                    f"Found USDC on {source_chain.value} but bridging not enabled",
-                    balance=str(balance)
-                )
-                return False, f"Found {balance:.2f} USDC on {source_chain.value} but auto-bridge not enabled for this chain", None
-
             logger.info(
-                "Bridging USDC via CCTP",
+                "Auto-bridging USDC",
                 source=source_chain.value,
                 dest="polygon",
                 amount=str(required_amount),
+                balance=str(balance),
             )
 
             # Bridge the required amount (plus a small buffer)
             bridge_amount = min(balance, required_amount + Decimal("1"))
 
-            # Run the blocking bridge operation in a thread pool to avoid blocking event loop
-            result = await asyncio.to_thread(
-                bridge_service.bridge_usdc,
-                private_key,
-                source_chain,
-                BridgeChain.POLYGON,
-                bridge_amount,
-                progress_callback,
-            )
+            # Pick the right bridge method based on route
+            bridge_method = bridge_service.get_best_bridge_method(source_chain, BridgeChain.POLYGON)
+
+            if bridge_method == "lifi":
+                result = await asyncio.to_thread(
+                    bridge_service.bridge_usdc_lifi,
+                    private_key,
+                    source_chain,
+                    BridgeChain.POLYGON,
+                    bridge_amount,
+                    private_key.address,  # Same EVM wallet
+                    progress_callback,
+                )
+            elif bridge_method == "relay":
+                result = await asyncio.to_thread(
+                    bridge_service.bridge_usdc_fast,
+                    private_key,
+                    source_chain,
+                    BridgeChain.POLYGON,
+                    bridge_amount,
+                    progress_callback,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    bridge_service.bridge_usdc,
+                    private_key,
+                    source_chain,
+                    BridgeChain.POLYGON,
+                    bridge_amount,
+                    progress_callback,
+                )
 
             if result.success:
                 return True, f"Bridged {bridge_amount:.2f} USDC from {source_chain.value} to Polygon", result.burn_tx_hash
