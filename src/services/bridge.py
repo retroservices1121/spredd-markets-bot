@@ -292,6 +292,8 @@ VALID_BRIDGE_ROUTES: set[tuple[BridgeChain, BridgeChain]] = {
     (BridgeChain.BASE, BridgeChain.ETHEREUM),
     (BridgeChain.BASE, BridgeChain.SOLANA),
     (BridgeChain.BASE, BridgeChain.ABSTRACT),  # Base → Abstract works via LI.FI
+    (BridgeChain.ABSTRACT, BridgeChain.POLYGON),  # Abstract → Polygon via LI.FI
+    (BridgeChain.ABSTRACT, BridgeChain.BASE),  # Abstract → Base via LI.FI
     (BridgeChain.ARBITRUM, BridgeChain.POLYGON),
     (BridgeChain.ARBITRUM, BridgeChain.BASE),
     (BridgeChain.ARBITRUM, BridgeChain.OPTIMISM),

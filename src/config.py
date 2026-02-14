@@ -93,8 +93,8 @@ class Settings(BaseSettings):
         description="Enable automatic cross-chain bridging via CCTP"
     )
     bridge_source_chains: str = Field(
-        default="base",
-        description="Comma-separated list of source chains for auto-bridging (base,arbitrum,optimism)"
+        default="base,abstract",
+        description="Comma-separated list of source chains for auto-bridging (base,abstract,arbitrum,optimism)"
     )
 
     @property
