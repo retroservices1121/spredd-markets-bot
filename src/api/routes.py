@@ -456,7 +456,7 @@ async def get_all_markets(
     if platform and platform.lower() != "all":
         platforms_to_fetch = [platform.lower()]
     else:
-        platforms_to_fetch = ["kalshi", "polymarket", "limitless", "myriad"]  # Opinion requires auth
+        platforms_to_fetch = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
 
     for plat in platforms_to_fetch:
         try:
@@ -523,7 +523,7 @@ async def search_markets(
     if platform:
         platforms_to_search = [platform.lower()]
     else:
-        platforms_to_search = ["kalshi", "polymarket"]
+        platforms_to_search = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
 
     for plat in platforms_to_search:
         try:
@@ -593,6 +593,25 @@ async def get_trending_markets(
                     })
         except Exception as e:
             print(f"Error getting Polymarket trending: {e}")
+
+    for plat_name in ["opinion", "limitless", "myriad"]:
+        if not platform or platform.lower() == plat_name:
+            try:
+                plat_instance = platform_registry.get(Platform(plat_name))
+                if plat_instance and hasattr(plat_instance, 'get_trending_markets'):
+                    markets = await plat_instance.get_trending_markets(limit=limit)
+                    for m in markets:
+                        results.append({
+                            "platform": plat_name,
+                            "id": m.market_id,
+                            "title": m.title,
+                            "yes_price": float(m.yes_price) if m.yes_price else None,
+                            "no_price": float(m.no_price) if m.no_price else None,
+                            "volume": str(m.volume_24h) if m.volume_24h else None,
+                            "is_active": m.is_active,
+                        })
+            except Exception as e:
+                print(f"Error getting {plat_name} trending: {e}")
 
     return {"markets": results[:limit]}
 
@@ -769,7 +788,7 @@ async def execute_order(
         # Determine chain family based on platform
         if platform == "kalshi":
             chain_family = ChainFamily.SOLANA
-        elif platform == "polymarket":
+        elif platform in ("polymarket", "opinion", "limitless", "myriad"):
             chain_family = ChainFamily.EVM
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported platform for trading: {platform}")
@@ -830,7 +849,14 @@ async def execute_order(
 
         # Create order record
         platform_enum = Platform(platform)
-        chain_enum = Chain.SOLANA if platform == "kalshi" else Chain.POLYGON
+        chain_map = {
+            "kalshi": Chain.SOLANA,
+            "polymarket": Chain.POLYGON,
+            "opinion": Chain.BSC,
+            "limitless": Chain.BASE,
+            "myriad": Chain.ABSTRACT,
+        }
+        chain_enum = chain_map.get(platform, Chain.POLYGON)
 
         order = Order(
             id=str(uuid.uuid4()),
@@ -1735,7 +1761,7 @@ def create_api_app() -> FastAPI:
         if platform and platform.lower() != "all":
             platforms_to_fetch = [platform.lower()]
         else:
-            platforms_to_fetch = ["kalshi", "polymarket", "limitless"]
+            platforms_to_fetch = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
 
         for plat in platforms_to_fetch:
             try:
