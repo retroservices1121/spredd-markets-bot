@@ -838,24 +838,25 @@ class PolymarketPlatform(BasePlatform):
 
         data = await self._gamma_request("GET", "/events", params=params)
 
-        # Also fetch 5-min / 15-min rapid crypto markets (tagged "Up or Down")
+        # Also fetch 5-min / 15-min rapid crypto markets by duration tags
         # These rotate frequently and may not appear in top volume results
-        try:
-            rapid_data = await self._gamma_request("GET", "/events", params={
-                "active": "true",
-                "closed": "false",
-                "tag": "Up or Down",
-                "limit": 50,
-                "order": "startDate",
-                "ascending": "false",
-            })
-            # Merge rapid markets, deduplicating by event ID
-            existing_ids = {e.get("id") for e in (data if isinstance(data, list) else [])}
-            for event in (rapid_data if isinstance(rapid_data, list) else []):
-                if event.get("id") not in existing_ids:
-                    data.append(event)
-        except Exception as e:
-            logger.warning("Failed to fetch rapid markets", error=str(e))
+        existing_ids = {e.get("id") for e in (data if isinstance(data, list) else [])}
+        for rapid_tag in ("5M", "15M"):
+            try:
+                rapid_data = await self._gamma_request("GET", "/events", params={
+                    "active": "true",
+                    "closed": "false",
+                    "tag_slug": rapid_tag,
+                    "limit": 20,
+                    "order": "endDate",
+                    "ascending": "false",
+                })
+                for event in (rapid_data if isinstance(rapid_data, list) else []):
+                    if event.get("id") not in existing_ids:
+                        existing_ids.add(event.get("id"))
+                        data.append(event)
+            except Exception as e:
+                logger.warning("Failed to fetch rapid markets", tag=rapid_tag, error=str(e))
 
         def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
             """Check if a market has expired.
@@ -1133,30 +1134,31 @@ class PolymarketPlatform(BasePlatform):
             except Exception:
                 pass
 
-            # Fallback: search rapid markets (low volume, not in top 200)
-            try:
-                data = await self._gamma_request("GET", "/events", params={
-                    "active": "true",
-                    "closed": "false",
-                    "tag": "Up or Down",
-                    "limit": 100,
-                    "order": "startDate",
-                    "ascending": "false",
-                })
-                for event in data if isinstance(data, list) else []:
-                    event_cond = event.get("conditionId", "")
-                    if event_cond and (event_cond == market_id or event_cond.startswith(market_id)):
-                        return self._parse_market(event)
-                    if str(event.get("id")) == market_id:
-                        return self._parse_market(event)
-                    for m in event.get("markets", []):
-                        m_cond = m.get("conditionId", "")
-                        if m_cond and (m_cond == market_id or m_cond.startswith(market_id)):
-                            return self._parse_market(event, m)
-                        if str(m.get("id")) == market_id:
-                            return self._parse_market(event, m)
-            except Exception:
-                pass
+            # Fallback: search rapid markets by duration tag (5M, 15M, 1H)
+            for rapid_tag in ("5M", "15M", "1H"):
+                try:
+                    data = await self._gamma_request("GET", "/events", params={
+                        "active": "true",
+                        "closed": "false",
+                        "tag_slug": rapid_tag,
+                        "limit": 50,
+                        "order": "endDate",
+                        "ascending": "false",
+                    })
+                    for event in data if isinstance(data, list) else []:
+                        event_cond = event.get("conditionId", "")
+                        if event_cond and (event_cond == market_id or event_cond.startswith(market_id)):
+                            return self._parse_market(event)
+                        if str(event.get("id")) == market_id:
+                            return self._parse_market(event)
+                        for m in event.get("markets", []):
+                            m_cond = m.get("conditionId", "")
+                            if m_cond and (m_cond == market_id or m_cond.startswith(market_id)):
+                                return self._parse_market(event, m)
+                            if str(m.get("id")) == market_id:
+                                return self._parse_market(event, m)
+                except Exception:
+                    continue
 
         except Exception as e:
             logger.warning("Failed to get market", market_id=market_id, error=str(e))
@@ -1225,15 +1227,16 @@ class PolymarketPlatform(BasePlatform):
             limit: Maximum number of markets to return
         """
         try:
-            # Rapid markets: 5M, 15M, 1H use tag filtering
-            # Only show the current/next live markets (soonest expiry), not pre-created future ones
+            # Rapid markets: 5M, 15M, 1H - query by specific duration tag
+            # Only show the current/next live market per asset (not pre-created future ones)
             rapid_tags = {"5m": "5M", "15m": "15M", "1h": "1H"}
             if category.lower() in rapid_tags:
                 target_tag = rapid_tags[category.lower()]
+                # Query directly by the duration tag slug (5M, 15M, 1H)
                 params = {
                     "active": "true",
                     "closed": "false",
-                    "tag": "Up or Down",
+                    "tag_slug": target_tag,
                     "limit": 100,
                     "order": "endDate",
                     "ascending": "true",
@@ -1242,15 +1245,10 @@ class PolymarketPlatform(BasePlatform):
 
                 now = datetime.now(timezone.utc)
 
-                # Collect markets that match the target duration tag and haven't expired
+                # Collect markets that haven't expired
                 candidates = []
                 for event in data if isinstance(data, list) else []:
                     try:
-                        event_tags = event.get("tags", [])
-                        tag_labels = [t.get("label", "") for t in event_tags]
-                        if target_tag not in tag_labels:
-                            continue
-
                         event_markets = event.get("markets", [])
                         m = event_markets[0] if event_markets else event
                         end_str = m.get("endDate") or event.get("endDate") or ""
@@ -1268,15 +1266,9 @@ class PolymarketPlatform(BasePlatform):
                         except:
                             continue
 
-                        # Extract the crypto asset from tags (Bitcoin, Ethereum, etc.)
-                        # Any tag that isn't a duration or "Up or Down" is the asset
-                        non_asset_tags = {"Up or Down", "5M", "15M", "1H"}
-                        asset = None
-                        for t in event_tags:
-                            label = t.get("label", "")
-                            if label and label not in non_asset_tags:
-                                asset = label
-                                break
+                        # Extract the crypto asset from event slug (e.g. "btc-updown-5m-...")
+                        slug = event.get("slug", "")
+                        asset = slug.split("-")[0].upper() if slug else None
 
                         if len(event_markets) <= 1:
                             candidates.append((end_dt, asset, self._parse_market(event)))
