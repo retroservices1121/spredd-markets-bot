@@ -451,6 +451,14 @@ async def get_all_markets(
     """Get markets from all platforms for the webapp."""
     from ..platforms import platform_registry
 
+    # Check cache
+    plat_key = (platform or "all").lower()
+    cache_key = (plat_key, active)
+    now = time.time()
+    cached = _markets_cache.get(cache_key)
+    if cached and (now - cached[0]) < _MARKETS_CACHE_TTL:
+        return cached[1][:limit]
+
     results = []
 
     # Determine which platforms to fetch
@@ -508,12 +516,28 @@ async def get_all_markets(
     # Sort by volume
     results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
 
+    # Update cache
+    _markets_cache[cache_key] = (now, results)
+    _evict_cache(_markets_cache, _MARKETS_CACHE_TTL)
+
     return results[:limit]
 
 
-# Search cache: (query, platform) -> (timestamp, results)
+# API response caches: key -> (timestamp, results)
 _search_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+_markets_cache: dict[tuple[str, bool], tuple[float, list[dict]]] = {}
+_trending_cache: dict[str, tuple[float, list[dict]]] = {}
 _SEARCH_CACHE_TTL = 120  # 2 minutes
+_MARKETS_CACHE_TTL = 120  # 2 minutes
+_TRENDING_CACHE_TTL = 120  # 2 minutes
+
+
+def _evict_cache(cache: dict, ttl: float) -> None:
+    """Remove stale entries from a cache dict."""
+    now = time.time()
+    stale = [k for k, v in cache.items() if (now - v[0]) > ttl * 5]
+    for k in stale:
+        del cache[k]
 
 
 @router.get("/markets/search")
@@ -566,11 +590,7 @@ async def search_markets(
 
     # Update cache (store full results, slice on return)
     _search_cache[cache_key] = (now, results)
-
-    # Evict stale entries to prevent unbounded growth
-    stale_keys = [k for k, v in _search_cache.items() if (now - v[0]) > _SEARCH_CACHE_TTL * 5]
-    for k in stale_keys:
-        del _search_cache[k]
+    _evict_cache(_search_cache, _SEARCH_CACHE_TTL)
 
     return {"markets": results[:limit]}
 
@@ -582,6 +602,13 @@ async def get_trending_markets(
 ):
     """Get trending markets."""
     from ..platforms import platform_registry
+
+    # Check cache
+    cache_key = (platform or "all").lower()
+    now = time.time()
+    cached = _trending_cache.get(cache_key)
+    if cached and (now - cached[0]) < _TRENDING_CACHE_TTL:
+        return {"markets": cached[1][:limit]}
 
     results = []
 
@@ -639,6 +666,10 @@ async def get_trending_markets(
                         })
             except Exception as e:
                 print(f"Error getting {plat_name} trending: {e}")
+
+    # Update cache
+    _trending_cache[cache_key] = (now, results)
+    _evict_cache(_trending_cache, _TRENDING_CACHE_TTL)
 
     return {"markets": results[:limit]}
 
@@ -1780,61 +1811,8 @@ def create_api_app() -> FastAPI:
         active: bool = Query(default=True),
     ):
         """Get markets for webapp - direct route without /api/v1 prefix."""
-        from ..platforms import platform_registry
-
-        results = []
-
-        # Determine which platforms to fetch
-        if platform and platform.lower() != "all":
-            platforms_to_fetch = [platform.lower()]
-        else:
-            platforms_to_fetch = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
-
-        # Fetch more per platform when aggregating, so each contributes fairly
-        per_platform_limit = limit if len(platforms_to_fetch) == 1 else max(limit, 100)
-
-        for plat in platforms_to_fetch:
-            try:
-                platform_instance = platform_registry.get(Platform(plat))
-                if not platform_instance:
-                    continue
-
-                markets = await platform_instance.get_markets(limit=per_platform_limit, active_only=active)
-                for m in markets:
-                    # Extract image from raw_data if available
-                    image = None
-                    if m.raw_data:
-                        if "event" in m.raw_data:
-                            image = m.raw_data["event"].get("image")
-                        elif "image" in m.raw_data:
-                            image = m.raw_data["image"]
-
-                    slug = m.event_id or m.market_id
-
-                    results.append({
-                        "id": m.market_id,
-                        "platform": plat,
-                        "question": m.title,
-                        "description": m.description,
-                        "image": image,
-                        "category": m.category or "OTHER",
-                        "outcomes": ["Yes", "No"],
-                        "outcomePrices": [
-                            str(float(m.yes_price)) if m.yes_price else "0.5",
-                            str(float(m.no_price)) if m.no_price else "0.5",
-                        ],
-                        "volume": float(m.volume_24h) if m.volume_24h else 0,
-                        "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
-                        "liquidity": float(m.liquidity) if m.liquidity else 0,
-                        "endDate": m.close_time,
-                        "slug": slug,
-                        "active": m.is_active,
-                    })
-            except Exception as e:
-                print(f"Error fetching {plat} markets: {e}")
-
-        results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
-        return results[:limit]
+        # Delegate to the /api/v1/markets endpoint (shares cache)
+        return await get_all_markets(platform=platform, limit=limit, active=active)
 
     @app.get("/markets/{market_id}")
     async def get_webapp_market_details(market_id: str):
