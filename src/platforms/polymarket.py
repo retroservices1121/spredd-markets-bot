@@ -1247,10 +1247,12 @@ class PolymarketPlatform(BasePlatform):
                             continue
 
                         # Extract the crypto asset from tags (Bitcoin, Ethereum, etc.)
+                        # Any tag that isn't a duration or "Up or Down" is the asset
+                        non_asset_tags = {"Up or Down", "5M", "15M", "1H"}
                         asset = None
                         for t in event_tags:
                             label = t.get("label", "")
-                            if label in ("Bitcoin", "Ethereum", "Solana", "XRP"):
+                            if label and label not in non_asset_tags:
                                 asset = label
                                 break
 
