@@ -1175,13 +1175,45 @@ class PolymarketPlatform(BasePlatform):
         """Get markets filtered by category/tag.
 
         Args:
-            category: Category slug (e.g., 'sports', 'politics', 'crypto')
+            category: Category slug (e.g., 'sports', 'politics', 'crypto', '5m', '15m')
             limit: Maximum number of markets to return
         """
         try:
-            # Fetch more events to filter locally by tag
+            # 5-min and 15-min rapid markets use direct tag filtering
+            if category.lower() in ("5m", "15m"):
+                tag = "5M" if category.lower() == "5m" else "15M"
+                params = {
+                    "active": "true",
+                    "closed": "false",
+                    "tag": tag,
+                    "limit": 50,
+                    "order": "startDate",
+                    "ascending": "false",
+                }
+                data = await self._gamma_request("GET", "/events", params=params)
+
+                from datetime import datetime, timezone
+
+                markets = []
+                for event in data if isinstance(data, list) else []:
+                    try:
+                        event_markets = event.get("markets", [])
+                        if len(event_markets) <= 1:
+                            markets.append(self._parse_market(event))
+                        else:
+                            active_markets = [
+                                m for m in event_markets
+                                if m.get("active", True) and not m.get("closed", False)
+                            ]
+                            if active_markets:
+                                markets.append(self._parse_market(event, active_markets[0]))
+                    except Exception as e:
+                        logger.debug(f"Skipping rapid market: {e}")
+                return markets[:limit]
+
+            # Standard categories use tag-based filtering from events API
             params = {
-                "limit": 500,  # Fetch many to find matching tags
+                "limit": 500,
                 "active": "true",
                 "closed": "false",
                 "order": "volume24hr",
@@ -1317,6 +1349,8 @@ class PolymarketPlatform(BasePlatform):
         Returns list of dicts with 'id', 'label', and 'emoji' keys.
         """
         return [
+            {"id": "5m", "label": "5 Min", "emoji": "⚡"},
+            {"id": "15m", "label": "15 Min", "emoji": "⏱️"},
             {"id": "sports", "label": "Sports", "emoji": "🏆"},
             {"id": "politics", "label": "Politics", "emoji": "🏛️"},
             {"id": "crypto", "label": "Crypto", "emoji": "🪙"},

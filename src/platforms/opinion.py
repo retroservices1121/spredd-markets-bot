@@ -681,6 +681,7 @@ class OpinionPlatform(BasePlatform):
         Returns list of dicts with 'id', 'label', and 'emoji' keys.
         """
         return [
+            {"id": "hourly", "label": "Hourly", "emoji": "⏰"},
             {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
             {"id": "politics", "label": "Politics", "emoji": "🏛️"},
             {"id": "sports", "label": "Sports", "emoji": "🏆"},
@@ -697,10 +698,50 @@ class OpinionPlatform(BasePlatform):
         """Get markets filtered by category.
 
         Categories are inferred from market title keywords since Opinion API
-        doesn't have a categories field.
+        doesn't have a categories field. "Hourly" is a special category that
+        filters by markets ending within the next 2 hours (short-duration).
         """
+        # Hourly: filter by cutoffAt to find short-duration markets
+        if category.lower() == "hourly":
+            try:
+                # Fetch markets sorted by ending soon
+                params = {
+                    "limit": 200,
+                    "sortBy": 2,  # EndingSoon
+                    "status": "activated",
+                }
+                data = await self._api_request("GET", "/openapi/market", params=params)
+                markets_data = data.get("result", {}).get("list", [])
+                if not markets_data and isinstance(data, list):
+                    markets_data = data
+
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc)
+
+                markets = []
+                for item in markets_data:
+                    try:
+                        cutoff = item.get("cutoffAt")
+                        if not cutoff:
+                            continue
+                        # cutoffAt is Unix timestamp
+                        end_time = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+                        hours_remaining = (end_time - now).total_seconds() / 3600
+                        # Include markets ending within next 2 hours
+                        if 0 < hours_remaining <= 2:
+                            markets.append(self._parse_market(item))
+                    except Exception as e:
+                        logger.debug(f"Skipping market in hourly filter: {e}")
+
+                markets = await self._enrich_markets_with_orderbook_prices(markets)
+                return markets[:limit]
+
+            except Exception as e:
+                logger.error("Failed to get hourly markets", error=str(e))
+                return []
+
         # Get all active markets for filtering
-        all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
+        all_markets = await self.get_markets(limit=600, offset=0, active_only=True)
 
         # Get keywords for this category
         keywords = self.CATEGORY_KEYWORDS.get(category.lower(), [])
