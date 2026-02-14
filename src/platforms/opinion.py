@@ -66,6 +66,10 @@ class OpinionPlatform(BasePlatform):
         self._trading_enabled_wallets: set[str] = set()
         # Cache for CTF exchange address
         self._ctf_exchange_address: Optional[str] = None
+        # Markets cache
+        self._markets_cache: list[Market] = []
+        self._markets_cache_time: float = 0
+        self.CACHE_TTL = 300  # 5 minutes
     
     async def initialize(self) -> None:
         """Initialize Opinion Labs API client."""
@@ -488,46 +492,57 @@ class OpinionPlatform(BasePlatform):
     ) -> list[Market]:
         """Get list of markets from Opinion.
 
-        Args:
-            limit: Maximum number of markets to return
-            offset: Number of markets to skip (for pagination)
-            active_only: Only return active markets
+        Fetches all markets and caches for 5 minutes to avoid
+        repeated API calls.
         """
-        # Opinion API uses /openapi/market endpoint
-        # sortBy: 5 = volume (descending)
-        # Note: API may have internal limits, but we request more to be safe
-        params = {
-            "limit": min(limit, 200),  # Request up to 200
-            "sortBy": 5,  # Sort by 24h volume
-        }
-        if active_only:
-            params["status"] = "activated"
-        if offset > 0:
-            params["offset"] = offset
+        import time
 
-        try:
-            data = await self._api_request("GET", "/openapi/market", params=params)
+        # Check if cache is still valid
+        now = time.time()
+        if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
+            return self._markets_cache[offset:offset + limit]
 
-            # Response structure: {"errno": 0, "errmsg": "ok", "result": {"list": [...], "total": N}}
-            markets_data = data.get("result", {}).get("list", [])
-            if not markets_data and isinstance(data, list):
-                markets_data = data
+        # Paginate through API (200 per page, up to 3 pages = 600 markets)
+        api_page_size = 200
+        max_pages = 3
 
-            markets = []
-            for item in markets_data:
-                try:
-                    markets.append(self._parse_market(item))
-                except Exception as e:
-                    logger.warning("Failed to parse market", error=str(e))
+        all_data = []
+        for page_num in range(max_pages):
+            params = {
+                "limit": api_page_size,
+                "offset": page_num * api_page_size,
+                "sortBy": 5,  # Sort by 24h volume
+            }
+            if active_only:
+                params["status"] = "activated"
 
-            # Enrich with orderbook prices
-            markets = await self._enrich_markets_with_orderbook_prices(markets)
+            try:
+                data = await self._api_request("GET", "/openapi/market", params=params)
+                markets_data = data.get("result", {}).get("list", [])
+                if not markets_data and isinstance(data, list):
+                    markets_data = data
+                if not markets_data:
+                    break  # No more pages
+                all_data.extend(markets_data)
+            except Exception as e:
+                logger.error("Failed to fetch markets page", page=page_num, error=str(e))
+                break
 
-            return markets
+        markets = []
+        for item in all_data:
+            try:
+                markets.append(self._parse_market(item))
+            except Exception as e:
+                logger.warning("Failed to parse market", error=str(e))
 
-        except Exception as e:
-            logger.error("Failed to get markets", error=str(e))
-            return []
+        # Enrich with orderbook prices
+        markets = await self._enrich_markets_with_orderbook_prices(markets)
+
+        # Update cache
+        self._markets_cache = markets
+        self._markets_cache_time = now
+
+        return markets[offset:offset + limit]
 
     async def search_markets(
         self,
@@ -562,9 +577,9 @@ class OpinionPlatform(BasePlatform):
             return markets
 
         except Exception as e:
-            # Fallback: get all markets and filter client-side
+            # Fallback: use cached markets and filter client-side
             logger.warning("Search failed, falling back to filter", error=str(e))
-            all_markets = await self.get_markets(limit=100)
+            all_markets = await self.get_markets(limit=600)
             query_lower = query.lower()
             return [
                 m for m in all_markets
