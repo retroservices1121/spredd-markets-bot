@@ -1179,24 +1179,28 @@ class PolymarketPlatform(BasePlatform):
             limit: Maximum number of markets to return
         """
         try:
-            # 5-min and 15-min rapid markets use direct tag filtering
+            # 5-min and 15-min rapid markets use tag filtering
             if category.lower() in ("5m", "15m"):
-                tag = "5M" if category.lower() == "5m" else "15M"
+                target_tag = "5M" if category.lower() == "5m" else "15M"
                 params = {
                     "active": "true",
                     "closed": "false",
-                    "tag": tag,
-                    "limit": 50,
+                    "tag": "Up or Down",
+                    "limit": 100,
                     "order": "startDate",
                     "ascending": "false",
                 }
                 data = await self._gamma_request("GET", "/events", params=params)
 
-                from datetime import datetime, timezone
-
                 markets = []
                 for event in data if isinstance(data, list) else []:
                     try:
+                        # Check that this event has the exact duration tag (5M or 15M)
+                        event_tags = event.get("tags", [])
+                        tag_labels = [t.get("label", "") for t in event_tags]
+                        if target_tag not in tag_labels:
+                            continue
+
                         event_markets = event.get("markets", [])
                         if len(event_markets) <= 1:
                             markets.append(self._parse_market(event))
