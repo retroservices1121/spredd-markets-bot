@@ -200,6 +200,8 @@ class PolymarketPlatform(BasePlatform):
         self._markets_cache: list[Market] = []
         self._markets_cache_time: float = 0
         self.CACHE_TTL = 120  # 2 minutes (shorter for rapid 5-min markets)
+        # Market detail cache: conditionId -> Market (for rapid market lookups)
+        self._market_detail_cache: dict[str, Market] = {}
 
     async def initialize(self) -> None:
         """Initialize Polymarket API clients."""
@@ -1072,6 +1074,26 @@ class PolymarketPlatform(BasePlatform):
             include_closed: If True, also search closed/inactive markets (for position tracking)
         """
         try:
+            # Check detail cache first (populated by category listings for rapid markets)
+            for cached_id, cached_market in self._market_detail_cache.items():
+                if cached_id == market_id or cached_id.startswith(market_id):
+                    return cached_market
+
+            # Try direct lookup via /markets endpoint (works for any conditionId)
+            try:
+                market_data = await self._gamma_request("GET", "/markets", params={"condition_ids": market_id})
+                if market_data and isinstance(market_data, list) and len(market_data) > 0:
+                    m = market_data[0]
+                    # Need the parent event for full context
+                    event_slug = m.get("eventSlug") or m.get("slug")
+                    if event_slug:
+                        event_data = await self._gamma_request("GET", "/events", params={"slug": event_slug})
+                        if event_data and isinstance(event_data, list) and len(event_data) > 0:
+                            return self._parse_market(event_data[0], m)
+                    # Fall through to event search if no event found
+            except Exception:
+                pass
+
             # Build params - include closed markets for position P&L tracking
             params = {
                 "limit": 200,
@@ -1279,6 +1301,8 @@ class PolymarketPlatform(BasePlatform):
                     if key not in seen_assets:
                         seen_assets.add(key)
                         markets.append(market)
+                        # Cache for detail lookups (rapid markets aren't in top-200 by volume)
+                        self._market_detail_cache[market.market_id] = market
 
                 return markets[:limit]
 
