@@ -196,6 +196,10 @@ class PolymarketPlatform(BasePlatform):
         # RPC fallback tracking
         self._current_rpc_index = 0
         self._rpc_urls = settings.polygon_rpc_urls
+        # Markets cache
+        self._markets_cache: list[Market] = []
+        self._markets_cache_time: float = 0
+        self.CACHE_TTL = 300  # 5 minutes
 
     async def initialize(self) -> None:
         """Initialize Polymarket API clients."""
@@ -806,24 +810,23 @@ class PolymarketPlatform(BasePlatform):
 
     async def get_markets(
         self,
-        limit: int = 50,
+        limit: int = 100,
         offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
         """Get list of markets from Gamma API.
 
-        Args:
-            limit: Maximum number of markets to return
-            offset: Number of events to skip (for pagination)
-            active_only: Only return active, non-closed markets
+        Fetches up to 1000 events and caches for 5 minutes.
         """
-        # Fetch more events than limit to account for multi-market events
-        # Allow up to 1000 to include all trending markets
-        fetch_limit = min(limit + 50, 1000)
+        import time
+
+        # Check if cache is still valid
+        now = time.time()
+        if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
+            return self._markets_cache[offset:offset + limit]
 
         params = {
-            "limit": fetch_limit,
-            "offset": offset,
+            "limit": 1000,
             "order": "volume24hr",
             "ascending": "false",
         }
@@ -913,33 +916,39 @@ class PolymarketPlatform(BasePlatform):
                         markets.append(self._parse_market(event, selected))
                         seen_event_ids.add(event_id)
 
-                # Stop if we have enough markets
-                if len(markets) >= limit:
-                    break
-
             except Exception as e:
                 logger.warning("Failed to parse market", error=str(e), event_id=event.get("id"))
 
-        return markets[:limit]
+        # Update cache
+        self._markets_cache = markets
+        self._markets_cache_time = now
+
+        return markets[offset:offset + limit]
     
     async def search_markets(
         self,
         query: str,
-        limit: int = 20,
+        limit: int = 50,
     ) -> list[Market]:
         """Search markets by query."""
-        # Fetch events and filter by query - fetch up to 500 for better coverage
+        # Fetch events and filter by query - fetch up to 1000 for better coverage
         try:
             data = await self._gamma_request("GET", "/events", params={
                 "active": "true",
                 "closed": "false",
-                "limit": 500,
+                "limit": 1000,
                 "order": "volume24hr",
                 "ascending": "false",
             })
         except Exception as e:
-            logger.error("Failed to fetch events for search", error=str(e))
-            return []
+            logger.error("Failed to fetch events for search, falling back to cache", error=str(e))
+            # Fallback: use cached markets and filter client-side
+            all_markets = await self.get_markets(limit=1000)
+            query_lower = query.lower()
+            return [
+                m for m in all_markets
+                if query_lower in m.title.lower() or (m.description and query_lower in m.description.lower())
+            ][:limit]
 
         # Filter by query
         query_lower = query.lower()
