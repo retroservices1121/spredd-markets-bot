@@ -614,28 +614,36 @@ class LimitlessPlatform(BasePlatform):
 
     async def get_markets(
         self,
-        limit: int = 25,
+        limit: int = 100,
         offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
         """Get list of markets from Limitless."""
-        # API limit is 25 max
-        api_limit = min(limit, 25)
-        # API uses 1-indexed pages
-        page = (offset // api_limit) + 1 if api_limit > 0 else 1
-        params = {
-            "limit": api_limit,
-            "page": page,
-        }
-
-        try:
-            data = await self._sdk_get("/markets/active", params=params)
-        except Exception as e:
-            logger.error("Failed to fetch markets", error=str(e))
-            return []
-
+        # API limit is 25 per page, so paginate to fetch more
+        api_page_size = 25
         markets = []
-        items = data if isinstance(data, list) else data.get("data", data.get("markets", []))
+        # Calculate how many pages we need
+        total_needed = offset + limit
+        pages_needed = (total_needed + api_page_size - 1) // api_page_size  # ceil division
+        pages_needed = min(pages_needed, 12)  # Cap at 12 pages (300 markets)
+
+        all_items = []
+        for page_num in range(1, pages_needed + 1):
+            params = {
+                "limit": api_page_size,
+                "page": page_num,
+            }
+            try:
+                data = await self._sdk_get("/markets/active", params=params)
+                items = data if isinstance(data, list) else data.get("data", data.get("markets", []))
+                if not items:
+                    break  # No more pages
+                all_items.extend(items)
+            except Exception as e:
+                logger.error("Failed to fetch markets page", page=page_num, error=str(e))
+                break
+
+        items = all_items
 
         for item in items:
             try:
@@ -682,26 +690,24 @@ class LimitlessPlatform(BasePlatform):
 
                     m.outcome_name = outcome_name[:50] if outcome_name else None
 
-        return markets[:limit]
+        return markets[offset:offset + limit]
 
     async def search_markets(
         self,
         query: str,
-        limit: int = 20,
+        limit: int = 50,
     ) -> list[Market]:
         """Search markets by query."""
-        # API limit is 25 max
-        api_limit = min(limit, 25)
         try:
             data = await self._sdk_get(
                 "/markets/search",
-                params={"query": query, "limit": api_limit}
+                params={"query": query, "limit": min(limit, 100)}
             )
         except Exception as e:
             logger.error("Failed to search markets", error=str(e))
-            # Fallback to fetching markets with pagination and filtering (API limit is 25)
+            # Fallback to fetching all markets and filtering client-side
             all_markets = []
-            for page_num in range(4):  # Search up to 100 markets
+            for page_num in range(8):  # Search up to 200 markets
                 page_markets = await self.get_markets(limit=25, offset=page_num * 25)
                 if not page_markets:
                     break

@@ -458,13 +458,16 @@ async def get_all_markets(
     else:
         platforms_to_fetch = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
 
+    # Fetch more per platform when aggregating, so each contributes fairly
+    per_platform_limit = limit if len(platforms_to_fetch) == 1 else max(limit, 100)
+
     for plat in platforms_to_fetch:
         try:
             platform_instance = platform_registry.get(Platform(plat))
             if not platform_instance:
                 continue
 
-            markets = await platform_instance.get_markets(limit=limit, active_only=active)
+            markets = await platform_instance.get_markets(limit=per_platform_limit, active_only=active)
             for m in markets:
                 # Extract image from raw_data if available
                 image = None
@@ -525,13 +528,16 @@ async def search_markets(
     else:
         platforms_to_search = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
 
+    # Fetch more per platform when searching across all, then trim combined results
+    per_platform_limit = limit if len(platforms_to_search) == 1 else max(limit, 50)
+
     for plat in platforms_to_search:
         try:
             platform_instance = platform_registry.get(Platform(plat))
             if not platform_instance:
                 continue
 
-            markets = await platform_instance.search_markets(q, limit=limit)
+            markets = await platform_instance.search_markets(q, limit=per_platform_limit)
             for m in markets:
                 results.append({
                     "platform": plat,
@@ -1763,13 +1769,16 @@ def create_api_app() -> FastAPI:
         else:
             platforms_to_fetch = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
 
+        # Fetch more per platform when aggregating, so each contributes fairly
+        per_platform_limit = limit if len(platforms_to_fetch) == 1 else max(limit, 100)
+
         for plat in platforms_to_fetch:
             try:
                 platform_instance = platform_registry.get(Platform(plat))
                 if not platform_instance:
                     continue
 
-                markets = await platform_instance.get_markets(limit=limit, active_only=active)
+                markets = await platform_instance.get_markets(limit=per_platform_limit, active_only=active)
                 for m in markets:
                     # Extract image from raw_data if available
                     image = None
