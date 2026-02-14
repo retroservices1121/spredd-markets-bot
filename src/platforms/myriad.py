@@ -219,6 +219,10 @@ class MyriadPlatform(BasePlatform):
         self._web3_clients: dict[int, AsyncWeb3] = {}  # network_id -> web3
         self._network_id = settings.myriad_network_id
         self._network_config = MYRIAD_NETWORKS.get(self._network_id, MYRIAD_NETWORKS[2741])
+        # Markets cache
+        self._markets_cache: list[Market] = []
+        self._markets_cache_time: float = 0
+        self.CACHE_TTL = 300  # 5 minutes
 
     async def initialize(self) -> None:
         """Initialize HTTP client and Web3 connections."""
@@ -532,47 +536,68 @@ class MyriadPlatform(BasePlatform):
 
     async def get_markets(
         self,
-        limit: int = 20,
+        limit: int = 100,
         offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
-        """Get list of markets from Myriad."""
-        params = {
-            "limit": min(limit, 100),
-            "page": (offset // limit) + 1 if limit > 0 else 1,
-            "sort": "volume_24h",
-            "order": "desc",
-            "network_id": self._network_id,
-        }
+        """Get list of markets from Myriad.
 
-        if active_only:
-            params["state"] = "open"
+        Fetches all markets and caches for 5 minutes to avoid
+        repeated API calls.
+        """
+        import time
 
-        try:
-            data = await self._api_request("GET", "/markets", params=params)
+        # Check if cache is still valid
+        now = time.time()
+        if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
+            return self._markets_cache[offset:offset + limit]
 
-            markets = []
-            items = data.get("data", data.get("markets", []))
+        # Paginate through API (100 per page, up to 5 pages = 500 markets)
+        api_page_size = 100
+        max_pages = 5
 
-            for item in items:
-                try:
-                    # Filter out non-USDC markets (PTS, PENGU on Abstract)
-                    if not self._is_usdc_market(item):
-                        continue
-                    markets.append(self._parse_market(item))
-                except Exception as e:
-                    logger.warning("Failed to parse market", error=str(e))
+        all_items = []
+        for page_num in range(1, max_pages + 1):
+            params = {
+                "limit": api_page_size,
+                "page": page_num,
+                "sort": "volume_24h",
+                "order": "desc",
+                "network_id": self._network_id,
+            }
+            if active_only:
+                params["state"] = "open"
 
-            return markets
+            try:
+                data = await self._api_request("GET", "/markets", params=params)
+                items = data.get("data", data.get("markets", []))
+                if not items:
+                    break  # No more pages
+                all_items.extend(items)
+            except Exception as e:
+                logger.error("Failed to fetch markets page", page=page_num, error=str(e))
+                break
 
-        except Exception as e:
-            logger.error("Failed to get markets", error=str(e))
-            raise
+        markets = []
+        for item in all_items:
+            try:
+                # Filter out non-USDC markets (PTS, PENGU on Abstract)
+                if not self._is_usdc_market(item):
+                    continue
+                markets.append(self._parse_market(item))
+            except Exception as e:
+                logger.warning("Failed to parse market", error=str(e))
+
+        # Update cache
+        self._markets_cache = markets
+        self._markets_cache_time = now
+
+        return markets[offset:offset + limit]
 
     async def search_markets(
         self,
         query: str,
-        limit: int = 10,
+        limit: int = 50,
     ) -> list[Market]:
         """Search markets by keyword."""
         params = {
@@ -589,7 +614,6 @@ class MyriadPlatform(BasePlatform):
 
             for item in items:
                 try:
-                    # Filter out non-USDC markets (PTS, PENGU on Abstract)
                     if not self._is_usdc_market(item):
                         continue
                     markets.append(self._parse_market(item))
@@ -599,8 +623,14 @@ class MyriadPlatform(BasePlatform):
             return markets[:limit]
 
         except Exception as e:
-            logger.error("Failed to search markets", error=str(e))
-            return []
+            logger.error("Failed to search markets via API", error=str(e))
+            # Fallback: use cached markets and filter client-side
+            all_markets = await self.get_markets(limit=500)
+            query_lower = query.lower()
+            return [
+                m for m in all_markets
+                if query_lower in m.title.lower() or (m.description and query_lower in m.description.lower())
+            ][:limit]
 
     async def get_market(
         self,
