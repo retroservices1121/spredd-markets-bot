@@ -1460,7 +1460,9 @@ class BridgeService:
             )
 
         try:
-            amount_raw = int(amount * Decimal(10**6))
+            # BSC USDC has 18 decimals, all other chains use 6
+            from_decimals = 18 if source_chain == BridgeChain.BSC else 6
+            amount_raw = int(amount * Decimal(10**from_decimals))
 
             # Determine destination token - BSC uses USDT (for Opinion Labs), others use USDC
             if dest_chain == BridgeChain.BSC:
@@ -1690,7 +1692,9 @@ class BridgeService:
                         wallet, Web3.to_checksum_address(lifi_contract)
                     ).call()
 
-                    amount_raw = int(amount * Decimal(10**6))
+                    # BSC USDC has 18 decimals, all other chains use 6
+                    from_decimals = 18 if source_chain == BridgeChain.BSC else 6
+                    amount_raw = int(amount * Decimal(10**from_decimals))
 
                     if allowance < amount_raw:
                         if progress_callback:
