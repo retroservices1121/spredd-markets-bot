@@ -199,7 +199,7 @@ class PolymarketPlatform(BasePlatform):
         # Markets cache
         self._markets_cache: list[Market] = []
         self._markets_cache_time: float = 0
-        self.CACHE_TTL = 300  # 5 minutes
+        self.CACHE_TTL = 120  # 2 minutes (shorter for rapid 5-min markets)
 
     async def initialize(self) -> None:
         """Initialize Polymarket API clients."""
@@ -835,6 +835,25 @@ class PolymarketPlatform(BasePlatform):
             params["closed"] = "false"
 
         data = await self._gamma_request("GET", "/events", params=params)
+
+        # Also fetch 5-min / 15-min rapid crypto markets (tagged "Up or Down")
+        # These rotate frequently and may not appear in top volume results
+        try:
+            rapid_data = await self._gamma_request("GET", "/events", params={
+                "active": "true",
+                "closed": "false",
+                "tag": "Up or Down",
+                "limit": 50,
+                "order": "startDate",
+                "ascending": "false",
+            })
+            # Merge rapid markets, deduplicating by event ID
+            existing_ids = {e.get("id") for e in (data if isinstance(data, list) else [])}
+            for event in (rapid_data if isinstance(rapid_data, list) else []):
+                if event.get("id") not in existing_ids:
+                    data.append(event)
+        except Exception as e:
+            logger.warning("Failed to fetch rapid markets", error=str(e))
 
         from datetime import datetime, timezone
 
