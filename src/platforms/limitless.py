@@ -238,6 +238,10 @@ class LimitlessPlatform(BasePlatform):
         self._id_to_slug_cache: dict[str, str] = {}
         # Group market cache (slug -> raw group data for nested markets)
         self._group_market_cache: dict[str, dict] = {}
+        # Markets cache (avoid re-fetching pages within TTL)
+        self._markets_cache: list[Market] = []
+        self._markets_cache_time: float = 0
+        self.CACHE_TTL = 300  # 5 minutes
 
     async def initialize(self) -> None:
         """Initialize Limitless SDK clients."""
@@ -618,17 +622,24 @@ class LimitlessPlatform(BasePlatform):
         offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
-        """Get list of markets from Limitless."""
-        # API limit is 25 per page, so paginate to fetch more
+        """Get list of markets from Limitless.
+
+        Fetches all active markets and caches for 5 minutes to avoid
+        repeated pagination across the 25-per-page API limit.
+        """
+        import time
+
+        # Check if cache is still valid
+        now = time.time()
+        if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
+            return self._markets_cache[offset:offset + limit]
+
+        # API limit is 25 per page, so paginate to fetch all
         api_page_size = 25
-        markets = []
-        # Calculate how many pages we need
-        total_needed = offset + limit
-        pages_needed = (total_needed + api_page_size - 1) // api_page_size  # ceil division
-        pages_needed = min(pages_needed, 12)  # Cap at 12 pages (300 markets)
+        max_pages = 12  # Cap at 300 markets
 
         all_items = []
-        for page_num in range(1, pages_needed + 1):
+        for page_num in range(1, max_pages + 1):
             params = {
                 "limit": api_page_size,
                 "page": page_num,
@@ -643,9 +654,8 @@ class LimitlessPlatform(BasePlatform):
                 logger.error("Failed to fetch markets page", page=page_num, error=str(e))
                 break
 
-        items = all_items
-
-        for item in items:
+        markets = []
+        for item in all_items:
             try:
                 market = self._parse_market(item)
                 if not active_only or market.is_active:
@@ -669,26 +679,25 @@ class LimitlessPlatform(BasePlatform):
                     m.related_market_count = len(group)
 
                     # Extract outcome name from title
-                    # Common patterns: "Will X win?", "X to win", "Team X", etc.
                     title = m.title
                     outcome_name = None
 
-                    # Try to extract meaningful name from title
                     if " - " in title:
                         outcome_name = title.split(" - ")[-1]
                     elif ":" in title:
                         outcome_name = title.split(":")[-1].strip()
                     elif title.lower().startswith("will "):
-                        # "Will X win?" -> "X"
                         outcome_name = title[5:].replace(" win?", "").replace("?", "").strip()
                     elif " to " in title.lower():
-                        # "X to win Y" -> "X"
                         outcome_name = title.split(" to ")[0].strip()
                     else:
-                        # Use full title as outcome name
                         outcome_name = title
 
                     m.outcome_name = outcome_name[:50] if outcome_name else None
+
+        # Update cache
+        self._markets_cache = markets
+        self._markets_cache_time = now
 
         return markets[offset:offset + limit]
 
@@ -705,13 +714,8 @@ class LimitlessPlatform(BasePlatform):
             )
         except Exception as e:
             logger.error("Failed to search markets", error=str(e))
-            # Fallback to fetching all markets and filtering client-side
-            all_markets = []
-            for page_num in range(8):  # Search up to 200 markets
-                page_markets = await self.get_markets(limit=25, offset=page_num * 25)
-                if not page_markets:
-                    break
-                all_markets.extend(page_markets)
+            # Fallback: use cached markets and filter client-side
+            all_markets = await self.get_markets(limit=300)
             query_lower = query.lower()
             return [
                 m for m in all_markets
