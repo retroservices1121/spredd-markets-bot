@@ -6,7 +6,7 @@ World's largest prediction market on Polygon.
 import asyncio
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 import httpx
@@ -855,8 +855,6 @@ class PolymarketPlatform(BasePlatform):
         except Exception as e:
             logger.warning("Failed to fetch rapid markets", error=str(e))
 
-        from datetime import datetime, timezone
-
         def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
             """Check if a market has expired.
 
@@ -983,8 +981,6 @@ class PolymarketPlatform(BasePlatform):
                     if query_lower in m.get("question", "").lower():
                         filtered_events.append(event)
                         break
-
-        from datetime import datetime, timezone
 
         def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
             """Check if a market has expired.
@@ -1207,40 +1203,81 @@ class PolymarketPlatform(BasePlatform):
             limit: Maximum number of markets to return
         """
         try:
-            # 5-min and 15-min rapid markets use tag filtering
-            if category.lower() in ("5m", "15m"):
-                target_tag = "5M" if category.lower() == "5m" else "15M"
+            # Rapid markets: 5M, 15M, 1H use tag filtering
+            # Only show the current/next live markets (soonest expiry), not pre-created future ones
+            rapid_tags = {"5m": "5M", "15m": "15M", "1h": "1H"}
+            if category.lower() in rapid_tags:
+                target_tag = rapid_tags[category.lower()]
                 params = {
                     "active": "true",
                     "closed": "false",
                     "tag": "Up or Down",
                     "limit": 100,
-                    "order": "startDate",
-                    "ascending": "false",
+                    "order": "endDate",
+                    "ascending": "true",
                 }
                 data = await self._gamma_request("GET", "/events", params=params)
 
-                markets = []
+                now = datetime.now(timezone.utc)
+
+                # Collect markets that match the target duration tag and haven't expired
+                candidates = []
                 for event in data if isinstance(data, list) else []:
                     try:
-                        # Check that this event has the exact duration tag (5M or 15M)
                         event_tags = event.get("tags", [])
                         tag_labels = [t.get("label", "") for t in event_tags]
                         if target_tag not in tag_labels:
                             continue
 
                         event_markets = event.get("markets", [])
+                        m = event_markets[0] if event_markets else event
+                        end_str = m.get("endDate") or event.get("endDate") or ""
+
+                        # Parse end time and skip expired
+                        try:
+                            if end_str.endswith("Z"):
+                                end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                            else:
+                                end_dt = datetime.fromisoformat(end_str)
+                            if end_dt.tzinfo is None:
+                                end_dt = end_dt.replace(tzinfo=timezone.utc)
+                            if end_dt <= now:
+                                continue
+                        except:
+                            continue
+
+                        # Extract the crypto asset from tags (Bitcoin, Ethereum, etc.)
+                        asset = None
+                        for t in event_tags:
+                            label = t.get("label", "")
+                            if label in ("Bitcoin", "Ethereum", "Solana", "XRP"):
+                                asset = label
+                                break
+
                         if len(event_markets) <= 1:
-                            markets.append(self._parse_market(event))
+                            candidates.append((end_dt, asset, self._parse_market(event)))
                         else:
                             active_markets = [
-                                m for m in event_markets
-                                if m.get("active", True) and not m.get("closed", False)
+                                mk for mk in event_markets
+                                if mk.get("active", True) and not mk.get("closed", False)
                             ]
                             if active_markets:
-                                markets.append(self._parse_market(event, active_markets[0]))
+                                candidates.append((end_dt, asset, self._parse_market(event, active_markets[0])))
                     except Exception as e:
                         logger.debug(f"Skipping rapid market: {e}")
+
+                # Sort by end time (soonest first)
+                candidates.sort(key=lambda x: x[0])
+
+                # For each asset, only keep the soonest-expiring market (the live one)
+                seen_assets = set()
+                markets = []
+                for end_dt, asset, market in candidates:
+                    key = asset or market.market_id
+                    if key not in seen_assets:
+                        seen_assets.add(key)
+                        markets.append(market)
+
                 return markets[:limit]
 
             # Standard categories use tag-based filtering from events API
@@ -1253,8 +1290,6 @@ class PolymarketPlatform(BasePlatform):
             }
 
             data = await self._gamma_request("GET", "/events", params=params)
-
-            from datetime import datetime, timezone
 
             def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
                 """Check if a market has expired.
@@ -1383,6 +1418,7 @@ class PolymarketPlatform(BasePlatform):
         return [
             {"id": "5m", "label": "5 Min", "emoji": "⚡"},
             {"id": "15m", "label": "15 Min", "emoji": "⏱️"},
+            {"id": "1h", "label": "Hourly", "emoji": "⏰"},
             {"id": "sports", "label": "Sports", "emoji": "🏆"},
             {"id": "politics", "label": "Politics", "emoji": "🏛️"},
             {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
