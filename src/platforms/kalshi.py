@@ -573,6 +573,8 @@ class KalshiPlatform(BasePlatform):
         - KXBTC15M (Bitcoin 15-minute)
         - KXETH15M (Ethereum 15-minute)
         - KXSOL15M (Solana 15-minute)
+        - KXXRP15M (XRP 15-minute)
+        - KXDOGE15M (Dogecoin 15-minute)
 
         Returns:
             List of active 15-minute markets sorted by expiration time
@@ -581,13 +583,42 @@ class KalshiPlatform(BasePlatform):
         all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
 
         # 15-minute market ticker patterns
-        patterns_15m = ["KXBTC15M", "KXETH15M", "KXSOL15M"]
+        patterns_15m = ["KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M"]
 
         # Filter for 15-minute markets
         filtered = []
         for market in all_markets:
             ticker = market.market_id.upper()
             if any(ticker.startswith(pattern) for pattern in patterns_15m):
+                filtered.append(market)
+
+        # Sort by expiration time (soonest first)
+        filtered.sort(key=lambda m: m.close_time or "", reverse=False)
+
+        return filtered[:limit]
+
+    async def get_hourly_markets(self, limit: int = 50) -> list[Market]:
+        """Get hourly interval Kalshi crypto markets.
+
+        These are crypto price above/below markets with tickers like:
+        - KXBTCD (Bitcoin hourly)
+        - KXETHD (Ethereum hourly)
+        - KXSOLD (Solana hourly)
+        - KXXRPD (XRP hourly)
+        - KXDOGED (Dogecoin hourly)
+
+        Returns:
+            List of active hourly markets sorted by expiration time
+        """
+        all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
+
+        # Hourly market ticker patterns (KXBTCD but NOT KXBTC15M etc)
+        patterns_hourly = ["KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXDOGED"]
+
+        filtered = []
+        for market in all_markets:
+            ticker = market.market_id.upper()
+            if any(ticker.startswith(pattern) for pattern in patterns_hourly):
                 filtered.append(market)
 
         # Sort by expiration time (soonest first)

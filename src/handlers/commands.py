@@ -2172,11 +2172,18 @@ Select which prediction market you want to trade on:
                 await handle_markets_refresh(query, update.effective_user.id, page=page)
             elif parts[1] == "15m":
                 await handle_15m_markets(query, update.effective_user.id, page=0)
+            elif parts[1] == "hourly":
+                await handle_hourly_markets(query, update.effective_user.id, page=0)
 
         elif action == "markets15m":
             # 15-minute markets pagination: markets15m:page:X
             page = int(parts[2]) if len(parts) > 2 else 0
             await handle_15m_markets(query, update.effective_user.id, page=page)
+
+        elif action == "marketshourly":
+            # Hourly markets pagination: marketshourly:page:X
+            page = int(parts[2]) if len(parts) > 2 else 0
+            await handle_hourly_markets(query, update.effective_user.id, page=page)
 
         elif action == "categories":
             await handle_categories_menu(query, update.effective_user.id)
@@ -6125,9 +6132,12 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
                 ))
         buttons.append(row)
 
-    # Add 15-minute markets button (only for Kalshi - they're the only platform with 15m markets)
+    # Add fast crypto markets buttons (Kalshi only)
     if user.active_platform == Platform.KALSHI:
-        buttons.append([InlineKeyboardButton("⏱️ 15m Markets", callback_data="markets:15m")])
+        buttons.append([
+            InlineKeyboardButton("⏱️ 15m Markets", callback_data="markets:15m"),
+            InlineKeyboardButton("🕐 Hourly Markets", callback_data="markets:hourly"),
+        ])
     buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
 
     await query.edit_message_text(
@@ -6335,6 +6345,110 @@ async def handle_15m_markets(query, telegram_id: int, page: int = 0) -> None:
         logger.error("Failed to load 15m markets", error=str(e))
         await query.edit_message_text(
             f"❌ Failed to load 15-minute markets: {friendly_error(str(e))}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
+            ]),
+        )
+
+
+async def handle_hourly_markets(query, telegram_id: int, page: int = 0) -> None:
+    """Show hourly Kalshi crypto markets with pagination."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    from src.platforms.kalshi import KalshiPlatform
+    kalshi = get_platform(Platform.KALSHI)
+
+    if not isinstance(kalshi, KalshiPlatform):
+        await query.edit_message_text(
+            "❌ Hourly markets are only available on Kalshi.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="markets:refresh")],
+            ]),
+        )
+        return
+
+    await query.edit_message_text(
+        "🕐 Loading hourly markets...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    MARKETS_PER_PAGE = 10
+
+    try:
+        all_markets = await kalshi.get_hourly_markets(limit=50)
+
+        if not all_markets:
+            await query.edit_message_text(
+                "🕐 <b>Hourly Markets</b>\n\n"
+                "No active hourly markets found.\n\n"
+                "<i>These are crypto price above/below markets (BTC, ETH, SOL, XRP, DOGE) "
+                "that settle every hour.</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Refresh", callback_data="markets:hourly")],
+                    [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
+                ]),
+            )
+            return
+
+        total_markets = len(all_markets)
+        total_pages = (total_markets + MARKETS_PER_PAGE - 1) // MARKETS_PER_PAGE
+        page = max(0, min(page, total_pages - 1))
+
+        start_idx = page * MARKETS_PER_PAGE
+        end_idx = min(start_idx + MARKETS_PER_PAGE, total_markets)
+        markets = all_markets[start_idx:end_idx]
+
+        text = "🕐 <b>Hourly Kalshi Markets</b>"
+        if total_pages > 1:
+            text += f" (Page {page + 1}/{total_pages})"
+        text += "\n<i>Crypto price above/below predictions</i>\n\n"
+
+        buttons = []
+        for i, market in enumerate(markets, start_idx + 1):
+            title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
+            yes_prob = format_probability(market.yes_price)
+            exp = format_expiration(market.close_time)
+
+            text += f"<b>{i}.</b> {title}\n"
+            text += f"   YES: {yes_prob} • Exp: {exp}\n\n"
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{i}. {market.title[:30]}...",
+                    callback_data=f"market:kalshi:{market.market_id[:40]}"
+                )
+            ])
+
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("« Prev", callback_data=f"marketshourly:page:{page - 1}"))
+            nav_buttons.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"marketshourly:page:{page + 1}"))
+            buttons.append(nav_buttons)
+
+        buttons.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="markets:hourly"),
+        ])
+        buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to load hourly markets", error=str(e))
+        await query.edit_message_text(
+            f"❌ Failed to load hourly markets: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
