@@ -116,6 +116,9 @@ class User(Base):
     country_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     geo_verify_token: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
+    # DFlow Proof KYC verification (permanent once verified)
+    proof_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Trading preferences
     default_slippage_bps: Mapped[int] = mapped_column(Integer, default=100)  # 1%
 

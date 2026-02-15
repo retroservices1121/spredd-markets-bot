@@ -45,6 +45,7 @@ from src.db.database import (
     get_partner_group_by_chat_id,
     update_partner_group,
     attribute_user_to_partner,
+    set_user_proof_verified,
 )
 from src.utils.geo_blocking import (
     is_country_blocked,
@@ -52,6 +53,7 @@ from src.utils.geo_blocking import (
     needs_reverification,
     get_country_name,
 )
+from src.utils.proof_kyc import check_proof_verified, generate_proof_deep_link
 from src.db.models import Platform, ChainFamily, Chain, PositionStatus, OrderStatus
 from src.platforms import (
     platform_registry,
@@ -1889,6 +1891,117 @@ Earn commissions when your referrals trade!
 
 
 # ===================
+# DFlow Proof KYC Gate
+# ===================
+
+async def check_and_gate_proof_kyc(query, user, telegram_id: int) -> bool:
+    """Check DFlow Proof KYC verification and gate Kalshi trading if not verified.
+
+    Returns True if verified (or not applicable), False if blocked.
+    """
+    from src.db.database import get_wallet
+
+    # Check if user has a Solana wallet (Kalshi users)
+    wallet = await get_wallet(user.id, ChainFamily.SOLANA)
+    if not wallet:
+        return True  # No Solana wallet — not a Kalshi user, skip
+
+    # Already verified (permanent, cached in DB)
+    if user.proof_verified_at:
+        return True
+
+    # Check Proof API
+    verified = await check_proof_verified(wallet.public_key)
+    if verified:
+        await set_user_proof_verified(user.id)
+        return True
+
+    # Not verified — show KYC prompt
+    try:
+        keypair = await wallet_service.get_solana_keypair(user.id, telegram_id)
+        if keypair:
+            deep_link = generate_proof_deep_link(keypair, settings.telegram_bot_username)
+        else:
+            deep_link = "https://dflow.net/proof"
+    except Exception:
+        deep_link = "https://dflow.net/proof"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔐 Start Verification", url=deep_link)],
+        [InlineKeyboardButton("✅ I've Completed KYC", callback_data="proof_retry")],
+        [InlineKeyboardButton("🔄 Select Different Platform", callback_data="menu:platform")],
+    ])
+
+    await query.edit_message_text(
+        "🔐 <b>Identity Verification Required</b>\n\n"
+        "DFlow now requires identity verification (KYC) before "
+        "trading on Kalshi prediction markets.\n\n"
+        "Tap below to complete verification (~2 min):\n"
+        "• Email authentication\n"
+        "• Government ID upload\n"
+        "• Quick selfie check\n\n"
+        "Your wallet will be automatically linked.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+    return False
+
+
+async def handle_proof_retry(query, telegram_id: int) -> None:
+    """Handle 'I've Completed KYC' button — re-check Proof API."""
+    from src.db.database import get_wallet
+
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    wallet = await get_wallet(user.id, ChainFamily.SOLANA)
+    if not wallet:
+        await query.edit_message_text("No Solana wallet found. Please /start first!")
+        return
+
+    await query.edit_message_text("⏳ Checking verification status...")
+
+    verified = await check_proof_verified(wallet.public_key)
+
+    if verified:
+        await set_user_proof_verified(user.id)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎯 Continue Trading", callback_data="menu:platform")],
+        ])
+        await query.edit_message_text(
+            "✅ <b>Identity Verified!</b>\n\n"
+            "Your wallet has been verified. You can now trade on Kalshi.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+    else:
+        # Not yet verified — show link again
+        try:
+            keypair = await wallet_service.get_solana_keypair(user.id, telegram_id)
+            if keypair:
+                deep_link = generate_proof_deep_link(keypair, settings.telegram_bot_username)
+            else:
+                deep_link = "https://dflow.net/proof"
+        except Exception:
+            deep_link = "https://dflow.net/proof"
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔐 Start Verification", url=deep_link)],
+            [InlineKeyboardButton("✅ I've Completed KYC", callback_data="proof_retry")],
+            [InlineKeyboardButton("🔄 Select Different Platform", callback_data="menu:platform")],
+        ])
+        await query.edit_message_text(
+            "⏳ <b>Not Verified Yet</b>\n\n"
+            "Your wallet hasn't been verified yet. Please complete "
+            "the verification process and try again.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+
+# ===================
 # Callback Handlers
 # ===================
 
@@ -2139,6 +2252,10 @@ Select which prediction market you want to trade on:
                 pending_platform = parts[2] if len(parts) > 2 else None
                 await show_geo_verification(query, update.effective_user.id, pending_platform)
 
+        elif action == "proof_retry":
+            # User clicked "I've Completed KYC" — re-check Proof API
+            await handle_proof_retry(query, update.effective_user.id)
+
         elif action == "more":
             # View more options for multi-outcome market
             # Format: more:platform:market_id:offset (shortened from market_more for 64-byte limit)
@@ -2255,6 +2372,10 @@ async def handle_platform_select(query, platform_value: str, telegram_id: int) -
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,
             )
+            return
+
+        # Check DFlow Proof KYC (after geo-blocking passes)
+        if not await check_and_gate_proof_kyc(query, user, telegram_id):
             return
 
     await update_user_platform(telegram_id, platform)
@@ -6767,6 +6888,11 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
         await query.edit_message_text("Please /start first!")
         return
 
+    # DFlow Proof KYC gate for Kalshi
+    if platform_enum == Platform.KALSHI:
+        if not await check_and_gate_proof_kyc(query, user, telegram_id):
+            return
+
     platform = get_platform(platform_enum)
     platform_info = PLATFORM_INFO[platform_enum]
     chain_family = get_chain_family_for_platform(platform_enum)
@@ -7118,6 +7244,11 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
     if position.status != PositionStatus.OPEN:
         await query.edit_message_text("❌ This position is already closed.")
         return
+
+    # DFlow Proof KYC gate for Kalshi
+    if position.platform == Platform.KALSHI:
+        if not await check_and_gate_proof_kyc(query, user, telegram_id):
+            return
 
     try:
         percent = int(percent_str)

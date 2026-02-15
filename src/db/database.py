@@ -246,6 +246,16 @@ async def clear_user_geo_token(user_id: str) -> None:
         )
 
 
+async def set_user_proof_verified(user_id: str) -> None:
+    """Mark user's Solana wallet as DFlow Proof KYC verified."""
+    async with get_session() as session:
+        from sqlalchemy import text
+        await session.execute(
+            text("UPDATE users SET proof_verified_at = now(), updated_at = now() WHERE id = :uid"),
+            {"uid": user_id}
+        )
+
+
 # ===================
 # Wallet Operations
 # ===================
