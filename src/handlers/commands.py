@@ -2343,38 +2343,8 @@ async def handle_platform_select(query, platform_value: str, telegram_id: int) -
         await query.edit_message_text("Please /start first!")
         return
 
-    # Check geo-blocking for Kalshi
+    # Check DFlow Proof KYC for Kalshi (replaces geo-blocking — Proof handles compliance)
     if platform == Platform.KALSHI:
-        # Check if user needs IP-based verification
-        if not user.country or needs_reverification(user.country_verified_at):
-            # Generate verification token and show link
-            await show_geo_verification(query, telegram_id, platform_value)
-            return
-
-        if is_country_blocked(Platform.KALSHI, user.country):
-            # User's country is blocked
-            message = get_blocked_message(Platform.KALSHI, user.country)
-            country_name = get_country_name(user.country)
-
-            # Build re-verify button - use WebAppInfo if Mini App is configured
-            buttons = [[InlineKeyboardButton("🔄 Select Different Platform", callback_data="menu:platform")]]
-            if settings.miniapp_url:
-                # Point to geo check page which shows verification result
-                reverify_url = f"{settings.miniapp_url.rstrip('/')}/api/v1/geo/check"
-                buttons.append([InlineKeyboardButton("🔄 Re-verify Location", web_app=WebAppInfo(url=reverify_url))])
-
-            keyboard = InlineKeyboardMarkup(buttons)
-            await query.edit_message_text(
-                f"🚫 <b>Access Restricted</b>\n\n"
-                f"Your verified location ({country_name}) is restricted from accessing Kalshi "
-                f"due to regulatory requirements.\n\n"
-                f"Please select a different platform.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-            )
-            return
-
-        # Check DFlow Proof KYC (after geo-blocking passes)
         if not await check_and_gate_proof_kyc(query, user, telegram_id):
             return
 
