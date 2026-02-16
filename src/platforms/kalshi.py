@@ -266,10 +266,15 @@ class KalshiPlatform(BasePlatform):
     # Market Discovery
     # ===================
     
-    # Cache for all markets (DFlow API doesn't support pagination)
+    # Cache for first-page markets (general browsing)
     _markets_cache: list[Market] = []
     _markets_cache_time: float = 0
     CACHE_TTL = 300  # 5 minutes
+
+    # Cache for ALL markets across all pages (for ticker-based filtering)
+    _all_markets_cache: list[Market] = []
+    _all_markets_cache_time: float = 0
+    ALL_MARKETS_CACHE_TTL = 300  # 5 minutes
 
     async def get_markets(
         self,
@@ -353,7 +358,62 @@ class KalshiPlatform(BasePlatform):
 
         # Return requested slice
         return markets[offset:offset + limit]
-    
+
+    async def _fetch_all_markets(self) -> list[Market]:
+        """Fetch ALL markets across all pages using cursor-based pagination.
+
+        The DFlow API has 4000+ active markets spread across many pages of 200.
+        This method paginates through all of them and caches the result.
+        Used by get_15m_markets() and get_hourly_markets() which need to find
+        specific ticker patterns that may be on any page.
+        """
+        import time
+
+        now = time.time()
+        if self._all_markets_cache and (now - self._all_markets_cache_time) < self.ALL_MARKETS_CACHE_TTL:
+            return self._all_markets_cache
+
+        all_markets = []
+        cursor = None
+        max_pages = 25  # Safety limit
+
+        for page in range(max_pages):
+            params = {"limit": 200, "status": "active"}
+            if cursor is not None:
+                params["cursor"] = cursor
+
+            try:
+                data = await self._metadata_request("GET", "/api/v1/markets", params=params)
+            except Exception as e:
+                logger.warning("Failed to fetch markets page", page=page, error=str(e))
+                break
+
+            page_markets = data.get("markets", data.get("data", []))
+            for item in page_markets:
+                try:
+                    all_markets.append(self._parse_market(item))
+                except Exception as e:
+                    logger.warning("Failed to parse market", error=str(e))
+
+            # Check for next page
+            new_cursor = data.get("cursor")
+            if not new_cursor or not page_markets:
+                break
+            cursor = new_cursor
+
+        logger.info("Fetched all DFlow markets", total=len(all_markets), pages=page + 1)
+
+        # Update cache
+        self._all_markets_cache = all_markets
+        self._all_markets_cache_time = now
+
+        # Also update the first-page cache if it's stale
+        if not self._markets_cache or (now - self._markets_cache_time) >= self.CACHE_TTL:
+            self._markets_cache = all_markets[:200]
+            self._markets_cache_time = now
+
+        return all_markets
+
     async def search_markets(
         self,
         query: str,
@@ -382,10 +442,15 @@ class KalshiPlatform(BasePlatform):
         """
         import time
 
-        # First, try to find in cache (which has multi-outcome detection)
+        # First, try to find in caches (which have multi-outcome detection)
         now = time.time()
         if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
             for m in self._markets_cache:
+                if m.market_id == market_id:
+                    return m
+        # Also check the all-markets cache (for 15m/hourly markets)
+        if self._all_markets_cache and (now - self._all_markets_cache_time) < self.ALL_MARKETS_CACHE_TTL:
+            for m in self._all_markets_cache:
                 if m.market_id == market_id:
                     return m
 
@@ -579,8 +644,8 @@ class KalshiPlatform(BasePlatform):
         Returns:
             List of active 15-minute markets sorted by expiration time
         """
-        # Get all markets (uses cache if available)
-        all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
+        # Fetch ALL markets across all pages (DFlow has 4000+ markets)
+        all_markets = await self._fetch_all_markets()
 
         # 15-minute market ticker patterns
         patterns_15m = ["KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M"]
@@ -610,7 +675,8 @@ class KalshiPlatform(BasePlatform):
         Returns:
             List of active hourly markets sorted by expiration time
         """
-        all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
+        # Fetch ALL markets across all pages (DFlow has 4000+ markets)
+        all_markets = await self._fetch_all_markets()
 
         # Hourly market ticker patterns (KXBTCD but NOT KXBTC15M etc)
         patterns_hourly = ["KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXDOGED"]
