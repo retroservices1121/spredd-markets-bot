@@ -277,6 +277,19 @@ LIFI_USDT_BSC = "0x55d398326f99059fF775485246999027B3197955"
 # Native token address (used for swaps)
 NATIVE_TOKEN = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
+# VIRTUAL token on Base (for ERC-20 → USDC swaps)
+VIRTUAL_TOKEN_BASE = "0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b"
+
+# ERC-20 tokens that can be swapped to USDC (token_key -> {chain, address, symbol, decimals})
+ERC20_SWAP_TOKENS = {
+    "virtual": {
+        "chain": BridgeChain.BASE,
+        "address": VIRTUAL_TOKEN_BASE,
+        "symbol": "VIRTUAL",
+        "decimals": 18,
+    },
+}
+
 # Valid bridge routes - (source, dest) pairs that work with LI.FI
 # Based on actual LI.FI support - Abstract is only reachable from certain chains
 VALID_BRIDGE_ROUTES: set[tuple[BridgeChain, BridgeChain]] = {
@@ -430,6 +443,25 @@ class BridgeService:
             return Decimal(balance_raw) / Decimal(10**18)
         except Exception as e:
             logger.warning(f"Failed to get native balance on {chain.value}", error=str(e))
+            return Decimal(0)
+
+    def get_erc20_balance(self, chain: BridgeChain, wallet_address: str, token_address: str, decimals: int = 18) -> Decimal:
+        """Get ERC-20 token balance on a specific chain."""
+        if chain not in self._web3_clients:
+            return Decimal(0)
+
+        try:
+            w3 = self._web3_clients[chain]
+            token_contract = w3.eth.contract(
+                address=Web3.to_checksum_address(token_address),
+                abi=ERC20_ABI
+            )
+            balance_raw = token_contract.functions.balanceOf(
+                Web3.to_checksum_address(wallet_address)
+            ).call()
+            return Decimal(balance_raw) / Decimal(10 ** decimals)
+        except Exception as e:
+            logger.warning(f"Failed to get ERC-20 balance on {chain.value}", error=str(e), token=token_address)
             return Decimal(0)
 
     def get_all_usdc_balances(self, wallet_address: str) -> dict[BridgeChain, Decimal]:
@@ -2298,14 +2330,18 @@ class BridgeService:
         chain: BridgeChain,
         native_amount: Decimal,
         wallet_address: str,
+        from_token: str = NATIVE_TOKEN,
+        from_decimals: int = 18,
     ) -> LiFiBridgeQuote:
         """
-        Get quote for swapping native token to USDC on the same chain.
+        Get quote for swapping a token to USDC on the same chain.
 
         Args:
             chain: Chain to swap on
-            native_amount: Amount of native token (in whole units, e.g., 0.5 ETH)
+            native_amount: Amount of token (in whole units, e.g., 0.5 ETH or 100 VIRTUAL)
             wallet_address: User's wallet address
+            from_token: Token address to swap from (default: native token)
+            from_decimals: Decimals for the from_token (default: 18)
         """
         import httpx
 
@@ -2322,7 +2358,7 @@ class BridgeService:
 
         try:
             chain_id = LIFI_CHAIN_IDS[chain]
-            amount_raw = int(native_amount * Decimal(10**18))  # Native tokens have 18 decimals
+            amount_raw = int(native_amount * Decimal(10**from_decimals))
 
             # Get USDC address for output
             to_token = LIFI_USDC.get(chain)
@@ -2346,7 +2382,7 @@ class BridgeService:
             params = {
                 "fromChain": chain_id,
                 "toChain": chain_id,  # Same chain for swap
-                "fromToken": NATIVE_TOKEN,
+                "fromToken": from_token,
                 "toToken": to_token,
                 "fromAmount": str(amount_raw),
                 "fromAddress": wallet_address,
@@ -2394,13 +2430,22 @@ class BridgeService:
                 tool_name = data.get("toolDetails", {}).get("name", "DEX")
                 execution_duration = estimate.get("executionDuration", 30)
 
-                native_symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
+                # Determine input symbol
+                if from_token == NATIVE_TOKEN:
+                    input_symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
+                else:
+                    # Look up symbol from ERC20_SWAP_TOKENS
+                    input_symbol = "TOKEN"
+                    for info in ERC20_SWAP_TOKENS.values():
+                        if info["address"].lower() == from_token.lower() and info["chain"] == chain:
+                            input_symbol = info["symbol"]
+                            break
                 out_symbol = "USDT" if chain == BridgeChain.BSC else "USDC"
 
                 logger.info(
                     "Swap quote received",
                     tool=tool_name,
-                    input=f"{native_amount} {native_symbol}",
+                    input=f"{native_amount} {input_symbol}",
                     output=f"{output_amount} {out_symbol}",
                     chain=chain.value
                 )
@@ -2433,15 +2478,19 @@ class BridgeService:
         chain: BridgeChain,
         native_amount: Decimal,
         progress_callback: ProgressCallback = None,
+        from_token: str = NATIVE_TOKEN,
+        from_decimals: int = 18,
     ) -> BridgeResult:
         """
-        Execute a native token → USDC swap on the same chain.
+        Execute a token → USDC swap on the same chain.
 
         Args:
             private_key: EVM account for signing
             chain: Chain to swap on
-            native_amount: Amount of native token to swap
+            native_amount: Amount of token to swap
             progress_callback: Optional progress callback
+            from_token: Token address to swap from (default: native token)
+            from_decimals: Decimals for the from_token (default: 18)
         """
         import httpx
 
@@ -2462,7 +2511,7 @@ class BridgeService:
                 progress_callback("💱 Getting swap quote...", 0, 60)
 
             # Get quote
-            quote = self.get_swap_quote(chain, native_amount, wallet)
+            quote = self.get_swap_quote(chain, native_amount, wallet, from_token=from_token, from_decimals=from_decimals)
             if quote.error:
                 return BridgeResult(
                     success=False,
@@ -2482,8 +2531,15 @@ class BridgeService:
                 )
 
             if progress_callback:
-                native_symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
-                progress_callback(f"📋 Swapping {native_amount} {native_symbol} → USDC", 10, 60)
+                if from_token == NATIVE_TOKEN:
+                    input_symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
+                else:
+                    input_symbol = "TOKEN"
+                    for info in ERC20_SWAP_TOKENS.values():
+                        if info["address"].lower() == from_token.lower() and info["chain"] == chain:
+                            input_symbol = info["symbol"]
+                            break
+                progress_callback(f"📋 Swapping {native_amount} {input_symbol} → USDC", 10, 60)
 
             # Extract transaction data
             tx_request = quote.quote_data.get("transactionRequest", {})
@@ -2495,6 +2551,44 @@ class BridgeService:
                     amount=native_amount,
                     error_message="No transaction data in quote"
                 )
+
+            # For ERC-20 swaps, check and approve token if needed
+            if from_token != NATIVE_TOKEN:
+                spender = tx_request.get("to")
+                if spender:
+                    token_contract = w3.eth.contract(
+                        address=Web3.to_checksum_address(from_token),
+                        abi=ERC20_ABI
+                    )
+                    allowance = token_contract.functions.allowance(
+                        wallet, Web3.to_checksum_address(spender)
+                    ).call()
+
+                    amount_raw = int(native_amount * Decimal(10**from_decimals))
+                    if allowance < amount_raw:
+                        if progress_callback:
+                            progress_callback("🔐 Approving token for swap...", 12, 60)
+
+                        logger.info("Approving token for swap", token=from_token, contract=spender)
+
+                        approve_nonce = w3.eth.get_transaction_count(wallet, 'pending')
+                        approve_gas_price = int(w3.eth.gas_price * 1.5)
+
+                        approve_tx = token_contract.functions.approve(
+                            Web3.to_checksum_address(spender),
+                            2 ** 256 - 1  # Max approval
+                        ).build_transaction({
+                            "from": wallet,
+                            "nonce": approve_nonce,
+                            "gasPrice": approve_gas_price,
+                            "gas": 100000,
+                            "chainId": LIFI_CHAIN_IDS[chain],
+                        })
+
+                        signed_approve = w3.eth.account.sign_transaction(approve_tx, private_key.key)
+                        approve_hash = w3.eth.send_raw_transaction(signed_approve.raw_transaction)
+                        w3.eth.wait_for_transaction_receipt(approve_hash, timeout=120)
+                        logger.info("Token approval confirmed", tx_hash=approve_hash.hex())
 
             # Build and sign transaction
             nonce = w3.eth.get_transaction_count(wallet, 'pending')
@@ -2509,6 +2603,10 @@ class BridgeService:
                 "gasPrice": gas_price,
                 "chainId": LIFI_CHAIN_IDS[chain],
             }
+
+            # For ERC-20 swaps, value should be 0 (no native token sent)
+            if from_token != NATIVE_TOKEN:
+                tx["value"] = 0
 
             # Estimate gas
             try:

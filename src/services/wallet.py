@@ -48,6 +48,10 @@ USDC_ADDRESSES = {
 # USDC.e (bridged) address on Polygon - different from native USDC
 USDC_E_POLYGON = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
+# VIRTUAL token on Base
+VIRTUAL_TOKEN_BASE = "0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b"
+VIRTUAL_DECIMALS = 18
+
 USDT_ADDRESSES = {
     Chain.BSC: "0x55d398326f99059fF775485246999027B3197955",  # USDT on BSC
 }
@@ -664,7 +668,21 @@ class WalletService(LoggerMixin):
                 self.log.warning("Failed to get Base USDC balance", error=str(e))
                 return None
 
-        results = await asyncio.gather(get_eth(), get_usdc())
+        async def get_virtual():
+            try:
+                return await self._get_erc20_balance(
+                    self._base_web3,
+                    address,
+                    VIRTUAL_TOKEN_BASE,
+                    "VIRTUAL",
+                    VIRTUAL_DECIMALS,
+                    Chain.BASE,
+                )
+            except Exception as e:
+                self.log.warning("Failed to get Base VIRTUAL balance", error=str(e))
+                return None
+
+        results = await asyncio.gather(get_eth(), get_usdc(), get_virtual())
         return [b for b in results if b is not None]
 
     async def get_monad_balances(self, address: str) -> list[Balance]:

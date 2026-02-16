@@ -2132,11 +2132,14 @@ Select which prediction market you want to trade on:
                 await handle_bridge_start(query, parts[1], update.effective_user.id, context, dest_chain="polygon")
 
         elif action == "swap":
-            # Native token → USDC swaps
-            # Format: swap:native:{chain}, swap:amount:{chain}:{percent}, swap:confirm
+            # Token → USDC swaps
+            # Format: swap:native:{chain}, swap:erc20:{token_key}, swap:amount:{chain}:{percent}, swap:confirm
             if parts[1] == "native":
                 # swap:native:polygon - user wants to swap native token on chain
                 await handle_native_swap(query, parts[2], update.effective_user.id, context)
+            elif parts[1] == "erc20":
+                # swap:erc20:virtual - user wants to swap an ERC-20 token
+                await handle_erc20_swap(query, parts[2], update.effective_user.id, context)
             elif parts[1] == "amount":
                 # swap:amount:{chain}:{percent} - user selected swap amount
                 await handle_native_swap_amount(query, parts[2], int(parts[3]), update.effective_user.id, context)
@@ -3688,7 +3691,7 @@ async def handle_swap_menu(query, telegram_id: int, context: ContextTypes.DEFAUL
         return
 
     try:
-        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS, SWAP_SUPPORTED_CHAINS
+        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS, SWAP_SUPPORTED_CHAINS, ERC20_SWAP_TOKENS
         from src.db.database import get_user_wallets
 
         if not bridge_service._initialized:
@@ -3730,6 +3733,25 @@ async def handle_swap_menu(query, telegram_id: int, context: ContextTypes.DEFAUL
                         InlineKeyboardButton(
                             f"{emoji} {symbol} → {out_token} ({float(native_bal):.4f})",
                             callback_data=f"swap:native:{chain.value}"
+                        )
+                    ])
+            except Exception:
+                pass
+
+        # ERC-20 token swaps (e.g., VIRTUAL → USDC)
+        for token_key, token_info in ERC20_SWAP_TOKENS.items():
+            try:
+                token_bal = bridge_service.get_erc20_balance(
+                    token_info["chain"], evm_wallet.public_key,
+                    token_info["address"], token_info["decimals"]
+                )
+                if token_bal > Decimal("0.1"):
+                    has_swaps = True
+                    emoji = chain_emoji.get(token_info["chain"], "🔹")
+                    buttons.append([
+                        InlineKeyboardButton(
+                            f"{emoji} {token_info['symbol']} → USDC ({float(token_bal):.2f})",
+                            callback_data=f"swap:erc20:{token_key}"
                         )
                     ])
             except Exception:
@@ -4130,15 +4152,102 @@ async def handle_native_swap(query, chain_str: str, telegram_id: int, context: C
         )
 
 
-async def handle_native_swap_amount(query, chain_str: str, percent: int, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle native swap amount selection - get quote and show confirmation."""
+async def handle_erc20_swap(query, token_key: str, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ERC-20 token → USDC swap - show amount selection."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
         return
 
     try:
-        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS
+        from src.services.bridge import bridge_service, BridgeChain, ERC20_SWAP_TOKENS
+
+        if not bridge_service._initialized:
+            bridge_service.initialize()
+
+        token_info = ERC20_SWAP_TOKENS.get(token_key)
+        if not token_info:
+            await query.edit_message_text(f"❌ Unknown token: {token_key}")
+            return
+
+        chain = token_info["chain"]
+        symbol = token_info["symbol"]
+
+        # Get user's EVM wallet
+        from src.db.database import get_user_wallets
+        wallets = await get_user_wallets(user.id)
+        evm_wallet = next((w for w in wallets if w.chain_family == ChainFamily.EVM), None)
+
+        if not evm_wallet:
+            await query.edit_message_text("❌ No EVM wallet found.")
+            return
+
+        # Get token balance
+        token_balance = bridge_service.get_erc20_balance(
+            chain, evm_wallet.public_key, token_info["address"], token_info["decimals"]
+        )
+
+        if token_balance < Decimal("0.01"):
+            await query.edit_message_text(
+                f"❌ Insufficient {symbol} balance on {chain.value.title()}.\n\n"
+                f"Balance: {float(token_balance):.4f} {symbol}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+                ]),
+            )
+            return
+
+        # Store ERC-20 token info in user_data for the amount handler
+        context.user_data["pending_erc20_swap"] = {
+            "token_key": token_key,
+            "from_token": token_info["address"],
+            "from_decimals": token_info["decimals"],
+            "symbol": symbol,
+        }
+
+        text = f"💱 <b>Swap {symbol} → USDC</b>\n\n"
+        text += f"Chain: {chain.value.title()}\n"
+        text += f"Balance: {float(token_balance):.4f} {symbol}\n\n"
+        text += f"Select amount to swap:"
+
+        # Amount buttons - reuse same callback format but chain is the ERC-20's chain
+        buttons = [
+            [
+                InlineKeyboardButton("25%", callback_data=f"swap:amount:{chain.value}:25"),
+                InlineKeyboardButton("50%", callback_data=f"swap:amount:{chain.value}:50"),
+            ],
+            [
+                InlineKeyboardButton("75%", callback_data=f"swap:amount:{chain.value}:75"),
+                InlineKeyboardButton("100%", callback_data=f"swap:amount:{chain.value}:100"),
+            ],
+            [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+        ]
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to show ERC-20 swap menu", error=str(e))
+        await query.edit_message_text(
+            f"❌ Error: {friendly_error(str(e))}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
+            ]),
+        )
+
+
+async def handle_native_swap_amount(query, chain_str: str, percent: int, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle swap amount selection - get quote and show confirmation. Works for both native and ERC-20 swaps."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    try:
+        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS, NATIVE_TOKEN
 
         # Initialize bridge service if needed
         if not bridge_service._initialized:
@@ -4160,20 +4269,35 @@ async def handle_native_swap_amount(query, chain_str: str, percent: int, telegra
             await query.edit_message_text("❌ No EVM wallet found.")
             return
 
-        # Get native balance and calculate swap amount
-        native_balance = bridge_service.get_native_balance(chain, evm_wallet.public_key)
-        native_symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
+        # Check if this is an ERC-20 swap (set by handle_erc20_swap)
+        erc20_info = context.user_data.pop("pending_erc20_swap", None)
         out_token = "USDT" if chain == BridgeChain.BSC else "USDC"
 
-        # For 100%, leave some for gas (0.001 of native token)
-        if percent == 100:
-            swap_amount = native_balance - Decimal("0.001")
+        if erc20_info:
+            # ERC-20 token swap
+            from_token = erc20_info["from_token"]
+            from_decimals = erc20_info["from_decimals"]
+            input_symbol = erc20_info["symbol"]
+            token_balance = bridge_service.get_erc20_balance(
+                chain, evm_wallet.public_key, from_token, from_decimals
+            )
+            # No gas reserve needed for ERC-20 swaps (100% of token is fine)
+            swap_amount = token_balance * Decimal(percent) / Decimal(100)
         else:
-            swap_amount = native_balance * Decimal(percent) / Decimal(100)
+            # Native token swap
+            from_token = NATIVE_TOKEN
+            from_decimals = 18
+            input_symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
+            token_balance = bridge_service.get_native_balance(chain, evm_wallet.public_key)
+            # For 100%, leave some for gas (0.001 of native token)
+            if percent == 100:
+                swap_amount = token_balance - Decimal("0.001")
+            else:
+                swap_amount = token_balance * Decimal(percent) / Decimal(100)
 
         if swap_amount <= Decimal(0):
             await query.edit_message_text(
-                f"❌ Amount too small. Leave some {native_symbol} for gas fees.",
+                f"❌ Amount too small." + (f" Leave some {input_symbol} for gas fees." if from_token == NATIVE_TOKEN else ""),
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("« Back", callback_data="wallet:bridge")],
                 ]),
@@ -4183,7 +4307,7 @@ async def handle_native_swap_amount(query, chain_str: str, percent: int, telegra
         # Show loading
         await query.edit_message_text(
             f"💱 <b>Getting swap quote...</b>\n\n"
-            f"Swapping: {float(swap_amount):.6f} {native_symbol} → {out_token}",
+            f"Swapping: {float(swap_amount):.6f} {input_symbol} → {out_token}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -4194,6 +4318,8 @@ async def handle_native_swap_amount(query, chain_str: str, percent: int, telegra
             chain,
             swap_amount,
             evm_wallet.public_key,
+            from_token,
+            from_decimals,
         )
 
         if quote.error:
@@ -4210,10 +4336,13 @@ async def handle_native_swap_amount(query, chain_str: str, percent: int, telegra
             "chain": chain.value,
             "amount": str(swap_amount),
             "quote": quote,
+            "from_token": from_token,
+            "from_decimals": from_decimals,
+            "input_symbol": input_symbol,
         }
 
         text = f"💱 <b>Swap Quote</b>\n\n"
-        text += f"<b>You send:</b> {float(swap_amount):.6f} {native_symbol}\n"
+        text += f"<b>You send:</b> {float(swap_amount):.6f} {input_symbol}\n"
         text += f"<b>You receive:</b> ~{float(quote.output_amount):.2f} {out_token}\n"
         text += f"<b>DEX:</b> {quote.tool_name}\n"
         text += f"<b>Fees:</b> ~${float(quote.fee_amount):.2f}\n"
@@ -4242,7 +4371,7 @@ async def handle_native_swap_amount(query, chain_str: str, percent: int, telegra
 
 
 async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Execute the native token → USDC swap."""
+    """Execute the token → USDC swap (works for both native and ERC-20)."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
@@ -4260,7 +4389,7 @@ async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTy
         return
 
     try:
-        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS
+        from src.services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN_SYMBOLS, NATIVE_TOKEN
 
         # Initialize bridge service if needed
         if not bridge_service._initialized:
@@ -4268,7 +4397,9 @@ async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTy
 
         chain = BridgeChain(pending["chain"])
         swap_amount = Decimal(pending["amount"])
-        native_symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN")
+        from_token = pending.get("from_token", NATIVE_TOKEN)
+        from_decimals = pending.get("from_decimals", 18)
+        input_symbol = pending.get("input_symbol", NATIVE_TOKEN_SYMBOLS.get(chain, "TOKEN"))
         out_token = "USDT" if chain == BridgeChain.BSC else "USDC"
 
         # Get user's EVM wallet and private key
@@ -4290,8 +4421,8 @@ async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTy
 
         # Show progress
         progress_msg = await query.edit_message_text(
-            f"💱 <b>Swapping {native_symbol} → {out_token}</b>\n\n"
-            f"Amount: {float(swap_amount):.6f} {native_symbol}\n\n"
+            f"💱 <b>Swapping {input_symbol} → {out_token}</b>\n\n"
+            f"Amount: {float(swap_amount):.6f} {input_symbol}\n\n"
             f"⏳ Executing swap...",
             parse_mode=ParseMode.HTML,
         )
@@ -4299,8 +4430,8 @@ async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTy
         async def update_progress(status: str, current: int, total: int):
             try:
                 await progress_msg.edit_text(
-                    f"💱 <b>Swapping {native_symbol} → {out_token}</b>\n\n"
-                    f"Amount: {float(swap_amount):.6f} {native_symbol}\n\n"
+                    f"💱 <b>Swapping {input_symbol} → {out_token}</b>\n\n"
+                    f"Amount: {float(swap_amount):.6f} {input_symbol}\n\n"
                     f"{status}",
                     parse_mode=ParseMode.HTML,
                 )
@@ -4316,11 +4447,13 @@ async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTy
             chain,
             swap_amount,
             lambda s, c, t: asyncio.run_coroutine_threadsafe(update_progress(s, c, t), loop),
+            from_token,
+            from_decimals,
         )
 
         if result.success:
             text = f"✅ <b>Swap Successful!</b>\n\n"
-            text += f"Swapped: {float(swap_amount):.6f} {native_symbol}\n"
+            text += f"Swapped: {float(swap_amount):.6f} {input_symbol}\n"
             text += f"Received: ~{float(result.received_amount or 0):.2f} {out_token}\n"
             text += f"Chain: {chain.value.title()}\n\n"
             if result.explorer_url:
@@ -4330,9 +4463,9 @@ async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTy
             text = f"❌ <b>Swap Failed</b>\n\n"
 
             # Check if it's a gas-related error
-            if "gas" in error_msg.lower() or native_symbol.lower() in error_msg.lower():
-                text += f"⛽ <b>Insufficient {native_symbol} for gas fees</b>\n\n"
-                text += f"You need some {native_symbol} to pay for transaction fees.\n\n"
+            if "gas" in error_msg.lower() or "eth" in error_msg.lower():
+                text += f"⛽ <b>Insufficient ETH for gas fees</b>\n\n"
+                text += f"You need some ETH to pay for transaction fees.\n\n"
                 text += f"<b>Your wallet address:</b>\n"
                 text += f"<code>{evm_wallet.public_key}</code>"
             else:
@@ -4348,7 +4481,7 @@ async def handle_native_swap_confirm(query, telegram_id: int, context: ContextTy
         )
 
     except Exception as e:
-        logger.error("Native swap failed", error=str(e))
+        logger.error("Swap failed", error=str(e))
         await query.edit_message_text(
             f"❌ Swap failed: {friendly_error(str(e))}",
             reply_markup=InlineKeyboardMarkup([
