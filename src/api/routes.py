@@ -445,7 +445,7 @@ async def get_wallet_address(
 @router.get("/markets")
 async def get_all_markets(
     platform: Optional[str] = Query(default="all", description="Platform filter: all, polymarket, kalshi, opinion, limitless, myriad"),
-    limit: int = Query(default=100, le=300),
+    limit: int = Query(default=100, le=1000),
     active: bool = Query(default=True),
 ):
     """Get markets from all platforms for the webapp."""
@@ -468,7 +468,7 @@ async def get_all_markets(
         platforms_to_fetch = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
 
     # Fetch more per platform when aggregating, so each contributes fairly
-    per_platform_limit = limit if len(platforms_to_fetch) == 1 else max(limit, 100)
+    per_platform_limit = limit if len(platforms_to_fetch) == 1 else max(limit, 200)
 
     for plat in platforms_to_fetch:
         try:
@@ -1807,7 +1807,7 @@ def create_api_app() -> FastAPI:
     @app.get("/markets")
     async def get_webapp_markets(
         platform: Optional[str] = Query(default="all"),
-        limit: int = Query(default=100, le=300),
+        limit: int = Query(default=100, le=1000),
         active: bool = Query(default=True),
     ):
         """Get markets for webapp - direct route without /api/v1 prefix."""

@@ -502,9 +502,9 @@ class OpinionPlatform(BasePlatform):
         if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
             return self._markets_cache[offset:offset + limit]
 
-        # Paginate through API (200 per page, up to 3 pages = 600 markets)
+        # Paginate through API (200 per page, fetch all available)
         api_page_size = 200
-        max_pages = 3
+        max_pages = 15
 
         all_data = []
         for page_num in range(max_pages):

@@ -266,15 +266,10 @@ class KalshiPlatform(BasePlatform):
     # Market Discovery
     # ===================
     
-    # Cache for first-page markets (general browsing)
+    # Cache for ALL markets across all pages
     _markets_cache: list[Market] = []
     _markets_cache_time: float = 0
     CACHE_TTL = 300  # 5 minutes
-
-    # Cache for ALL markets across all pages (for ticker-based filtering)
-    _all_markets_cache: list[Market] = []
-    _all_markets_cache_time: float = 0
-    ALL_MARKETS_CACHE_TTL = 300  # 5 minutes
 
     async def get_markets(
         self,
@@ -289,89 +284,23 @@ class KalshiPlatform(BasePlatform):
             offset: Number of markets to skip (for pagination)
             active_only: Only return active markets
 
-        Note: DFlow API doesn't support offset/pagination, so we fetch all
-        markets and paginate client-side with caching.
+        Fetches all markets across all pages and caches for 5 minutes.
         """
-        import time
-
-        # Check if cache is still valid
-        now = time.time()
-        if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
-            # Return from cache with offset/limit
-            return self._markets_cache[offset:offset + limit]
-
-        # Fetch all markets (API ignores offset param)
-        params = {
-            "limit": 200,  # Fetch all available
-        }
-        if active_only:
-            params["status"] = "active"
-
-        data = await self._metadata_request("GET", "/api/v1/markets", params=params)
-
-        markets = []
-        for item in data.get("markets", data.get("data", [])):
-            try:
-                markets.append(self._parse_market(item))
-            except Exception as e:
-                logger.warning("Failed to parse market", error=str(e))
-
-        # Detect multi-outcome events by grouping by event_id
-        from collections import defaultdict
-        event_groups = defaultdict(list)
-        for m in markets:
-            if m.event_id:
-                event_groups[m.event_id].append(m)
-
-        # Mark multi-outcome markets and fetch names from Kalshi public API
-        for event_id, group in event_groups.items():
-            if len(group) > 1:
-                # Fetch outcome names from Kalshi's public API
-                kalshi_names = await self._fetch_kalshi_event_names(event_id)
-
-                for m in group:
-                    m.is_multi_outcome = True
-                    m.related_market_count = len(group)
-
-                    # Try to get name from Kalshi API first (most reliable)
-                    outcome_name = kalshi_names.get(m.market_id)
-
-                    # Fallback: try DFlow fields
-                    if not outcome_name:
-                        raw = m.raw_data or {}
-                        if raw.get("yesSubtitle"):
-                            outcome_name = raw["yesSubtitle"]
-                        elif m.description and m.description != m.title:
-                            outcome_name = m.description
-
-                    # Last resort: ticker suffix
-                    if not outcome_name and m.market_id and "-" in m.market_id:
-                        ticker_parts = m.market_id.split("-")
-                        if len(ticker_parts) >= 3:
-                            outcome_name = ticker_parts[-1]
-
-                    m.outcome_name = outcome_name[:50] if outcome_name else None
-
-        # Update cache
-        self._markets_cache = markets
-        self._markets_cache_time = now
-
-        # Return requested slice
-        return markets[offset:offset + limit]
+        all_markets = await self._fetch_all_markets()
+        return all_markets[offset:offset + limit]
 
     async def _fetch_all_markets(self) -> list[Market]:
         """Fetch ALL markets across all pages using cursor-based pagination.
 
         The DFlow API has 4000+ active markets spread across many pages of 200.
         This method paginates through all of them and caches the result.
-        Used by get_15m_markets() and get_hourly_markets() which need to find
-        specific ticker patterns that may be on any page.
         """
         import time
+        from collections import defaultdict
 
         now = time.time()
-        if self._all_markets_cache and (now - self._all_markets_cache_time) < self.ALL_MARKETS_CACHE_TTL:
-            return self._all_markets_cache
+        if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
+            return self._markets_cache
 
         all_markets = []
         cursor = None
@@ -403,14 +332,40 @@ class KalshiPlatform(BasePlatform):
 
         logger.info("Fetched all DFlow markets", total=len(all_markets), pages=page + 1)
 
-        # Update cache
-        self._all_markets_cache = all_markets
-        self._all_markets_cache_time = now
+        # Detect multi-outcome events by grouping by event_id
+        event_groups = defaultdict(list)
+        for m in all_markets:
+            if m.event_id:
+                event_groups[m.event_id].append(m)
 
-        # Also update the first-page cache if it's stale
-        if not self._markets_cache or (now - self._markets_cache_time) >= self.CACHE_TTL:
-            self._markets_cache = all_markets[:200]
-            self._markets_cache_time = now
+        # Mark multi-outcome markets and fetch names from Kalshi public API
+        for event_id, group in event_groups.items():
+            if len(group) > 1:
+                kalshi_names = await self._fetch_kalshi_event_names(event_id)
+
+                for m in group:
+                    m.is_multi_outcome = True
+                    m.related_market_count = len(group)
+
+                    outcome_name = kalshi_names.get(m.market_id)
+
+                    if not outcome_name:
+                        raw = m.raw_data or {}
+                        if raw.get("yesSubtitle"):
+                            outcome_name = raw["yesSubtitle"]
+                        elif m.description and m.description != m.title:
+                            outcome_name = m.description
+
+                    if not outcome_name and m.market_id and "-" in m.market_id:
+                        ticker_parts = m.market_id.split("-")
+                        if len(ticker_parts) >= 3:
+                            outcome_name = ticker_parts[-1]
+
+                    m.outcome_name = outcome_name[:50] if outcome_name else None
+
+        # Update cache
+        self._markets_cache = all_markets
+        self._markets_cache_time = now
 
         return all_markets
 
@@ -420,8 +375,7 @@ class KalshiPlatform(BasePlatform):
         limit: int = 10,
     ) -> list[Market]:
         """Search markets by query with client-side filtering."""
-        # Use get_markets which fetches 200 and caches for 5 min
-        all_markets = await self.get_markets(limit=200)
+        all_markets = await self._fetch_all_markets()
 
         # Filter by query (case-insensitive search in title and question)
         query_lower = query.lower()
@@ -440,25 +394,10 @@ class KalshiPlatform(BasePlatform):
         First tries to find the market in the cache (which has multi-outcome info),
         then falls back to fetching directly from the API.
         """
-        import time
-
-        # First, try to find in caches (which have multi-outcome detection)
-        now = time.time()
-        if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
-            for m in self._markets_cache:
-                if m.market_id == market_id:
-                    return m
-        # Also check the all-markets cache (for 15m/hourly markets)
-        if self._all_markets_cache and (now - self._all_markets_cache_time) < self.ALL_MARKETS_CACHE_TTL:
-            for m in self._all_markets_cache:
-                if m.market_id == market_id:
-                    return m
-
-        # If not in cache or cache expired, populate cache first
+        # Try to find in cache (which has multi-outcome detection)
         try:
-            await self.get_markets(limit=200, offset=0, active_only=True)
-            # Now search cache again
-            for m in self._markets_cache:
+            all_markets = await self._fetch_all_markets()
+            for m in all_markets:
                 if m.market_id == market_id:
                     return m
         except Exception:

@@ -636,7 +636,7 @@ class LimitlessPlatform(BasePlatform):
 
         # API limit is 25 per page, so paginate to fetch all
         api_page_size = 25
-        max_pages = 12  # Cap at 300 markets
+        max_pages = 40
 
         all_items = []
         for page_num in range(1, max_pages + 1):

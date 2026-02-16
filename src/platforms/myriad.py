@@ -552,9 +552,9 @@ class MyriadPlatform(BasePlatform):
         if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
             return self._markets_cache[offset:offset + limit]
 
-        # Paginate through API (100 per page, up to 5 pages = 500 markets)
+        # Paginate through API (100 per page, fetch all available)
         api_page_size = 100
-        max_pages = 5
+        max_pages = 15
 
         all_items = []
         for page_num in range(1, max_pages + 1):

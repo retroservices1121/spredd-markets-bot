@@ -842,7 +842,7 @@ class PolymarketPlatform(BasePlatform):
             return self._markets_cache[offset:offset + limit]
 
         params = {
-            "limit": 1000,
+            "limit": 2000,
             "order": "volume24hr",
             "ascending": "false",
         }
@@ -855,7 +855,7 @@ class PolymarketPlatform(BasePlatform):
         # Also fetch 5-min / 15-min rapid crypto markets by duration tags
         # These rotate frequently and may not appear in top volume results
         existing_ids = {e.get("id") for e in (data if isinstance(data, list) else [])}
-        for rapid_tag in ("5M", "15M"):
+        for rapid_tag in ("5M", "15M", "1H"):
             try:
                 rapid_data = await self._gamma_request("GET", "/events", params={
                     "active": "true",
