@@ -2003,3 +2003,10 @@ async def get_acp_top_agents(limit: int = 10) -> list[dict]:
             }
             for row in result
         ]
+
+
+async def get_all_user_telegram_ids() -> list[int]:
+    """Get all user telegram IDs (for broadcast messages)."""
+    async with get_session() as session:
+        result = await session.execute(select(User.telegram_id))
+        return list(result.scalars().all())

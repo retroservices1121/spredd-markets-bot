@@ -66,6 +66,9 @@ from src.handlers.commands import (
     setalert_command,
     deletealert_command,
     arbitrage_command,
+    # Broadcast
+    broadcast_command,
+    handle_broadcast_message,
 )
 from src.utils.logging import setup_logging, get_logger
 
@@ -182,6 +185,15 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("setalert", setalert_command))
     application.add_handler(CommandHandler("deletealert", deletealert_command))
     application.add_handler(CommandHandler("arbitrage", arbitrage_command))
+
+    # Broadcast commands
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO & filters.ChatType.PRIVATE,
+            handle_broadcast_message,
+        )
+    )
 
     # Callback query handler for inline buttons
     application.add_handler(CallbackQueryHandler(callback_handler))

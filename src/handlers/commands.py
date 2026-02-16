@@ -11,6 +11,7 @@ from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, WebAppInfo
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
+from telegram.error import Forbidden
 
 from src.config import settings
 from src.db.database import (
@@ -46,6 +47,7 @@ from src.db.database import (
     update_partner_group,
     attribute_user_to_partner,
     set_user_proof_verified,
+    get_all_user_telegram_ids,
 )
 from src.utils.geo_blocking import (
     is_country_blocked,
@@ -10004,8 +10006,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif "pending_new_wallet" in context.user_data:
             del context.user_data["pending_new_wallet"]
             await update.message.reply_text("Wallet setup cancelled.")
+        elif "awaiting_broadcast" in context.user_data:
+            del context.user_data["awaiting_broadcast"]
+            await update.message.reply_text("Broadcast cancelled.")
         else:
             await update.message.reply_text("Nothing to cancel.")
+        return
+
+    # Check if admin is awaiting broadcast text
+    if context.user_data.get("awaiting_broadcast") and not text.startswith("/"):
+        await handle_broadcast_message(update, context)
         return
 
     # Check if user has a pending wallet reset (PIN setup)
@@ -11572,3 +11582,77 @@ async def handle_arb_amount(
     except Exception as e:
         logger.error("Failed to execute arb trade", error=str(e))
         await query.edit_message_text(f"❌ Error: {friendly_error(str(e))}")
+
+
+# ===================
+# Admin Broadcast
+# ===================
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to broadcast a message to all users."""
+    if not update.effective_user or not update.message:
+        return
+
+    telegram_id = update.effective_user.id
+
+    if not is_admin(telegram_id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    context.user_data["awaiting_broadcast"] = True
+    await update.message.reply_text(
+        "📢 <b>Broadcast Message</b>\n\n"
+        "Send me the message to broadcast. You can include a photo with caption, or just text.\n\n"
+        "Send /cancel to abort.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the broadcast content (photo+caption or text) from admin."""
+    if not update.effective_user or not update.message:
+        return
+
+    if not context.user_data.get("awaiting_broadcast"):
+        return
+
+    context.user_data.pop("awaiting_broadcast", None)
+
+    user_ids = await get_all_user_telegram_ids()
+    total = len(user_ids)
+
+    await update.message.reply_text(f"📢 Broadcasting to {total} users...")
+
+    has_photo = update.message.photo
+    success = 0
+    failed = 0
+
+    for uid in user_ids:
+        try:
+            if has_photo:
+                photo_file_id = update.message.photo[-1].file_id
+                await context.bot.send_photo(
+                    chat_id=uid,
+                    photo=photo_file_id,
+                    caption=update.message.caption or "",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=update.message.text or "",
+                    parse_mode=ParseMode.HTML,
+                )
+            success += 1
+        except Forbidden:
+            failed += 1
+        except Exception as e:
+            logger.warning("Broadcast send failed", user_id=uid, error=str(e))
+            failed += 1
+        await asyncio.sleep(0.05)
+
+    await update.message.reply_text(
+        f"✅ Broadcast complete!\n\n"
+        f"Sent: {success}\n"
+        f"Failed: {failed} (blocked/deleted)",
+    )
