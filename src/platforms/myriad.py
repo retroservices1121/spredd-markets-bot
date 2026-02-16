@@ -61,9 +61,10 @@ ALLOWED_COLLATERAL_TOKENS = {
     59144: [
         "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",  # USDC
     ],
-    # BNB Chain mainnet - USDT only
+    # BNB Chain mainnet - USDT and USD1
     56: [
         "0x55d398326f99059fF775485246999027B3197955",  # USDT
+        "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",  # USD1 (World Liberty Financial USD)
     ],
     # BNB Chain testnet
     97: [
@@ -691,6 +692,72 @@ class MyriadPlatform(BasePlatform):
     async def get_trending_markets(self, limit: int = 10) -> list[Market]:
         """Get trending markets sorted by 24h volume."""
         return await self.get_markets(limit=limit, active_only=True)
+
+    # ===================
+    # 5-Minute Candle Markets (BNB Chain)
+    # ===================
+
+    _5m_cache: list[Market] = []
+    _5m_cache_time: float = 0
+    _5M_CACHE_TTL = 60  # 1 minute (markets rotate every 5 min)
+
+    async def get_5m_markets(self, limit: int = 50) -> list[Market]:
+        """Get 5-minute crypto candle markets from BNB Chain.
+
+        These are fast-expiring markets predicting whether a crypto candle
+        will be green or red in a 5-minute window. Available for BTC, ETH,
+        BNB, and other assets on Myriad's BNB Chain deployment.
+
+        Returns:
+            List of active 5-minute candle markets sorted by expiration time
+        """
+        import time
+
+        now = time.time()
+        if self._5m_cache and (now - self._5m_cache_time) < self._5M_CACHE_TTL:
+            return self._5m_cache[:limit]
+
+        # Query BNB Chain (network 56) specifically for candle markets
+        BNB_NETWORK_ID = 56
+        all_candles = []
+
+        for page_num in range(1, 4):  # Up to 3 pages
+            params = {
+                "limit": 100,
+                "page": page_num,
+                "network_id": BNB_NETWORK_ID,
+                "state": "open",
+                "sort": "volume_24h",
+                "order": "desc",
+            }
+
+            try:
+                data = await self._api_request("GET", "/markets", params=params)
+                items = data.get("data", [])
+                if not items:
+                    break
+
+                for item in items:
+                    title = (item.get("title") or "").lower()
+                    # Filter for candle markets (5-minute crypto price candles)
+                    if "candle" in title:
+                        try:
+                            market = self._parse_market(item)
+                            all_candles.append(market)
+                        except Exception as e:
+                            logger.warning("Failed to parse 5m market", error=str(e))
+            except Exception as e:
+                logger.warning("Failed to fetch 5m markets page", page=page_num, error=str(e))
+                break
+
+        # Sort by expiration time (soonest first)
+        all_candles.sort(key=lambda m: m.close_time or "", reverse=False)
+
+        # Update cache
+        self._5m_cache = all_candles
+        self._5m_cache_time = now
+
+        return all_candles[:limit]
 
     # ===================
     # Categories

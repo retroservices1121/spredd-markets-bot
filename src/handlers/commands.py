@@ -2174,6 +2174,8 @@ Select which prediction market you want to trade on:
                 await handle_15m_markets(query, update.effective_user.id, page=0)
             elif parts[1] == "hourly":
                 await handle_hourly_markets(query, update.effective_user.id, page=0)
+            elif parts[1] == "5m":
+                await handle_5m_markets(query, update.effective_user.id, page=0)
 
         elif action == "markets15m":
             # 15-minute markets pagination: markets15m:page:X
@@ -2184,6 +2186,11 @@ Select which prediction market you want to trade on:
             # Hourly markets pagination: marketshourly:page:X
             page = int(parts[2]) if len(parts) > 2 else 0
             await handle_hourly_markets(query, update.effective_user.id, page=page)
+
+        elif action == "markets5m":
+            # 5-minute markets pagination: markets5m:page:X
+            page = int(parts[2]) if len(parts) > 2 else 0
+            await handle_5m_markets(query, update.effective_user.id, page=page)
 
         elif action == "categories":
             await handle_categories_menu(query, update.effective_user.id)
@@ -6132,11 +6139,15 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
                 ))
         buttons.append(row)
 
-    # Add fast crypto markets buttons (Kalshi only)
+    # Add fast crypto markets buttons
     if user.active_platform == Platform.KALSHI:
         buttons.append([
             InlineKeyboardButton("⏱️ 15m Markets", callback_data="markets:15m"),
             InlineKeyboardButton("🕐 Hourly Markets", callback_data="markets:hourly"),
+        ])
+    if user.active_platform == Platform.MYRIAD:
+        buttons.append([
+            InlineKeyboardButton("🕐 5m Candles", callback_data="markets:5m"),
         ])
     buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
 
@@ -6449,6 +6460,110 @@ async def handle_hourly_markets(query, telegram_id: int, page: int = 0) -> None:
         logger.error("Failed to load hourly markets", error=str(e))
         await query.edit_message_text(
             f"❌ Failed to load hourly markets: {friendly_error(str(e))}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
+            ]),
+        )
+
+
+async def handle_5m_markets(query, telegram_id: int, page: int = 0) -> None:
+    """Show 5-minute crypto candle markets from Myriad (BNB Chain)."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    from src.platforms.myriad import MyriadPlatform
+    myriad = get_platform(Platform.MYRIAD)
+
+    if not isinstance(myriad, MyriadPlatform):
+        await query.edit_message_text(
+            "❌ 5-minute candle markets require Myriad platform.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back", callback_data="markets:refresh")],
+            ]),
+        )
+        return
+
+    await query.edit_message_text(
+        "🕐 Loading 5-minute candle markets...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    MARKETS_PER_PAGE = 10
+
+    try:
+        all_markets = await myriad.get_5m_markets(limit=50)
+
+        if not all_markets:
+            await query.edit_message_text(
+                "🕐 <b>5-Minute Candle Markets</b>\n\n"
+                "No active 5-minute candle markets found.\n\n"
+                "<i>These are fast-expiring crypto candle predictions (BTC, ETH, BNB) "
+                "on BNB Chain that settle every 5 minutes.</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Refresh", callback_data="markets:5m")],
+                    [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
+                ]),
+            )
+            return
+
+        total_markets = len(all_markets)
+        total_pages = (total_markets + MARKETS_PER_PAGE - 1) // MARKETS_PER_PAGE
+        page = max(0, min(page, total_pages - 1))
+
+        start_idx = page * MARKETS_PER_PAGE
+        end_idx = min(start_idx + MARKETS_PER_PAGE, total_markets)
+        markets = all_markets[start_idx:end_idx]
+
+        text = "🕐 <b>5-Minute Candle Markets</b>"
+        if total_pages > 1:
+            text += f" (Page {page + 1}/{total_pages})"
+        text += "\n<i>Predict if the next candle will be green or red</i>\n\n"
+
+        buttons = []
+        for i, market in enumerate(markets, start_idx + 1):
+            title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
+            yes_prob = format_probability(market.yes_price)
+            exp = format_expiration(market.close_time)
+
+            text += f"<b>{i}.</b> {title}\n"
+            text += f"   Green: {yes_prob} • Exp: {exp}\n\n"
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{i}. {market.title[:30]}...",
+                    callback_data=f"market:myriad:{market.market_id[:40]}"
+                )
+            ])
+
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("« Prev", callback_data=f"markets5m:page:{page - 1}"))
+            nav_buttons.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"markets5m:page:{page + 1}"))
+            buttons.append(nav_buttons)
+
+        buttons.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="markets:5m"),
+        ])
+        buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception as e:
+        logger.error("Failed to load 5m markets", error=str(e))
+        await query.edit_message_text(
+            f"❌ Failed to load 5-minute markets: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")],
