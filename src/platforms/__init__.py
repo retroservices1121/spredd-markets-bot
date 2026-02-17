@@ -67,6 +67,18 @@ PLATFORM_INFO = {
 }
 
 
+def get_collateral_for_market(platform_enum: Platform, market=None) -> str:
+    """Get the correct collateral symbol, accounting for multi-chain platforms like Myriad."""
+    if platform_enum == Platform.MYRIAD and market and hasattr(market, 'raw_data') and market.raw_data:
+        network_id = market.raw_data.get("networkId")
+        if network_id:
+            from src.platforms.myriad import MYRIAD_NETWORKS
+            network_config = MYRIAD_NETWORKS.get(network_id)
+            if network_config:
+                return network_config.get("collateral_symbol", "USDC.e")
+    return PLATFORM_INFO.get(platform_enum, {}).get("collateral", "USDC")
+
+
 class PlatformRegistry:
     """Registry for all prediction market platforms."""
     

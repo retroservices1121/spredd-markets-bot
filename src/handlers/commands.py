@@ -62,6 +62,7 @@ from src.platforms import (
     get_platform,
     get_platform_info,
     get_chain_family_for_platform,
+    get_collateral_for_market,
     PLATFORM_INFO,
 )
 from src.services.wallet import wallet_service, WalletInfo
@@ -3372,22 +3373,26 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
     else:
         position_label = outcome.upper()
 
+    # Get correct collateral symbol for this market's network
+    collateral_symbol = get_collateral_for_market(platform_enum, market)
+
     # Store buy context for message handler
     context.user_data["pending_buy"] = {
         "platform": platform_value,
         "market_id": market_id,
         "outcome": outcome,
+        "collateral_symbol": collateral_symbol,
     }
 
     text = f"""
 💰 <b>Buy {position_label} Position</b>
 
 Platform: {info['name']}
-Collateral: {info['collateral']}{swap_note}
+Collateral: {collateral_symbol}{swap_note}
 
-Enter the amount in {info['collateral']} you want to spend:
+Enter the amount in {collateral_symbol} you want to spend:
 
-<i>Example: 10 (for 10 {info['collateral']})</i>
+<i>Example: 10 (for 10 {collateral_symbol})</i>
 
 Type /cancel to cancel.
 """
@@ -7231,8 +7236,12 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
     platform_info = PLATFORM_INFO[platform_enum]
     chain_family = get_chain_family_for_platform(platform_enum)
 
+    # Get correct collateral symbol for this market's network
+    market = await platform.get_market(market_id)
+    collateral_sym = get_collateral_for_market(platform_enum, market)
+
     await query.edit_message_text(
-        f"⏳ Executing order...\n\nBuying {outcome.upper()} with {amount} {platform_info['collateral']}",
+        f"⏳ Executing order...\n\nBuying {outcome.upper()} with {amount} {collateral_sym}",
         parse_mode=ParseMode.HTML,
     )
 
@@ -7400,7 +7409,7 @@ async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome
 ✅ <b>Order Executed!</b>
 
 Bought {outcome.upper()} position
-Amount: {amount} {platform_info['collateral']}{fee_line}
+Amount: {amount} {collateral_sym}{fee_line}
 Received: ~{actual_output:.2f} tokens
 
 <a href="{result.explorer_url}">View Transaction</a>
@@ -7411,7 +7420,7 @@ Received: ~{actual_output:.2f} tokens
 ⏳ <b>Limit Order Placed</b>
 
 Your {outcome.upper()} order has been placed in the orderbook.
-Amount: {amount} {platform_info['collateral']}
+Amount: {amount} {collateral_sym}
 Price: {quote.price_per_token:.4f}
 
 The order will fill when a matching seller is found.
@@ -7594,6 +7603,10 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
     platform_info = PLATFORM_INFO[position.platform]
     chain_family = get_chain_family_for_platform(position.platform)
 
+    # Get correct collateral symbol for this market's network
+    sell_market_info = await platform.get_market(position.market_id)
+    collateral_sym = get_collateral_for_market(position.platform, sell_market_info)
+
     outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
 
     await query.edit_message_text(
@@ -7757,7 +7770,7 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
 
 Sold {percent}% of {outcome_str} position
 Tokens Sold: ~{sell_amount:.4f}
-Received: ~${quote.expected_output:.2f} USDC{fee_line}{profit_line}
+Received: ~${quote.expected_output:.2f} {collateral_sym}{fee_line}{profit_line}
 
 <a href="{result.explorer_url}">View Transaction</a>
 """
@@ -7950,8 +7963,11 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     platform = get_platform(platform_enum)
     platform_info = PLATFORM_INFO[platform_enum]
 
+    # Use stored collateral symbol from buy prompt, or fallback
+    collateral_sym = pending.get("collateral_symbol") or platform_info['collateral']
+
     await update.message.reply_text(
-        f"⏳ Getting quote for {amount} {platform_info['collateral']}...",
+        f"⏳ Getting quote for {amount} {collateral_sym}...",
         parse_mode=ParseMode.HTML,
     )
 
@@ -7962,6 +7978,9 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             context.user_data.pop("pending_buy", None)
             await update.message.reply_text("❌ Market not found.")
             return
+
+        # Update collateral symbol with actual market network info
+        collateral_sym = get_collateral_for_market(platform_enum, market)
 
         # Get quote
         from src.db.models import Outcome as OutcomeEnum
@@ -8045,7 +8064,7 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 Market: {escape_html(market.title[:50])}...
 Side: BUY {side_label}
 
-💰 <b>You Pay:</b> {amount} {platform_info['collateral']}
+💰 <b>You Pay:</b> {amount} {collateral_sym}
 💸 <b>Fee (2%):</b> {fee_display}
 📦 <b>You Receive:</b> ~{expected_tokens:.2f} {token_label} tokens
 📊 <b>Execution Price:</b> {format_probability(price)} per token
@@ -8173,19 +8192,21 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
             else:
                 swap_note = "\n\n✅ <i>Auto-swapped USDC to USDC.e</i>"
 
+        # Fetch market to check if it's a player prop
+        platform = get_platform(Platform(platform_value))
+        market = await platform.get_market(market_id)
+        collateral_symbol = get_collateral_for_market(Platform(platform_value), market)
+
         context.user_data["pending_buy"] = {
             "platform": platform_value,
             "market_id": market_id,
             "outcome": outcome,
             "pin_protected": True,
             "verified_pin": pin,  # Store PIN for trade execution
+            "collateral_symbol": collateral_symbol,
         }
 
         info = PLATFORM_INFO[Platform(platform_value)]
-
-        # Fetch market to check if it's a player prop
-        platform = get_platform(Platform(platform_value))
-        market = await platform.get_market(market_id)
 
         # Check if this is a player prop market
         import re
@@ -8220,11 +8241,11 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
 💰 <b>Buy {position_label} Position</b>
 
 Platform: {info['name']}
-Collateral: {info['collateral']}{swap_note}
+Collateral: {collateral_symbol}{swap_note}
 
-Enter the amount in {info['collateral']} you want to spend:
+Enter the amount in {collateral_symbol} you want to spend:
 
-<i>Example: 10 (for 10 {info['collateral']})</i>
+<i>Example: 10 (for 10 {collateral_symbol})</i>
 
 Type /cancel to cancel.
 """
@@ -8299,6 +8320,9 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
     platform_info = PLATFORM_INFO[platform_enum]
     chain_family = get_chain_family_for_platform(platform_enum)
 
+    # Get correct collateral symbol (stored during buy prompt, or fetch market)
+    collateral_sym = pending.get("collateral_symbol") or platform_info['collateral']
+
     # Delete the PIN message for security
     try:
         await update.message.delete()
@@ -8307,7 +8331,7 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Send executing message (use chat.send_message since original may be deleted)
     executing_msg = await update.effective_chat.send_message(
-        f"⏳ Executing order...\n\nBuying {outcome.upper()} with {amount_str} {platform_info['collateral']}",
+        f"⏳ Executing order...\n\nBuying {outcome.upper()} with {amount_str} {collateral_sym}",
         parse_mode=ParseMode.HTML,
     )
 
@@ -8485,7 +8509,7 @@ async def handle_buy_with_pin(update: Update, context: ContextTypes.DEFAULT_TYPE
 ✅ <b>Order Executed!</b>
 
 Bought {outcome.upper()} position
-Amount: {amount} {platform_info['collateral']}{fee_line}
+Amount: {amount} {collateral_sym}{fee_line}
 Received: ~{actual_output:.2f} tokens
 
 <a href="{result.explorer_url}">View Transaction</a>
@@ -8496,7 +8520,7 @@ Received: ~{actual_output:.2f} tokens
 ⏳ <b>Limit Order Placed</b>
 
 Your {outcome.upper()} order has been placed in the orderbook.
-Amount: {amount} {platform_info['collateral']}
+Amount: {amount} {collateral_sym}
 Price: {quote.price_per_token:.4f}
 
 The order will fill when a matching seller is found.
@@ -8600,6 +8624,10 @@ async def handle_sell_with_pin(update: Update, context: ContextTypes.DEFAULT_TYP
     platform = get_platform(position.platform)
     platform_info = PLATFORM_INFO[position.platform]
     chain_family = get_chain_family_for_platform(position.platform)
+
+    # Get correct collateral symbol for this market's network
+    sell_market = await platform.get_market(position.market_id)
+    collateral_sym = get_collateral_for_market(position.platform, sell_market)
 
     # Calculate sell amount
     token_amount = Decimal(position.token_amount) / Decimal(10**6)
@@ -8715,7 +8743,7 @@ async def handle_sell_with_pin(update: Update, context: ContextTypes.DEFAULT_TYP
 
 Sold {percent}% of {outcome_str} position
 Tokens Sold: ~{sell_amount:.4f}
-Received: ~{quote.expected_output:.2f} {platform_info['collateral']}{fee_line}{profit_line}
+Received: ~{quote.expected_output:.2f} {collateral_sym}{fee_line}{profit_line}
 
 <a href="{result.explorer_url}">View Transaction</a>
 """

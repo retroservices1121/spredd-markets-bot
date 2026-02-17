@@ -917,6 +917,18 @@ class MyriadPlatform(BasePlatform):
         try:
             data = await self._api_request("POST", "/markets/quote", json_data=quote_request)
 
+            # Log the raw target contract info from API to debug referral routing
+            logger.info(
+                "Quote response target",
+                api_to=data.get("to"),
+                api_contract_address=data.get("contract_address"),
+                api_target=data.get("target"),
+                api_keys=list(data.keys()),
+                prediction_market=network_config["prediction_market"],
+                network_id=network_id,
+                has_referral=bool(settings.myriad_referral_code),
+            )
+
             # Parse quote response
             value = Decimal(str(data.get("value", amount)))
             shares = Decimal(str(data.get("shares", 0)))
@@ -970,6 +982,9 @@ class MyriadPlatform(BasePlatform):
                     "prediction_market_contract": network_config["prediction_market"],
                     "collateral_token": network_config["collateral"],
                     "collateral_decimals": network_config["collateral_decimals"],
+                    "collateral_symbol": network_config.get("collateral_symbol", "USDC.e"),
+                    # The API may return a different target contract (e.g. referral router)
+                    "tx_target": data.get("to") or data.get("contract_address") or network_config["prediction_market"],
                 },
             )
 
@@ -1170,21 +1185,31 @@ class MyriadPlatform(BasePlatform):
         prediction_market = quote.quote_data.get("prediction_market_contract")
         collateral_token = quote.quote_data.get("collateral_token")
         collateral_decimals = quote.quote_data.get("collateral_decimals", 6)
+        # tx_target may differ from prediction_market when referral code is used
+        tx_target = quote.quote_data.get("tx_target") or prediction_market
 
         try:
             web3 = await self._ensure_web3(network_id)
             user_address = private_key.address
 
-            # For buy orders, ensure collateral (USDC) approval
+            # For buy orders, ensure collateral approval for tx_target
+            # (referral router contract when referral code is used, otherwise prediction_market)
             if quote.side == "buy":
                 # Convert amount to token units
                 amount_units = int(quote.input_amount * (10 ** collateral_decimals))
+
+                logger.info(
+                    "Approving collateral for trade",
+                    spender=tx_target,
+                    prediction_market=prediction_market,
+                    is_referral=(tx_target != prediction_market),
+                )
 
                 approval_tx = await self._ensure_approval(
                     private_key=private_key,
                     network_id=network_id,
                     token_address=collateral_token,
-                    spender_address=prediction_market,
+                    spender_address=tx_target,
                     amount=amount_units,
                 )
 
@@ -1192,13 +1217,13 @@ class MyriadPlatform(BasePlatform):
                     logger.info("Token approval completed", tx_hash=approval_tx)
 
             # For sell orders, ensure ERC-1155 approval for outcome tokens
-            # The prediction market contract needs approval to transfer user's shares
+            # The tx_target needs approval to transfer user's shares (may differ with referral)
             if quote.side == "sell":
                 approval_tx = await self._ensure_erc1155_approval(
                     private_key=private_key,
                     network_id=network_id,
                     token_contract=prediction_market,  # Myriad: PM contract is also the token contract
-                    operator_address=prediction_market,
+                    operator_address=tx_target,
                 )
 
                 if approval_tx:
@@ -1208,10 +1233,10 @@ class MyriadPlatform(BasePlatform):
             nonce = await web3.eth.get_transaction_count(user_address)
             gas_price = await web3.eth.gas_price
 
-            # Estimate gas
+            # Estimate gas - send to tx_target (referral router or prediction_market)
             tx_params = {
                 "from": user_address,
-                "to": Web3.to_checksum_address(prediction_market),
+                "to": Web3.to_checksum_address(tx_target),
                 "data": calldata,
                 "nonce": nonce,
                 "gasPrice": gas_price,
@@ -1251,6 +1276,9 @@ class MyriadPlatform(BasePlatform):
                 side=quote.side,
                 outcome=quote.outcome.value,
                 amount=str(quote.input_amount),
+                tx_target=tx_target,
+                prediction_market=prediction_market,
+                network_id=network_id,
                 is_zksync=self._is_zksync_network(network_id),
             )
 
@@ -1260,7 +1288,7 @@ class MyriadPlatform(BasePlatform):
                 tx_hash_hex = await self._send_zksync_transaction(
                     network_id=network_id,
                     private_key=private_key,
-                    to_address=prediction_market,
+                    to_address=tx_target,
                     data=calldata,
                 )
 
