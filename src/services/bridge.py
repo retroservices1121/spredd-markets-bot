@@ -647,13 +647,16 @@ class BridgeService:
                 progress_callback("💱 Executing swap...", 30, 60)
 
             # Build and send swap transaction
+            gas_limit_raw = tx_request.get("gasLimit", 500000)
+            gas_limit = int(gas_limit_raw, 16) if isinstance(gas_limit_raw, str) and gas_limit_raw.startswith("0x") else int(gas_limit_raw)
+
             tx = {
                 "from": wallet,
                 "to": Web3.to_checksum_address(tx_request["to"]),
                 "data": tx_request["data"],
                 "value": int(tx_request.get("value", "0"), 16) if isinstance(tx_request.get("value"), str) else int(tx_request.get("value", 0)),
                 "nonce": source_w3.eth.get_transaction_count(wallet),
-                "gas": int(tx_request.get("gasLimit", 500000)),
+                "gas": gas_limit,
                 "gasPrice": source_w3.eth.gas_price,
                 "chainId": 56,
             }
@@ -1790,7 +1793,8 @@ class BridgeService:
                 logger.warning("Gas estimation failed for LI.FI tx", error=str(e), error_type=type(e).__name__)
                 # Gas estimation failure often means the tx will revert - log more details
                 logger.warning("TX details for failed estimation", to=tx.get("to"), value=tx.get("value"), data_len=len(tx.get("data", "")) if tx.get("data") else 0)
-                tx["gas"] = int(tx_request.get("gasLimit", 500000))
+                gas_limit_raw = tx_request.get("gasLimit", 500000)
+                tx["gas"] = int(gas_limit_raw, 16) if isinstance(gas_limit_raw, str) and gas_limit_raw.startswith("0x") else int(gas_limit_raw)
 
             # Sign and send
             logger.info("Signing LI.FI tx", nonce=tx["nonce"], gas=tx["gas"], gas_price=tx["gasPrice"])
