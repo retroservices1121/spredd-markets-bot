@@ -659,33 +659,39 @@ class MyriadPlatform(BasePlatform):
 
         # If market_id looks like a number, search for it in the market list
         if market_id.isdigit():
-            try:
-                # Fetch markets and find by numeric ID
-                params = {"state": "open" if not include_closed else None, "limit": 100}
-                params = {k: v for k, v in params.items() if v is not None}
-                data = await self._api_request("GET", "/markets", params=params)
+            # Search across default network and BNB Chain (for 5m candle markets)
+            BNB_NETWORK_ID = 56
+            network_ids = [None, BNB_NETWORK_ID]  # None = default network
 
-                items = data.get("data", data.get("markets", []))
-                for item in items:
-                    if str(item.get("id")) == market_id:
-                        if not self._is_usdc_market(item):
-                            logger.info("Market uses non-USDC collateral", market_id=market_id)
-                            return None
-                        return self._parse_market(item)
-
-                # Also check closed markets if needed
-                if include_closed:
-                    params["state"] = "closed"
+            for net_id in network_ids:
+                try:
+                    params = {"state": "open" if not include_closed else None, "limit": 100}
+                    if net_id is not None:
+                        params["network_id"] = net_id
+                    params = {k: v for k, v in params.items() if v is not None}
                     data = await self._api_request("GET", "/markets", params=params)
+
                     items = data.get("data", data.get("markets", []))
                     for item in items:
                         if str(item.get("id")) == market_id:
                             if not self._is_usdc_market(item):
+                                logger.info("Market uses non-USDC collateral", market_id=market_id)
                                 return None
                             return self._parse_market(item)
 
-            except Exception as e:
-                logger.debug("Market search by numeric ID failed", market_id=market_id, error=str(e))
+                    # Also check closed markets if needed
+                    if include_closed:
+                        params["state"] = "closed"
+                        data = await self._api_request("GET", "/markets", params=params)
+                        items = data.get("data", data.get("markets", []))
+                        for item in items:
+                            if str(item.get("id")) == market_id:
+                                if not self._is_usdc_market(item):
+                                    return None
+                                return self._parse_market(item)
+
+                except Exception as e:
+                    logger.debug("Market search by numeric ID failed", market_id=market_id, network_id=net_id, error=str(e))
 
         return None
 
