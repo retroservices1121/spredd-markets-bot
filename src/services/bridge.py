@@ -538,14 +538,14 @@ class BridgeService:
 
             # Check native BNB balance for gas
             native_balance = source_w3.eth.get_balance(wallet)
-            min_gas_wei = int(0.001 * 10**18)  # 0.001 BNB for swap
+            min_gas_wei = int(0.003 * 10**18)  # 0.003 BNB for DEX swap
             if native_balance < min_gas_wei:
                 return BridgeResult(
                     success=False,
                     source_chain=BridgeChain.BSC,
                     dest_chain=BridgeChain.BSC,
                     amount=amount,
-                    error_message="Insufficient BNB for gas. Need at least 0.001 BNB."
+                    error_message="Insufficient BNB for gas. Need at least 0.003 BNB (~$1.50)."
                 )
 
             if progress_callback:
@@ -646,20 +646,37 @@ class BridgeService:
             if progress_callback:
                 progress_callback("💱 Executing swap...", 30, 60)
 
-            # Build and send swap transaction
-            gas_limit_raw = tx_request.get("gasLimit", 500000)
-            gas_limit = int(gas_limit_raw, 16) if isinstance(gas_limit_raw, str) and gas_limit_raw.startswith("0x") else int(gas_limit_raw)
+            # Parse value (might be hex string)
+            value_raw = tx_request.get("value", "0")
+            try:
+                value = int(value_raw, 16) if isinstance(value_raw, str) and value_raw.startswith("0x") else int(value_raw)
+            except (ValueError, TypeError):
+                value = 0
+
+            # Build swap transaction
+            gas_price = int(source_w3.eth.gas_price * 1.8)  # Boost gas price for reliability
 
             tx = {
                 "from": wallet,
                 "to": Web3.to_checksum_address(tx_request["to"]),
                 "data": tx_request["data"],
-                "value": int(tx_request.get("value", "0"), 16) if isinstance(tx_request.get("value"), str) else int(tx_request.get("value", 0)),
+                "value": value,
                 "nonce": source_w3.eth.get_transaction_count(wallet),
-                "gas": gas_limit,
-                "gasPrice": source_w3.eth.gas_price,
+                "gasPrice": gas_price,
                 "chainId": 56,
             }
+
+            # Estimate gas (catches reverts before sending)
+            gas_limit_raw = tx_request.get("gasLimit", 500000)
+            gas_limit_fallback = int(gas_limit_raw, 16) if isinstance(gas_limit_raw, str) and gas_limit_raw.startswith("0x") else int(gas_limit_raw)
+
+            try:
+                gas_estimate = source_w3.eth.estimate_gas(tx)
+                tx["gas"] = int(gas_estimate * 1.3)
+                logger.info("Swap gas estimated", gas=tx["gas"])
+            except Exception as e:
+                logger.warning("Swap gas estimation failed, using LI.FI gasLimit", error=str(e))
+                tx["gas"] = gas_limit_fallback
 
             signed_tx = private_key.sign_transaction(tx)
             tx_hash = source_w3.eth.send_raw_transaction(signed_tx.raw_transaction)
