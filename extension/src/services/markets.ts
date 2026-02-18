@@ -2,10 +2,8 @@
  * Platform market fetchers.
  *
  * Polymarket → Gamma API (direct, public) — handled in polymarket.ts
- * Kalshi → Public Kalshi API (direct, no auth)
- * Myriad → Myriad API v2 (direct, no auth required)
- * Opinion → Bot API via background worker (needs API key)
- * Limitless → Bot API via background worker (needs API key)
+ * Kalshi → DFlow Metadata API (direct, no auth required)
+ * Opinion, Limitless, Myriad → Bot API via background worker (need API keys)
  */
 
 import type { PolymarketEvent, MarketInfo, MarketOutcome, Platform } from "@/core/markets";
@@ -13,11 +11,8 @@ import { getBotMarkets, searchBotMarkets } from "@/lib/messaging";
 
 // ── API base URLs ───────────────────────────────────────────
 
-/** Public Kalshi API (no auth needed for event/market listings) */
-const KALSHI_PUBLIC_API = "https://api.elections.kalshi.com/trade-api/v2";
-
-/** Myriad API v2 (no auth required for market listings) */
-const MYRIAD_API = "https://api-v2.myriadprotocol.com";
+/** DFlow Metadata API — Kalshi market data (no auth required) */
+const DFLOW_API = "https://c.prediction-markets-api.dflow.net";
 
 // ── Shared helpers ──────────────────────────────────────────
 
@@ -87,138 +82,62 @@ async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
   }
 }
 
-// ── Kalshi (Public API — no auth) ───────────────────────────
+// ── Kalshi (DFlow Metadata API — no auth) ───────────────────
 
-interface KalshiEvent {
-  event_ticker: string;
-  title?: string;
-  category?: string;
-  markets?: KalshiEventMarket[];
-}
-
-interface KalshiEventMarket {
+interface DFlowMarket {
   ticker: string;
+  eventTicker?: string;
   title?: string;
+  question?: string;
   subtitle?: string;
-  yes_sub_title?: string;
-  yes_ask?: number;
-  no_ask?: number;
-  last_price?: number;
-  volume_24h?: number;
+  yesAsk?: string;
+  noAsk?: string;
+  lastYesPrice?: string;
+  lastNoPrice?: string;
   volume?: number;
-  open_interest?: number;
-  close_time?: string;
+  openInterest?: number;
   status?: string;
-  result?: string;
+  result?: string | null;
+  closeTime?: string;
 }
 
 export async function fetchKalshiMarkets(limit = 20): Promise<PolymarketEvent[]> {
-  const url = `${KALSHI_PUBLIC_API}/events?status=open&limit=${Math.min(limit, 50)}`;
-  const data = await fetchJson<{ events?: KalshiEvent[]; cursor?: string }>(url);
-  const events = data?.events ?? [];
+  // Fetch a single page of active markets (max 200 per page)
+  const fetchLimit = Math.min(limit * 2, 200); // fetch extra to filter
+  const url = `${DFLOW_API}/api/v1/markets?limit=${fetchLimit}&status=active`;
+  const data = await fetchJson<{ markets?: DFlowMarket[]; data?: DFlowMarket[] }>(url);
+  const markets = data?.markets ?? data?.data ?? [];
 
-  const results: PolymarketEvent[] = [];
-  for (const evt of events) {
-    if (!evt.markets || evt.markets.length === 0) continue;
-    // Use the first market in each event for the card
-    const m = evt.markets[0];
-    const yesPrice = (m.yes_ask ?? m.last_price ?? 50) / 100;
-    const noPrice = (m.no_ask ?? (100 - (m.yes_ask ?? 50))) / 100;
-    results.push(
-      makeEvent(
-        m.ticker,
-        "kalshi",
-        evt.title || m.title || m.ticker,
-        yesPrice,
-        noPrice,
-        {
-          description: m.subtitle,
-          volume: m.volume_24h ?? m.volume,
-          liquidity: m.open_interest,
-          category: evt.category,
-          endDate: m.close_time,
-        }
-      )
+  return markets.slice(0, limit).map((m) => {
+    const yesPrice = parseFloat(m.yesAsk ?? m.lastYesPrice ?? "") || 0.5;
+    const noPrice = parseFloat(m.noAsk ?? m.lastNoPrice ?? "") || 1 - yesPrice;
+    return makeEvent(
+      m.ticker,
+      "kalshi",
+      m.title || m.question || m.ticker,
+      yesPrice,
+      noPrice,
+      {
+        description: m.subtitle,
+        volume: m.volume,
+        liquidity: m.openInterest,
+        endDate: m.closeTime,
+      }
     );
-    if (results.length >= limit) break;
-  }
-  return results;
+  });
 }
 
 export async function searchKalshiMarkets(
   query: string,
   limit = 20
 ): Promise<PolymarketEvent[]> {
-  // Kalshi public API has no search — fetch and filter client-side
-  const all = await fetchKalshiMarkets(50);
+  // DFlow API has no search — fetch a large batch and filter client-side
+  const all = await fetchKalshiMarkets(200);
   const q = query.toLowerCase();
   return all.filter((e) => e.title.toLowerCase().includes(q)).slice(0, limit);
 }
 
-// ── Myriad (API v2 — no auth required for listings) ────────
-
-interface MyriadOutcome {
-  id?: number;
-  title?: string;
-  price?: number;
-}
-
-interface MyriadMarket {
-  id?: number;
-  slug?: string;
-  title?: string;
-  description?: string;
-  outcomes?: MyriadOutcome[];
-  volume24h?: number;
-  volume?: number;
-  liquidity?: number;
-  state?: string;
-  expiresAt?: string;
-  topics?: string[];
-}
-
-export async function fetchMyriadMarkets(limit = 20): Promise<PolymarketEvent[]> {
-  const url = `${MYRIAD_API}/markets?limit=${limit}&sort=volume_24h&order=desc&state=open`;
-  const data = await fetchJson<{ data?: MyriadMarket[] }>(url);
-  const markets = data?.data ?? [];
-
-  return markets.slice(0, limit).map((m) => {
-    const id = m.slug || String(m.id ?? "");
-    const yesPrice = m.outcomes?.[0]?.price ?? 0.5;
-    const noPrice = m.outcomes?.[1]?.price ?? 0.5;
-    return makeEvent(id, "myriad", m.title || "Unknown", yesPrice, noPrice, {
-      description: m.description,
-      volume: m.volume24h ?? m.volume,
-      liquidity: m.liquidity,
-      category: m.topics?.[0],
-      endDate: m.expiresAt,
-    });
-  });
-}
-
-export async function searchMyriadMarkets(
-  query: string,
-  limit = 20
-): Promise<PolymarketEvent[]> {
-  const url = `${MYRIAD_API}/markets?keyword=${encodeURIComponent(query)}&limit=${limit}&state=open`;
-  const data = await fetchJson<{ data?: MyriadMarket[] }>(url);
-  const markets = data?.data ?? [];
-
-  return markets.slice(0, limit).map((m) => {
-    const id = m.slug || String(m.id ?? "");
-    const yesPrice = m.outcomes?.[0]?.price ?? 0.5;
-    const noPrice = m.outcomes?.[1]?.price ?? 0.5;
-    return makeEvent(id, "myriad", m.title || "Unknown", yesPrice, noPrice, {
-      description: m.description,
-      volume: m.volume24h ?? m.volume,
-      liquidity: m.liquidity,
-      category: m.topics?.[0],
-      endDate: m.expiresAt,
-    });
-  });
-}
-
-// ── Opinion & Limitless (via Bot API — need API keys) ───────
+// ── Opinion, Limitless, Myriad (via Bot API — need API keys) ─
 
 async function fetchViaBotApi(
   platform: Platform,
@@ -235,11 +154,10 @@ async function fetchViaBotApi(
 async function searchViaBotApi(
   platform: Platform,
   query: string,
-  limit = 20
+  _limit = 20
 ): Promise<PolymarketEvent[]> {
   const res = await searchBotMarkets({ query, platform });
   if (res.success && res.data) {
-    // Search endpoint wraps in { markets: [...] }
     const raw = res.data as unknown;
     const arr = Array.isArray(raw)
       ? raw
@@ -258,10 +176,9 @@ export async function fetchPlatformMarkets(
   switch (platform) {
     case "kalshi":
       return fetchKalshiMarkets(limit);
-    case "myriad":
-      return fetchMyriadMarkets(limit);
     case "opinion":
     case "limitless":
+    case "myriad":
       return fetchViaBotApi(platform, limit);
     default:
       return [];
@@ -276,17 +193,16 @@ export async function searchPlatformMarkets(
   switch (platform) {
     case "kalshi":
       return searchKalshiMarkets(query, limit);
-    case "myriad":
-      return searchMyriadMarkets(query, limit);
     case "opinion":
     case "limitless":
+    case "myriad":
       return searchViaBotApi(platform, query, limit);
     default:
       return [];
   }
 }
 
-// ── Legacy Bot API adapter (for Opinion/Limitless + detail) ─
+// ── Bot API adapter (for Opinion/Limitless/Myriad + detail) ─
 
 export interface BotApiMarket {
   id: string;
