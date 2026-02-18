@@ -28,7 +28,7 @@ from ..db.models import (
     User,
     Wallet,
 )
-from .auth import TelegramUser, get_user_from_init_data
+from .auth import TelegramUser, get_user_from_init_data, validate_wallet_signature
 
 router = APIRouter(prefix="/api/v1", tags=["Mini App API"])
 settings = get_settings()
@@ -139,35 +139,59 @@ class PnLSummary(BaseModel):
 
 async def get_current_user(
     request: Request,
-    x_telegram_init_data: str = Header(..., alias="X-Telegram-Init-Data"),
+    x_telegram_init_data: Optional[str] = Header(None, alias="X-Telegram-Init-Data"),
+    x_wallet_address: Optional[str] = Header(None, alias="X-Wallet-Address"),
+    x_wallet_signature: Optional[str] = Header(None, alias="X-Wallet-Signature"),
+    x_wallet_timestamp: Optional[str] = Header(None, alias="X-Wallet-Timestamp"),
     session: AsyncSession = Depends(get_session)
 ) -> User:
     """
-    Validate Telegram initData and get/create user.
+    Authenticate via Telegram initData OR wallet signature.
     Also automatically captures user's country from IP for geo-blocking.
-    """
-    tg_user = get_user_from_init_data(x_telegram_init_data, settings.telegram_bot_token)
-    if not tg_user:
-        raise HTTPException(status_code=401, detail="Invalid authentication")
 
-    # Get or create user
-    result = await session.execute(
-        select(User).where(User.telegram_id == tg_user.id)
-    )
-    user = result.scalar_one_or_none()
+    Auth methods (checked in order):
+    1. Telegram initData (X-Telegram-Init-Data header)
+    2. Wallet signature (X-Wallet-Address + X-Wallet-Signature + X-Wallet-Timestamp)
+    """
+    user: Optional[User] = None
+
+    # Method 1: Telegram initData
+    if x_telegram_init_data:
+        tg_user = get_user_from_init_data(x_telegram_init_data, settings.telegram_bot_token)
+        if tg_user:
+            result = await session.execute(
+                select(User).where(User.telegram_id == tg_user.id)
+            )
+            user = result.scalar_one_or_none()
+
+            if not user:
+                user = User(
+                    id=str(uuid.uuid4()),
+                    telegram_id=tg_user.id,
+                    username=tg_user.username,
+                    first_name=tg_user.first_name,
+                    last_name=tg_user.last_name,
+                )
+                session.add(user)
+                await session.commit()
+                await session.refresh(user)
+
+    # Method 2: Wallet signature (for Chrome extension)
+    if not user and x_wallet_address and x_wallet_signature and x_wallet_timestamp:
+        verified_address = validate_wallet_signature(
+            x_wallet_address, x_wallet_signature, x_wallet_timestamp
+        )
+        if verified_address:
+            # Find user by wallet public_key
+            result = await session.execute(
+                select(User).join(Wallet).where(
+                    Wallet.public_key.ilike(verified_address)
+                )
+            )
+            user = result.scalar_one_or_none()
 
     if not user:
-        # Create new user
-        user = User(
-            id=str(uuid.uuid4()),
-            telegram_id=tg_user.id,
-            username=tg_user.username,
-            first_name=tg_user.first_name,
-            last_name=tg_user.last_name,
-        )
-        session.add(user)
-        await session.commit()
-        await session.refresh(user)
+        raise HTTPException(status_code=401, detail="Invalid authentication")
 
     # Auto-detect country from IP (silently, in background)
     # Check if force_geo=1 query param is present (for re-verification)

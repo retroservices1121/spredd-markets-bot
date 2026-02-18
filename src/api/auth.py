@@ -1,6 +1,6 @@
 """
-Telegram Mini App authentication utilities.
-Validates initData from Telegram WebApp.
+Authentication utilities for Spredd API.
+Supports Telegram Mini App initData and EVM wallet signature auth.
 """
 
 import hashlib
@@ -10,6 +10,8 @@ import time
 from typing import Optional
 from urllib.parse import parse_qs, unquote
 
+from eth_account.messages import encode_defunct
+from web3 import Web3
 from pydantic import BaseModel
 
 
@@ -121,3 +123,57 @@ def get_user_from_init_data(init_data: str, bot_token: str) -> Optional[Telegram
     if auth_data:
         return auth_data.user
     return None
+
+
+# ===================
+# Wallet Signature Auth (for Chrome Extension)
+# ===================
+
+# Auth message format: "spredd-auth:{address}:{timestamp}"
+WALLET_AUTH_MAX_AGE = 300  # 5 minutes
+
+
+def validate_wallet_signature(
+    address: str,
+    signature: str,
+    timestamp: str,
+) -> Optional[str]:
+    """
+    Validate an EIP-191 personal_sign wallet signature for stateless auth.
+
+    The extension signs a message: "spredd-auth:{address}:{timestamp}"
+    We verify the signature recovers to the claimed address and the
+    timestamp is fresh (within 5 minutes).
+
+    Args:
+        address: Claimed EVM wallet address (checksummed or lowercase)
+        signature: Hex-encoded EIP-191 signature (0x-prefixed)
+        timestamp: Unix timestamp string when the message was signed
+
+    Returns:
+        Checksummed address if valid, None otherwise
+    """
+    try:
+        # Validate timestamp freshness
+        ts = int(timestamp)
+        if abs(time.time() - ts) > WALLET_AUTH_MAX_AGE:
+            return None
+
+        # Reconstruct the message that was signed
+        address_lower = address.lower()
+        message_text = f"spredd-auth:{address_lower}:{timestamp}"
+
+        # Recover the signer address from the signature
+        message = encode_defunct(text=message_text)
+        w3 = Web3()
+        recovered = w3.eth.account.recover_message(message, signature=signature)
+
+        # Compare addresses (case-insensitive)
+        if recovered.lower() != address_lower:
+            return None
+
+        return Web3.to_checksum_address(recovered)
+
+    except Exception as e:
+        print(f"Error validating wallet signature: {e}")
+        return None
