@@ -1,15 +1,18 @@
-import type { TradeResult as TradeResultType } from "@/core/markets";
+import type { TradeResult as TradeResultType, Platform } from "@/core/markets";
+import { PLATFORMS } from "@/core/markets";
 import { CheckCircle2, XCircle, RotateCcw } from "lucide-react";
 
 interface TradeResultProps {
   result: TradeResultType;
   error: string | null;
+  platform?: Platform;
   onDone: () => void;
   onRetry: () => void;
 }
 
-export function TradeResult({ result, error, onDone, onRetry }: TradeResultProps) {
+export function TradeResult({ result, error, platform, onDone, onRetry }: TradeResultProps) {
   const success = result.success && !error;
+  const platformLabel = PLATFORMS.find((p) => p.id === platform)?.label ?? "Spredd";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 animate-fade-in">
@@ -21,7 +24,7 @@ export function TradeResult({ result, error, onDone, onRetry }: TradeResultProps
               Trade Submitted
             </h3>
             <p className="text-sm text-muted-foreground">
-              Your order has been submitted to the Polymarket CLOB.
+              Your order has been submitted to {platformLabel}.
             </p>
             {result.orderId && (
               <p className="text-xs text-muted-foreground break-all">

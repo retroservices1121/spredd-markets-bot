@@ -8,6 +8,7 @@ import { WalletPage } from "@/pages/WalletPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
+import { PortfolioPage } from "@/pages/PortfolioPage";
 import { Loader2 } from "lucide-react";
 
 export default function App() {
@@ -62,6 +63,9 @@ export default function App() {
             onSelectEvent={(slug) => setSelectedEventSlug(slug)}
           />
         );
+
+      case "portfolio":
+        return <PortfolioPage />;
 
       case "settings":
         return <SettingsPage onLock={lock} />;

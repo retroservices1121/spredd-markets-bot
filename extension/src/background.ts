@@ -351,6 +351,121 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
       }
     }
 
+    // ── Multi-platform markets via Bot API ────────
+
+    case "GET_BOT_MARKETS": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          platform?: string;
+          limit?: number;
+          active?: boolean;
+        };
+        const qs = new URLSearchParams();
+        if (params.platform) qs.set("platform", params.platform);
+        if (params.limit) qs.set("limit", String(params.limit));
+        if (params.active !== undefined) qs.set("active", String(params.active));
+        const markets = await botApiFetch(`/api/v1/markets?${qs.toString()}`);
+        return { success: true, data: markets };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to load markets",
+        };
+      }
+    }
+
+    case "SEARCH_BOT_MARKETS": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          query: string;
+          platform?: string;
+        };
+        const qs = new URLSearchParams({ q: params.query });
+        if (params.platform) qs.set("platform", params.platform);
+        const markets = await botApiFetch(`/api/v1/markets/search?${qs.toString()}`);
+        return { success: true, data: markets };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Search failed",
+        };
+      }
+    }
+
+    case "GET_BOT_MARKET_DETAIL": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          platform: string;
+          marketId: string;
+        };
+        const market = await botApiFetch(
+          `/api/v1/markets/${params.platform}/${params.marketId}`
+        );
+        return { success: true, data: market };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to load market",
+        };
+      }
+    }
+
+    // ── Portfolio / Positions ─────────────────────
+
+    case "GET_POSITIONS": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          platform?: string;
+          status?: string;
+        };
+        const qs = new URLSearchParams();
+        if (params?.platform) qs.set("platform", params.platform);
+        if (params?.status) qs.set("status", params.status);
+        const positions = await botApiFetch(`/api/v1/positions?${qs.toString()}`);
+        return { success: true, data: positions };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to load positions",
+        };
+      }
+    }
+
+    case "GET_PNL_SUMMARY": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as { platform?: string } | undefined;
+        const qs = new URLSearchParams();
+        if (params?.platform) qs.set("platform", params.platform);
+        const summary = await botApiFetch(`/api/v1/pnl/summary?${qs.toString()}`);
+        return { success: true, data: summary };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to load PnL",
+        };
+      }
+    }
+
     default:
       return { success: false, error: "Unknown message type" };
   }

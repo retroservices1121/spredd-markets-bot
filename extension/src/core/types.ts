@@ -80,7 +80,14 @@ export type MessageType =
   // Trading via Bot API
   | "GET_TRADE_QUOTE"
   | "EXECUTE_TRADE"
-  | "CHECK_WALLET_LINKED";
+  | "CHECK_WALLET_LINKED"
+  // Multi-platform markets via Bot API
+  | "GET_BOT_MARKETS"
+  | "SEARCH_BOT_MARKETS"
+  | "GET_BOT_MARKET_DETAIL"
+  // Portfolio / Positions
+  | "GET_POSITIONS"
+  | "GET_PNL_SUMMARY";
 
 export interface Message {
   type: MessageType;

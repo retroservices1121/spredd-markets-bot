@@ -1,13 +1,15 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type {
   TradeQuote,
   TradeResult,
   TradeSide,
   OutcomeSelection,
   MarketOutcome,
+  Platform,
 } from "@/core/markets";
 import { calculateQuote } from "@/services/polymarket";
 import {
+  getTradeQuote,
   executeTrade,
   checkWalletLinked,
 } from "@/lib/messaging";
@@ -21,8 +23,18 @@ interface UseTradeReturn {
   amount: string;
   setAmount: (a: string) => void;
 
-  // Quote (client-side estimate from market prices)
+  // Slippage
+  slippageBps: number;
+  setSlippageBps: (bps: number) => void;
+
+  // Quote
   quote: TradeQuote | null;
+  quoteLoading: boolean;
+  quoteError: string | null;
+
+  // Fees / impact from bot quote
+  fees: Record<string, string> | null;
+  priceImpact: number | null;
 
   // Wallet link status
   walletLinked: boolean | null;
@@ -38,16 +50,27 @@ interface UseTradeReturn {
 
 export function useTrade(
   outcomes: MarketOutcome[] | null,
-  marketId: string | null
+  marketId: string | null,
+  platform: Platform = "polymarket"
 ): UseTradeReturn {
   const [outcome, setOutcome] = useState<OutcomeSelection | null>(null);
   const [side, setSide] = useState<TradeSide>("buy");
   const [amount, setAmount] = useState("");
+  const [slippageBps, setSlippageBps] = useState(100); // 1% default
   const [walletLinked, setWalletLinked] = useState<boolean | null>(null);
   const [checkingLink, setCheckingLink] = useState(false);
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState<TradeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Bot API quote state
+  const [botQuote, setBotQuote] = useState<TradeQuote | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [fees, setFees] = useState<Record<string, string> | null>(null);
+  const [priceImpact, setPriceImpact] = useState<number | null>(null);
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Check wallet link status once
   useEffect(() => {
@@ -68,8 +91,8 @@ export function useTrade(
     return () => { cancelled = true; };
   }, []);
 
-  // Calculate client-side quote estimate from market prices
-  const quote = useMemo(() => {
+  // Instant client-side fallback quote from market prices
+  const clientQuote = useMemo(() => {
     if (!outcome || !outcomes) return null;
     const amountNum = parseFloat(amount);
     if (!amountNum || amountNum <= 0) return null;
@@ -88,6 +111,73 @@ export function useTrade(
     );
   }, [outcome, outcomes, amount, side, marketId]);
 
+  // Debounced bot API quote fetch
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    // Clear bot quote when inputs change
+    setBotQuote(null);
+    setQuoteError(null);
+    setFees(null);
+    setPriceImpact(null);
+
+    if (!outcome || !marketId) return;
+    const amountNum = parseFloat(amount);
+    if (!amountNum || amountNum <= 0) return;
+
+    setQuoteLoading(true);
+
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await getTradeQuote({
+          platform,
+          marketId,
+          outcome,
+          side,
+          amount: amountNum.toFixed(2),
+        });
+
+        if (!res.success || !res.data) {
+          setQuoteError(res.error ?? "Quote unavailable");
+          setQuoteLoading(false);
+          return;
+        }
+
+        const d = res.data;
+        const expectedOutput = parseFloat(d.expected_output) || 0;
+        const price = d.price || 0;
+
+        setBotQuote({
+          tokenId: d.market_id,
+          outcome: outcome,
+          side: side,
+          amount: amountNum,
+          expectedOutput,
+          avgPrice: price,
+          worstPrice: price,
+          estimatedPayout: side === "buy" ? expectedOutput : expectedOutput * price,
+          platform: (d.platform as Platform) || platform,
+          priceImpact: d.price_impact,
+          fees: d.fees,
+        });
+        setFees(d.fees && Object.keys(d.fees).length > 0 ? d.fees : null);
+        setPriceImpact(d.price_impact ?? null);
+        setQuoteError(null);
+      } catch (e) {
+        setQuoteError(e instanceof Error ? e.message : "Quote failed");
+      } finally {
+        setQuoteLoading(false);
+      }
+    }, 500);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [outcome, side, amount, marketId, platform]);
+
+  // Use bot quote when available, fall back to client estimate
+  const quote = botQuote ?? clientQuote;
+
   // Execute trade via Bot API
   const handleExecute = useCallback(async () => {
     if (!quote || !marketId || !outcome) return;
@@ -98,11 +188,12 @@ export function useTrade(
 
     try {
       const res = await executeTrade({
-        platform: "polymarket",
+        platform,
         marketId,
         outcome,
         side,
         amount: quote.amount.toFixed(2),
+        slippageBps,
       });
 
       if (!res.success) {
@@ -124,7 +215,7 @@ export function useTrade(
     } finally {
       setExecuting(false);
     }
-  }, [quote, marketId, outcome, side]);
+  }, [quote, marketId, outcome, side, platform, slippageBps]);
 
   const reset = useCallback(() => {
     setOutcome(null);
@@ -132,6 +223,10 @@ export function useTrade(
     setAmount("");
     setResult(null);
     setError(null);
+    setBotQuote(null);
+    setQuoteError(null);
+    setFees(null);
+    setPriceImpact(null);
   }, []);
 
   return {
@@ -141,7 +236,13 @@ export function useTrade(
     setSide,
     amount,
     setAmount,
+    slippageBps,
+    setSlippageBps,
     quote,
+    quoteLoading,
+    quoteError,
+    fees,
+    priceImpact,
     walletLinked,
     checkingLink,
     executing,

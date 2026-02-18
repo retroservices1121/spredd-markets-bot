@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { PolymarketEvent } from "@/core/markets";
 import { fetchEvents, searchEvents } from "@/services/polymarket";
+import { getBotMarkets, searchBotMarkets } from "@/lib/messaging";
+import { botMarketsToEvents } from "@/services/markets";
+import type { PlatformFilter } from "@/components/markets/PlatformTabs";
 
 interface UseMarketsReturn {
   events: PolymarketEvent[];
@@ -15,7 +18,7 @@ interface UseMarketsReturn {
 
 const PAGE_SIZE = 20;
 
-export function useMarkets(): UseMarketsReturn {
+export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
   const [events, setEvents] = useState<PolymarketEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,21 +29,44 @@ export function useMarkets(): UseMarketsReturn {
   // Debounce timer ref
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
+  const isPolymarket = platform === "polymarket";
+  const useGammaApi = isPolymarket;
+
   // Load initial/trending markets
   const loadInitial = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchEvents(PAGE_SIZE, 0);
-      setEvents(data);
-      setOffset(PAGE_SIZE);
-      setHasMore(data.length === PAGE_SIZE);
+      if (useGammaApi) {
+        // Polymarket: use Gamma API (public, fast)
+        const data = await fetchEvents(PAGE_SIZE, 0);
+        setEvents(data);
+        setOffset(PAGE_SIZE);
+        setHasMore(data.length === PAGE_SIZE);
+      } else {
+        // Other platforms or "all": use Bot API
+        const res = await getBotMarkets({
+          platform: platform === "all" ? undefined : platform,
+          limit: PAGE_SIZE,
+          active: true,
+        });
+        if (res.success && res.data) {
+          const data = Array.isArray(res.data) ? res.data : [];
+          setEvents(botMarketsToEvents(data));
+          setHasMore(data.length === PAGE_SIZE);
+        } else {
+          setError(res.error ?? "Failed to load markets");
+          setEvents([]);
+          setHasMore(false);
+        }
+        setOffset(PAGE_SIZE);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load markets");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [platform, useGammaApi]);
 
   // Search markets with debounce
   useEffect(() => {
@@ -55,8 +81,22 @@ export function useMarkets(): UseMarketsReturn {
       setLoading(true);
       setError(null);
       try {
-        const data = await searchEvents(searchQuery.trim());
-        setEvents(data);
+        if (useGammaApi) {
+          const data = await searchEvents(searchQuery.trim());
+          setEvents(data);
+        } else {
+          const res = await searchBotMarkets({
+            query: searchQuery.trim(),
+            platform: platform === "all" ? undefined : platform,
+          });
+          if (res.success && res.data) {
+            const data = Array.isArray(res.data) ? res.data : [];
+            setEvents(botMarketsToEvents(data));
+          } else {
+            setError(res.error ?? "Search failed");
+            setEvents([]);
+          }
+        }
         setHasMore(false); // search results are not paginated
       } catch (e) {
         setError(e instanceof Error ? e.message : "Search failed");
@@ -68,23 +108,26 @@ export function useMarkets(): UseMarketsReturn {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [searchQuery, loadInitial]);
+  }, [searchQuery, loadInitial, useGammaApi, platform]);
 
   // Load more (pagination for trending view only)
   const loadMore = useCallback(async () => {
     if (searchQuery.trim() || loading || !hasMore) return;
     setLoading(true);
     try {
-      const data = await fetchEvents(PAGE_SIZE, offset);
-      setEvents((prev) => [...prev, ...data]);
-      setOffset((prev) => prev + PAGE_SIZE);
-      setHasMore(data.length === PAGE_SIZE);
+      if (useGammaApi) {
+        const data = await fetchEvents(PAGE_SIZE, offset);
+        setEvents((prev) => [...prev, ...data]);
+        setOffset((prev) => prev + PAGE_SIZE);
+        setHasMore(data.length === PAGE_SIZE);
+      }
+      // Bot API pagination could be added later
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load more");
     } finally {
       setLoading(false);
     }
-  }, [searchQuery, loading, hasMore, offset]);
+  }, [searchQuery, loading, hasMore, offset, useGammaApi]);
 
   const refresh = useCallback(() => {
     setSearchQuery("");

@@ -1,3 +1,4 @@
+import { cn } from "@/lib/utils";
 import { formatUSD } from "@/lib/utils";
 import type { TradeQuote } from "@/core/markets";
 import { Loader2 } from "lucide-react";
@@ -7,6 +8,9 @@ interface TradeConfirmProps {
   executing: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  fees?: Record<string, string> | null;
+  priceImpact?: number | null;
+  slippageBps?: number;
 }
 
 export function TradeConfirm({
@@ -14,6 +18,9 @@ export function TradeConfirm({
   executing,
   onConfirm,
   onCancel,
+  fees,
+  priceImpact,
+  slippageBps,
 }: TradeConfirmProps) {
   const isBuy = quote.side === "buy";
 
@@ -43,7 +50,7 @@ export function TradeConfirm({
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Avg Price</span>
             <span className="text-foreground">
-              {(quote.avgPrice * 100).toFixed(1)}¢
+              {(quote.avgPrice * 100).toFixed(1)}{"\u00A2"}
             </span>
           </div>
           <div className="flex justify-between text-sm">
@@ -52,6 +59,47 @@ export function TradeConfirm({
               {quote.expectedOutput.toFixed(2)}
             </span>
           </div>
+
+          {/* Price impact */}
+          {priceImpact != null && (
+            <div className="flex justify-between text-sm">
+              <span className="text-muted-foreground">Price Impact</span>
+              <span
+                className={cn(
+                  "font-medium",
+                  priceImpact > 2
+                    ? "text-spredd-red"
+                    : priceImpact > 0.5
+                    ? "text-yellow-500"
+                    : "text-spredd-green"
+                )}
+              >
+                {priceImpact.toFixed(2)}%
+              </span>
+            </div>
+          )}
+
+          {/* Fee breakdown */}
+          {fees &&
+            Object.entries(fees).map(([key, value]) => (
+              <div key={key} className="flex justify-between text-sm">
+                <span className="text-muted-foreground capitalize">
+                  {key.replace(/_/g, " ")}
+                </span>
+                <span className="text-foreground">{value}</span>
+              </div>
+            ))}
+
+          {/* Slippage */}
+          {slippageBps != null && (
+            <div className="flex justify-between text-sm">
+              <span className="text-muted-foreground">Max Slippage</span>
+              <span className="text-foreground">
+                {(slippageBps / 100).toFixed(1)}%
+              </span>
+            </div>
+          )}
+
           <div className="flex justify-between text-sm border-t border-border pt-2">
             <span className="text-muted-foreground">Potential Payout</span>
             <span className="text-spredd-green font-bold">

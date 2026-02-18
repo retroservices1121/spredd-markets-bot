@@ -1,8 +1,8 @@
-import { Wallet, Settings, TrendingUp } from "lucide-react";
+import { Wallet, Settings, TrendingUp, BarChart3 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 
-export type TabId = "wallet" | "markets" | "settings";
+export type TabId = "wallet" | "markets" | "portfolio" | "settings";
 
 interface BottomNavProps {
   activeTab: TabId;
@@ -12,6 +12,7 @@ interface BottomNavProps {
 const tabs = [
   { id: "wallet" as const, label: "Wallet", icon: Wallet },
   { id: "markets" as const, label: "Markets", icon: TrendingUp },
+  { id: "portfolio" as const, label: "Portfolio", icon: BarChart3 },
   { id: "settings" as const, label: "Settings", icon: Settings },
 ];
 

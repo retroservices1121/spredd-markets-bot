@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MarketSearch } from "@/components/markets/MarketSearch";
 import { MarketCard } from "@/components/markets/MarketCard";
+import { PlatformTabs, type PlatformFilter } from "@/components/markets/PlatformTabs";
 import { useMarkets } from "@/hooks/useMarkets";
 import { RefreshCw, TrendingUp } from "lucide-react";
 
@@ -9,6 +11,8 @@ interface MarketsPageProps {
 }
 
 export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
+  const [platform, setPlatform] = useState<PlatformFilter>("polymarket");
+
   const {
     events,
     loading,
@@ -16,7 +20,7 @@ export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
     searchQuery,
     setSearchQuery,
     refresh,
-  } = useMarkets();
+  } = useMarkets(platform);
 
   return (
     <div className="p-4 space-y-3">
@@ -36,6 +40,9 @@ export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
           />
         </button>
       </div>
+
+      {/* Platform tabs */}
+      <PlatformTabs selected={platform} onChange={setPlatform} />
 
       {/* Search */}
       <MarketSearch value={searchQuery} onChange={setSearchQuery} />
