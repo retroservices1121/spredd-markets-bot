@@ -18,6 +18,20 @@ interface UseMarketsReturn {
 
 const PAGE_SIZE = 20;
 
+// Per-platform cache so switching tabs is instant
+const cache = new Map<string, { events: PolymarketEvent[]; ts: number }>();
+const CACHE_TTL = 60_000; // 1 minute
+
+function getCached(key: string): PolymarketEvent[] | null {
+  const entry = cache.get(key);
+  if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.events;
+  return null;
+}
+
+function setCache(key: string, events: PolymarketEvent[]) {
+  cache.set(key, { events, ts: Date.now() });
+}
+
 export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
   const [events, setEvents] = useState<PolymarketEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -26,43 +40,64 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
 
-  // Debounce timer ref
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  const isPolymarket = platform === "polymarket";
-  const useGammaApi = isPolymarket;
+  // "all" and "polymarket" use the fast Gamma API; others use Bot API
+  const useGammaApi = platform === "polymarket" || platform === "all";
 
   // Load initial/trending markets
   const loadInitial = useCallback(async () => {
+    // Check cache first for instant tab switching
+    const cached = getCached(platform);
+    if (cached) {
+      setEvents(cached);
+      setLoading(false);
+      setError(null);
+      setHasMore(platform === "polymarket" || platform === "all");
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
       if (useGammaApi) {
-        // Polymarket: use Gamma API (public, fast)
         const data = await fetchEvents(PAGE_SIZE, 0);
         setEvents(data);
         setOffset(PAGE_SIZE);
         setHasMore(data.length === PAGE_SIZE);
+        setCache(platform, data);
       } else {
-        // Other platforms or "all": use Bot API
         const res = await getBotMarkets({
-          platform: platform === "all" ? undefined : platform,
+          platform,
           limit: PAGE_SIZE,
           active: true,
         });
         if (res.success && res.data) {
           const data = Array.isArray(res.data) ? res.data : [];
-          setEvents(botMarketsToEvents(data));
+          const converted = botMarketsToEvents(data);
+          setEvents(converted);
           setHasMore(data.length === PAGE_SIZE);
+          setCache(platform, converted);
         } else {
-          setError(res.error ?? "Failed to load markets");
+          const msg = res.error ?? "Failed to load markets";
+          // Friendlier message for server errors
+          setError(
+            msg.includes("502") || msg.includes("503")
+              ? "Platform temporarily unavailable. Try again later."
+              : msg
+          );
           setEvents([]);
           setHasMore(false);
         }
         setOffset(PAGE_SIZE);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load markets");
+      const msg = e instanceof Error ? e.message : "Failed to load markets";
+      setError(
+        msg.includes("502") || msg.includes("503")
+          ? "Platform temporarily unavailable. Try again later."
+          : msg
+      );
     } finally {
       setLoading(false);
     }
@@ -87,19 +122,29 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
         } else {
           const res = await searchBotMarkets({
             query: searchQuery.trim(),
-            platform: platform === "all" ? undefined : platform,
+            platform,
           });
           if (res.success && res.data) {
             const data = Array.isArray(res.data) ? res.data : [];
             setEvents(botMarketsToEvents(data));
           } else {
-            setError(res.error ?? "Search failed");
+            const msg = res.error ?? "Search failed";
+            setError(
+              msg.includes("502") || msg.includes("503")
+                ? "Platform temporarily unavailable. Try again later."
+                : msg
+            );
             setEvents([]);
           }
         }
-        setHasMore(false); // search results are not paginated
+        setHasMore(false);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Search failed");
+        const msg = e instanceof Error ? e.message : "Search failed";
+        setError(
+          msg.includes("502") || msg.includes("503")
+            ? "Platform temporarily unavailable. Try again later."
+            : msg
+        );
       } finally {
         setLoading(false);
       }
@@ -110,7 +155,7 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
     };
   }, [searchQuery, loadInitial, useGammaApi, platform]);
 
-  // Load more (pagination for trending view only)
+  // Load more (pagination for Gamma API only)
   const loadMore = useCallback(async () => {
     if (searchQuery.trim() || loading || !hasMore) return;
     setLoading(true);
@@ -121,7 +166,6 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
         setOffset((prev) => prev + PAGE_SIZE);
         setHasMore(data.length === PAGE_SIZE);
       }
-      // Bot API pagination could be added later
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load more");
     } finally {
@@ -130,10 +174,12 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
   }, [searchQuery, loading, hasMore, offset, useGammaApi]);
 
   const refresh = useCallback(() => {
+    // Clear cache for this platform on manual refresh
+    cache.delete(platform);
     setSearchQuery("");
     setOffset(0);
     loadInitial();
-  }, [loadInitial]);
+  }, [loadInitial, platform]);
 
   return {
     events,
