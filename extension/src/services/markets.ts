@@ -1,34 +1,63 @@
 /**
  * Bot API market adapter.
- * Converts flat Bot API market responses into PolymarketEvent shape
+ * Converts Bot API market responses into PolymarketEvent shape
  * so existing UI components (MarketCard, MarketDetailPage) work unchanged.
+ *
+ * The Bot API /api/v1/markets returns:
+ *   { id, platform, question, description, image, category, outcomes,
+ *     outcomePrices: ["0.65","0.35"], volume, volume24hr, liquidity,
+ *     endDate, slug, active }
+ *
+ * The Bot API /api/v1/markets/search returns (inside { markets: [...] }):
+ *   { id, platform, title, yes_price, no_price, volume, is_active }
  */
 
-import type { PolymarketEvent, MarketInfo, MarketOutcome, Platform } from "@/core/markets";
+import type { PolymarketEvent, MarketInfo, MarketOutcome } from "@/core/markets";
 
-/** Shape of a market from Bot API /api/v1/markets */
+/** Flexible shape that handles both /markets and /markets/search responses */
 export interface BotApiMarket {
   id: string;
   platform: string;
-  title: string;
+  // /markets uses "question", /search uses "title"
   question?: string;
+  title?: string;
   description?: string;
+  // /markets uses "image", adapter also checks "image_url"
+  image?: string;
   image_url?: string;
+  // /markets uses outcomePrices: ["0.65","0.35"]
+  outcomePrices?: string[];
+  // /search uses yes_price / no_price as numbers
   yes_price?: number;
   no_price?: number;
   volume?: number;
+  volume24hr?: number;
   liquidity?: number;
   category?: string;
   active?: boolean;
+  is_active?: boolean;
   closed?: boolean;
+  endDate?: string;
   end_date?: string;
+  slug?: string;
   outcomes?: string[];
 }
 
 /** Convert a Bot API market to a PolymarketEvent for UI compatibility */
 export function botMarketToEvent(m: BotApiMarket): PolymarketEvent {
-  const yesPrice = m.yes_price ?? 0.5;
-  const noPrice = m.no_price ?? 1 - yesPrice;
+  // Parse prices from either format
+  let yesPrice = 0.5;
+  let noPrice = 0.5;
+
+  if (m.outcomePrices && m.outcomePrices.length >= 2) {
+    yesPrice = parseFloat(m.outcomePrices[0]) || 0.5;
+    noPrice = parseFloat(m.outcomePrices[1]) || 0.5;
+  } else if (m.yes_price != null || m.no_price != null) {
+    yesPrice = Number(m.yes_price) || 0.5;
+    noPrice = Number(m.no_price) || 1 - yesPrice;
+  }
+
+  const displayTitle = m.question || m.title || "Unknown Market";
 
   const outcomes: MarketOutcome[] = [
     { name: "Yes", price: yesPrice, tokenId: "" },
@@ -37,31 +66,36 @@ export function botMarketToEvent(m: BotApiMarket): PolymarketEvent {
 
   const market: MarketInfo = {
     conditionId: m.id,
-    question: m.question || m.title,
+    question: displayTitle,
     outcomes,
     clobTokenIds: ["", ""],
     isNegRisk: false,
-    eventSlug: `${m.platform}/${m.id}`,
+    eventSlug: m.slug || `${m.platform}/${m.id}`,
   };
+
+  const slug = m.slug
+    ? (m.slug.includes("/") ? m.slug : `${m.platform}/${m.slug}`)
+    : `${m.platform}/${m.id}`;
 
   return {
     id: m.id,
-    slug: `${m.platform}/${m.id}`,
-    title: m.title,
+    slug,
+    title: displayTitle,
     description: m.description ?? "",
-    image: m.image_url ?? "",
+    image: m.image || m.image_url || "",
     markets: [market],
-    volume: m.volume ?? 0,
+    volume: m.volume24hr ?? m.volume ?? 0,
     liquidity: m.liquidity ?? 0,
     startDate: "",
-    endDate: m.end_date ?? "",
-    active: m.active ?? true,
+    endDate: m.endDate || m.end_date || "",
+    active: m.active ?? m.is_active ?? true,
     closed: m.closed ?? false,
-    category: m.category ?? (m.platform as string),
+    category: m.category ?? m.platform,
   };
 }
 
 /** Convert an array of Bot API markets to events */
 export function botMarketsToEvents(markets: BotApiMarket[]): PolymarketEvent[] {
+  if (!Array.isArray(markets)) return [];
   return markets.map(botMarketToEvent);
 }

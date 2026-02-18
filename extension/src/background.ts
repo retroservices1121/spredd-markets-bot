@@ -98,23 +98,39 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 /** Make an authenticated request to the Bot API */
 async function botApiFetch<T>(
   path: string,
-  options: { method?: string; body?: unknown } = {}
+  options: { method?: string; body?: unknown; timeoutMs?: number } = {}
 ): Promise<T> {
   const headers = await getAuthHeaders();
   const url = `${API_BASE}${path}`;
 
-  const res = await fetch(url, {
-    method: options.method ?? "GET",
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? 15000
+  );
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
+  try {
+    const res = await fetch(url, {
+      method: options.method ?? "GET",
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`API ${res.status}: ${text}`);
+    }
+
+    return res.json() as Promise<T>;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("Request timed out");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return res.json() as Promise<T>;
 }
 
 // ──────────────────────────────────────────
@@ -390,7 +406,11 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
         };
         const qs = new URLSearchParams({ q: params.query });
         if (params.platform) qs.set("platform", params.platform);
-        const markets = await botApiFetch(`/api/v1/markets/search?${qs.toString()}`);
+        const raw = await botApiFetch<{ markets?: unknown[] }>(
+          `/api/v1/markets/search?${qs.toString()}`
+        );
+        // API wraps results in { markets: [...] }
+        const markets = raw?.markets ?? raw;
         return { success: true, data: markets };
       } catch (e) {
         return {
@@ -410,9 +430,11 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
           platform: string;
           marketId: string;
         };
-        const market = await botApiFetch(
+        const raw = await botApiFetch<{ market?: unknown }>(
           `/api/v1/markets/${params.platform}/${params.marketId}`
         );
+        // API wraps result in { market: {...} }
+        const market = raw?.market ?? raw;
         return { success: true, data: market };
       } catch (e) {
         return {
