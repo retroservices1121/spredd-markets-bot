@@ -5,7 +5,8 @@
   "description": "Non-custodial multi-chain wallet for prediction markets",
   "permissions": ["storage", "alarms"],
   "host_permissions": [
-    "https://spredd-markets-bot-production.up.railway.app/*"
+    "https://spredd-markets-bot-production.up.railway.app/*",
+    "https://gamma-api.polymarket.com/*"
   ],
   "action": {
     "default_popup": "src/popup.html",
