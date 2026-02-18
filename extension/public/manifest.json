@@ -6,7 +6,11 @@
   "permissions": ["storage", "alarms"],
   "host_permissions": [
     "https://spredd-markets-bot-production.up.railway.app/*",
-    "https://gamma-api.polymarket.com/*"
+    "https://gamma-api.polymarket.com/*",
+    "https://c.prediction-markets-api.dflow.net/*",
+    "https://proxy.opinion.trade:8443/*",
+    "https://myriad.markets/*",
+    "https://api.limitless.exchange/*"
   ],
   "action": {
     "default_popup": "src/popup.html",
