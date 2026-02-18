@@ -8,7 +8,9 @@ interface PnlSummaryProps {
 }
 
 export function PnlSummary({ summary }: PnlSummaryProps) {
-  const isPositive = summary.total_pnl >= 0;
+  const totalPnl = summary.total_pnl ?? 0;
+  const roiPercent = summary.roi_percent ?? 0;
+  const isPositive = totalPnl >= 0;
 
   return (
     <div
@@ -30,7 +32,7 @@ export function PnlSummary({ summary }: PnlSummaryProps) {
               )}
             >
               {isPositive ? "+" : ""}
-              {formatUSD(summary.total_pnl)}
+              {formatUSD(totalPnl)}
             </p>
             {isPositive ? (
               <TrendingUp className="w-5 h-5 text-spredd-green" />
@@ -38,7 +40,7 @@ export function PnlSummary({ summary }: PnlSummaryProps) {
               <TrendingDown className="w-5 h-5 text-spredd-red" />
             )}
           </div>
-          {summary.roi_percent !== 0 && (
+          {roiPercent !== 0 && (
             <p
               className={cn(
                 "text-xs mt-0.5",
@@ -46,7 +48,7 @@ export function PnlSummary({ summary }: PnlSummaryProps) {
               )}
             >
               {isPositive ? "+" : ""}
-              {summary.roi_percent.toFixed(1)}% ROI
+              {roiPercent.toFixed(1)}% ROI
             </p>
           )}
         </div>
@@ -57,25 +59,25 @@ export function PnlSummary({ summary }: PnlSummaryProps) {
         <div>
           <p className="text-xs text-muted-foreground">Trades</p>
           <p className="text-sm font-medium text-foreground">
-            {summary.total_trades}
+            {summary.total_trades ?? 0}
           </p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">Won</p>
           <p className="text-sm font-medium text-spredd-green">
-            {summary.winning_trades}
+            {summary.winning_trades ?? 0}
           </p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">Lost</p>
           <p className="text-sm font-medium text-spredd-red">
-            {summary.losing_trades}
+            {summary.losing_trades ?? 0}
           </p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">Invested</p>
           <p className="text-sm font-medium text-foreground">
-            {formatUSD(summary.total_invested)}
+            {formatUSD(summary.total_invested ?? 0)}
           </p>
         </div>
       </div>
