@@ -143,17 +143,32 @@ export interface BotApiMarket {
   end_date?: string;
   slug?: string;
   outcomes?: string[];
+  // Multi-outcome grouping
+  event_id?: string;
+  is_multi_outcome?: boolean;
+  outcome_name?: string;
+  related_market_count?: number;
 }
 
+/** Extract yes price from a Bot API market */
+function getYesPrice(m: BotApiMarket): number {
+  if (m.outcomePrices && m.outcomePrices.length >= 1) {
+    return parseFloat(m.outcomePrices[0]) || 0.5;
+  }
+  if (m.yes_price != null) return Number(m.yes_price) || 0.5;
+  return 0.5;
+}
+
+/** Convert a single Bot API market to an event (no grouping) */
 export function botMarketToEvent(m: BotApiMarket): PolymarketEvent {
-  let yesPrice = 0.5;
+  const yesPrice = getYesPrice(m);
   let noPrice = 0.5;
   if (m.outcomePrices && m.outcomePrices.length >= 2) {
-    yesPrice = parseFloat(m.outcomePrices[0]) || 0.5;
     noPrice = parseFloat(m.outcomePrices[1]) || 0.5;
-  } else if (m.yes_price != null || m.no_price != null) {
-    yesPrice = Number(m.yes_price) || 0.5;
+  } else if (m.no_price != null) {
     noPrice = Number(m.no_price) || 1 - yesPrice;
+  } else {
+    noPrice = 1 - yesPrice;
   }
   const displayTitle = m.question || m.title || "Unknown Market";
   return makeEvent(m.id, m.platform as Platform, displayTitle, yesPrice, noPrice, {
@@ -166,7 +181,80 @@ export function botMarketToEvent(m: BotApiMarket): PolymarketEvent {
   });
 }
 
+/**
+ * Convert Bot API markets to events, grouping multi-outcome markets
+ * by event_id into a single PolymarketEvent with multiple MarketInfo entries.
+ */
 export function botMarketsToEvents(markets: BotApiMarket[]): PolymarketEvent[] {
   if (!Array.isArray(markets)) return [];
-  return markets.map(botMarketToEvent);
+
+  // Separate multi-outcome markets from simple ones
+  const grouped = new Map<string, BotApiMarket[]>();
+  const simple: BotApiMarket[] = [];
+
+  for (const m of markets) {
+    if (m.is_multi_outcome && m.event_id) {
+      const group = grouped.get(m.event_id);
+      if (group) {
+        group.push(m);
+      } else {
+        grouped.set(m.event_id, [m]);
+      }
+    } else {
+      simple.push(m);
+    }
+  }
+
+  const events: PolymarketEvent[] = [];
+
+  // Build grouped events (multi-outcome)
+  for (const [eventId, group] of grouped) {
+    const first = group[0];
+    const platform = (first.platform || "kalshi") as Platform;
+
+    // Each market in the group becomes a MarketInfo with its outcome name
+    const marketInfos: MarketInfo[] = group.map((m) => {
+      const yesPrice = getYesPrice(m);
+      const outcomeName = m.outcome_name || m.question || m.title || m.id;
+      return {
+        conditionId: m.id,
+        question: outcomeName,
+        outcomes: [
+          { name: "Yes", price: yesPrice, tokenId: "" },
+          { name: "No", price: 1 - yesPrice, tokenId: "" },
+        ],
+        clobTokenIds: ["", ""] as [string, string],
+        isNegRisk: false,
+        eventSlug: `${platform}/${eventId}`,
+      };
+    });
+
+    // Use the common event title (strip outcome-specific suffix from first market's title)
+    const eventTitle = first.question || first.title || eventId;
+    const totalVolume = group.reduce((sum, m) => sum + (m.volume24hr ?? m.volume ?? 0), 0);
+    const totalLiquidity = group.reduce((sum, m) => sum + (m.liquidity ?? 0), 0);
+
+    events.push({
+      id: eventId,
+      slug: `${platform}/${eventId}`,
+      title: eventTitle,
+      description: first.description ?? "",
+      image: first.image || first.image_url || "",
+      markets: marketInfos,
+      volume: totalVolume,
+      liquidity: totalLiquidity,
+      startDate: "",
+      endDate: first.endDate || first.end_date || "",
+      active: true,
+      closed: false,
+      category: first.category ?? platform,
+    });
+  }
+
+  // Add simple (non-grouped) markets
+  for (const m of simple) {
+    events.push(botMarketToEvent(m));
+  }
+
+  return events;
 }

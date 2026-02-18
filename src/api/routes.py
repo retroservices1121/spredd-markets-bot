@@ -533,6 +533,11 @@ async def get_all_markets(
                     "endDate": m.close_time,
                     "slug": slug,
                     "active": m.is_active,
+                    # Multi-outcome grouping
+                    "event_id": m.event_id,
+                    "is_multi_outcome": m.is_multi_outcome,
+                    "outcome_name": m.outcome_name,
+                    "related_market_count": m.related_market_count,
                 })
         except Exception as e:
             print(f"Error fetching {plat} markets: {e}")
