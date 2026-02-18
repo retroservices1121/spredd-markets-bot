@@ -2,17 +2,13 @@
  * Platform market fetchers.
  *
  * Polymarket → Gamma API (direct, public) — handled in polymarket.ts
- * Kalshi → DFlow Metadata API (direct, no auth required)
+ * Kalshi → DFlow API via background worker (bypasses CORS)
  * Opinion, Limitless, Myriad → Bot API via background worker (need API keys)
  */
 
 import type { PolymarketEvent, MarketInfo, MarketOutcome, Platform } from "@/core/markets";
-import { getBotMarkets, searchBotMarkets } from "@/lib/messaging";
-
-// ── API base URLs ───────────────────────────────────────────
-
-/** DFlow Metadata API — Kalshi market data (no auth required) */
-const DFLOW_API = "https://c.prediction-markets-api.dflow.net";
+import { getBotMarkets, searchBotMarkets, fetchKalshiMarketsViaBackground } from "@/lib/messaging";
+import type { DFlowMarketRaw } from "@/lib/messaging";
 
 // ── Shared helpers ──────────────────────────────────────────
 
@@ -62,79 +58,47 @@ function makeEvent(
   };
 }
 
-async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    });
-    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
-    return res.json() as Promise<T>;
-  } catch (e) {
-    if (e instanceof DOMException && e.name === "AbortError") {
-      throw new Error("Request timed out");
+// ── Kalshi (via background worker → DFlow API) ──────────────
+
+function dflowToEvent(m: DFlowMarketRaw): PolymarketEvent {
+  const yesPrice = parseFloat(m.yesAsk ?? m.lastYesPrice ?? "") || 0.5;
+  const noPrice = parseFloat(m.noAsk ?? m.lastNoPrice ?? "") || 1 - yesPrice;
+  return makeEvent(
+    m.ticker,
+    "kalshi",
+    m.title || m.question || m.ticker,
+    yesPrice,
+    noPrice,
+    {
+      description: m.subtitle,
+      volume: m.volume,
+      liquidity: m.openInterest,
+      endDate: m.closeTime,
     }
-    throw e;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-// ── Kalshi (DFlow Metadata API — no auth) ───────────────────
-
-interface DFlowMarket {
-  ticker: string;
-  eventTicker?: string;
-  title?: string;
-  question?: string;
-  subtitle?: string;
-  yesAsk?: string;
-  noAsk?: string;
-  lastYesPrice?: string;
-  lastNoPrice?: string;
-  volume?: number;
-  openInterest?: number;
-  status?: string;
-  result?: string | null;
-  closeTime?: string;
+  );
 }
 
 export async function fetchKalshiMarkets(limit = 20): Promise<PolymarketEvent[]> {
-  // Fetch a single page of active markets (max 200 per page)
-  const fetchLimit = Math.min(limit * 2, 200); // fetch extra to filter
-  const url = `${DFLOW_API}/api/v1/markets?limit=${fetchLimit}&status=active`;
-  const data = await fetchJson<{ markets?: DFlowMarket[]; data?: DFlowMarket[] }>(url);
-  const markets = data?.markets ?? data?.data ?? [];
-
-  return markets.slice(0, limit).map((m) => {
-    const yesPrice = parseFloat(m.yesAsk ?? m.lastYesPrice ?? "") || 0.5;
-    const noPrice = parseFloat(m.noAsk ?? m.lastNoPrice ?? "") || 1 - yesPrice;
-    return makeEvent(
-      m.ticker,
-      "kalshi",
-      m.title || m.question || m.ticker,
-      yesPrice,
-      noPrice,
-      {
-        description: m.subtitle,
-        volume: m.volume,
-        liquidity: m.openInterest,
-        endDate: m.closeTime,
-      }
-    );
-  });
+  // Route through background worker to bypass CORS/403
+  const res = await fetchKalshiMarketsViaBackground({ limit: Math.min(limit * 2, 200) });
+  if (res.success && res.data) {
+    const markets = Array.isArray(res.data) ? res.data : [];
+    return markets.slice(0, limit).map(dflowToEvent);
+  }
+  throw new Error(res.error ?? "Failed to load Kalshi markets");
 }
 
 export async function searchKalshiMarkets(
   query: string,
   limit = 20
 ): Promise<PolymarketEvent[]> {
-  // DFlow API has no search — fetch a large batch and filter client-side
-  const all = await fetchKalshiMarkets(200);
-  const q = query.toLowerCase();
-  return all.filter((e) => e.title.toLowerCase().includes(q)).slice(0, limit);
+  // Background worker handles client-side filtering
+  const res = await fetchKalshiMarketsViaBackground({ limit: 200, query });
+  if (res.success && res.data) {
+    const markets = Array.isArray(res.data) ? res.data : [];
+    return markets.slice(0, limit).map(dflowToEvent);
+  }
+  throw new Error(res.error ?? "Failed to search Kalshi markets");
 }
 
 // ── Opinion, Limitless, Myriad (via Bot API — need API keys) ─

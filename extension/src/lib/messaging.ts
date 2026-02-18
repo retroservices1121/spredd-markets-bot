@@ -92,6 +92,34 @@ export function checkWalletLinked() {
   return sendMessage<{ linked: boolean }>("CHECK_WALLET_LINKED");
 }
 
+// ── Kalshi via background worker (DFlow API — bypasses CORS) ─
+
+/** Fetch Kalshi markets via background worker (DFlow API) */
+export function fetchKalshiMarketsViaBackground(params?: {
+  limit?: number;
+  query?: string;
+}) {
+  return sendMessage<DFlowMarketRaw[]>("FETCH_KALSHI_MARKETS", params);
+}
+
+/** Raw DFlow market shape returned by the background handler */
+export interface DFlowMarketRaw {
+  ticker: string;
+  eventTicker?: string;
+  title?: string;
+  question?: string;
+  subtitle?: string;
+  yesAsk?: string;
+  noAsk?: string;
+  lastYesPrice?: string;
+  lastNoPrice?: string;
+  volume?: number;
+  openInterest?: number;
+  status?: string;
+  result?: string | null;
+  closeTime?: string;
+}
+
 // ── Multi-platform markets via Bot API ─────────────────────
 
 /** Fetch markets from Bot API (non-Polymarket platforms, or all) */
