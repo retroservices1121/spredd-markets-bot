@@ -7,6 +7,19 @@ import { CategoryTabs } from "@/components/markets/CategoryTabs";
 import { useMarkets } from "@/hooks/useMarkets";
 import { RefreshCw, TrendingUp } from "lucide-react";
 
+/** Rapid-market detection: ends within 1 hour OR title contains short-timeframe keywords */
+const RAPID_TITLE_RE = /\b(5[\s-]?min|15[\s-]?min|30[\s-]?min|1[\s-]?hour|hourly)\b/i;
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+function isRapidMarket(event: { endDate: string; title: string }, now: number): boolean {
+  if (RAPID_TITLE_RE.test(event.title)) return true;
+  if (event.endDate) {
+    const end = new Date(event.endDate).getTime();
+    if (end > now && end - now <= ONE_HOUR_MS) return true;
+  }
+  return false;
+}
+
 interface MarketsPageProps {
   onSelectEvent: (slug: string) => void;
 }
@@ -29,17 +42,31 @@ export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
     setCategory("all");
   }, [platform]);
 
-  // Extract unique categories from events
-  const categories = useMemo(
-    () => [...new Set(events.map((e) => e.category).filter(Boolean))],
-    [events]
-  );
+  // Extract unique categories from events, with synthetic ones first
+  const categories = useMemo(() => {
+    const apiCats = [...new Set(events.map((e) => e.category).filter(Boolean))];
+    const synthetic: string[] = [];
+    // Add "Trending" if there are enough events to make it meaningful
+    if (events.length >= 5) synthetic.push("Trending");
+    // Add "Rapid" if any events qualify
+    const now = Date.now();
+    const hasRapid = events.some((e) => isRapidMarket(e, now));
+    if (hasRapid) synthetic.push("Rapid");
+    return [...synthetic, ...apiCats];
+  }, [events]);
 
   // Filter events by selected category
-  const filteredEvents = useMemo(
-    () => category === "all" ? events : events.filter((e) => e.category === category),
-    [events, category]
-  );
+  const filteredEvents = useMemo(() => {
+    if (category === "all") return events;
+    if (category === "Trending") {
+      return [...events].sort((a, b) => b.volume - a.volume).slice(0, 10);
+    }
+    if (category === "Rapid") {
+      const now = Date.now();
+      return events.filter((e) => isRapidMarket(e, now));
+    }
+    return events.filter((e) => e.category === category);
+  }, [events, category]);
 
   return (
     <div className="p-4 space-y-3">
