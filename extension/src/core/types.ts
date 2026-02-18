@@ -31,6 +31,7 @@ export interface TokenConfig {
   address: string; // Contract address or mint address
   decimals: number;
   isNative?: boolean;
+  logo?: string; // URL to token logo image
 }
 
 /** Token balance for display */
