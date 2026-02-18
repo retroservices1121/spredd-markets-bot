@@ -12,6 +12,7 @@ import type {
   TradeSide,
   OutcomeSelection,
 } from "@/core/markets";
+import { classifyCategory } from "@/lib/categories";
 
 // ── API Base URLs ─────────────────────────────────────────
 
@@ -119,7 +120,7 @@ function gammaEventToLocal(e: GammaEvent): PolymarketEvent {
     endDate: e.endDate ?? "",
     active: e.active ?? true,
     closed: e.closed ?? false,
-    category: e.tags?.[0]?.label ?? "",
+    category: classifyCategory(e.title, e.tags?.[0]?.label ?? ""),
   };
 }
 

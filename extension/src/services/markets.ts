@@ -13,6 +13,7 @@ import {
   fetchPlatformMarketsDirect,
   searchPlatformMarketsDirect,
 } from "@/lib/messaging";
+import { classifyCategory } from "@/lib/categories";
 
 // ── Shared helpers ──────────────────────────────────────────
 
@@ -58,7 +59,7 @@ function makeEvent(
     endDate: opts.endDate ?? "",
     active: true,
     closed: false,
-    category: opts.category ?? platform,
+    category: classifyCategory(title, opts.category) || platform,
   };
 }
 
@@ -68,19 +69,23 @@ type RawMarket = Record<string, unknown>;
 
 function normalizeKalshi(m: RawMarket): BotApiMarket {
   const yesPrice = parseFloat(String(m.yesAsk ?? m.lastYesPrice ?? "")) || 0.5;
+  const ticker = String(m.ticker ?? m.market_id ?? "");
+  const eventTicker = String(m.eventTicker ?? m.event_ticker ?? "");
+  const title = String(m.title || m.question || m.ticker || "");
   return {
-    id: String(m.ticker ?? m.market_id ?? ""),
+    id: ticker,
     platform: "kalshi",
-    question: String(m.title || m.question || m.ticker || ""),
+    question: title,
     description: String(m.subtitle ?? ""),
     yes_price: yesPrice,
     no_price: parseFloat(String(m.noAsk ?? m.lastNoPrice ?? "")) || 1 - yesPrice,
     volume: Number(m.volume ?? 0),
     liquidity: Number(m.openInterest ?? 0),
     endDate: String(m.closeTime ?? ""),
-    event_id: String(m.eventTicker ?? m.event_ticker ?? ""),
+    event_id: eventTicker,
     is_multi_outcome: false, // will be detected by grouping logic
     outcome_name: String(m.yesSubtitle ?? m.subtitle ?? ""),
+    category: classifyCategory(title, undefined, eventTicker || ticker),
   };
 }
 
@@ -106,10 +111,12 @@ function normalizeOpinion(m: RawMarket): BotApiMarket {
     try { endDate = new Date(Number(m.cutoffAt) * 1000).toISOString(); } catch { /* ignore */ }
   }
 
+  const title = String(m.marketTitle ?? m.market_title ?? m.title ?? "");
+  const rawCat = String(m.category ?? m.topicType ?? "");
   return {
     id: String(m.marketId ?? m.market_id ?? m.id ?? ""),
     platform: "opinion",
-    question: String(m.marketTitle ?? m.market_title ?? m.title ?? ""),
+    question: title,
     description: String(m.rules ?? m.description ?? ""),
     image: String(m.image ?? m.icon ?? ""),
     yes_price: yesPrice,
@@ -117,16 +124,18 @@ function normalizeOpinion(m: RawMarket): BotApiMarket {
     volume: Number(m.volume24h ?? m.volume_24h ?? m.volume ?? 0),
     liquidity: Number(m.liquidity ?? m.openInterest ?? 0),
     endDate,
-    category: String(m.category ?? m.topicType ?? ""),
+    category: classifyCategory(title, rawCat),
   };
 }
 
 function normalizeLimitless(m: RawMarket): BotApiMarket {
   const prices = m.prices as { yes?: number; no?: number } | undefined;
+  const title = String(m.title || m.question || "");
+  const rawCat = String(m.category ?? "");
   return {
     id: String(m.id ?? m.address ?? ""),
     platform: "limitless",
-    question: String(m.title || m.question || ""),
+    question: title,
     description: String(m.description ?? ""),
     image: String(m.ogImageURI ?? m.imageUrl ?? m.image ?? ""),
     yes_price: Number(prices?.yes ?? m.yesPrice ?? 0.5),
@@ -134,7 +143,7 @@ function normalizeLimitless(m: RawMarket): BotApiMarket {
     volume: Number(m.volumeFormatted ?? m.volume ?? 0),
     liquidity: Number(m.liquidityFormatted ?? m.liquidity ?? 0),
     endDate: String(m.deadline ?? m.expirationDate ?? ""),
-    category: String(m.category ?? ""),
+    category: classifyCategory(title, rawCat),
     event_id: String(m.negRiskMarketId ?? (m.group as Record<string, unknown> | undefined)?.id ?? ""),
     is_multi_outcome: false,
     outcome_name: String(m.outcomeName ?? ""),
@@ -149,10 +158,12 @@ function normalizeMyriad(m: RawMarket): BotApiMarket {
     yesPrice = Number(outcomes[0]?.price ?? 0.5);
     noPrice = Number(outcomes[1]?.price ?? 0.5);
   }
+  const title = String(m.title || m.question || "");
+  const rawCat = String(m.category ?? "");
   return {
     id: String(m.id ?? m.slug ?? ""),
     platform: "myriad",
-    question: String(m.title || m.question || ""),
+    question: title,
     description: String(m.description ?? ""),
     image: String(m.imageUrl ?? m.image ?? ""),
     yes_price: yesPrice,
@@ -160,7 +171,7 @@ function normalizeMyriad(m: RawMarket): BotApiMarket {
     volume: Number(m.volume24h ?? m.volume ?? 0),
     liquidity: Number(m.liquidity ?? 0),
     endDate: String(m.expiresAt ?? m.closeTime ?? ""),
-    category: String(m.category ?? ""),
+    category: classifyCategory(title, rawCat),
     slug: String(m.slug ?? ""),
   };
 }
@@ -423,7 +434,7 @@ export function botMarketsToEvents(markets: BotApiMarket[]): PolymarketEvent[] {
       endDate: first.endDate || first.end_date || "",
       active: true,
       closed: false,
-      category: first.category ?? platform,
+      category: classifyCategory(eventTitle, first.category, eventId) || platform,
     });
   }
 
