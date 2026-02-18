@@ -85,7 +85,6 @@ export type MessageType =
   | "GET_BOT_MARKETS"
   | "SEARCH_BOT_MARKETS"
   | "GET_BOT_MARKET_DETAIL"
-  | "FETCH_KALSHI_MARKETS"
   // Portfolio / Positions
   | "GET_POSITIONS"
   | "GET_PNL_SUMMARY";

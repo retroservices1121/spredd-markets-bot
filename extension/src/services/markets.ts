@@ -2,13 +2,11 @@
  * Platform market fetchers.
  *
  * Polymarket → Gamma API (direct, public) — handled in polymarket.ts
- * Kalshi → DFlow API via background worker (bypasses CORS)
- * Opinion, Limitless, Myriad → Bot API via background worker (need API keys)
+ * Kalshi, Opinion, Limitless, Myriad → Bot API via background worker (API keys stay server-side)
  */
 
 import type { PolymarketEvent, MarketInfo, MarketOutcome, Platform } from "@/core/markets";
-import { getBotMarkets, searchBotMarkets, fetchKalshiMarketsViaBackground } from "@/lib/messaging";
-import type { DFlowMarketRaw } from "@/lib/messaging";
+import { getBotMarkets, searchBotMarkets } from "@/lib/messaging";
 
 // ── Shared helpers ──────────────────────────────────────────
 
@@ -58,50 +56,7 @@ function makeEvent(
   };
 }
 
-// ── Kalshi (via background worker → DFlow API) ──────────────
-
-function dflowToEvent(m: DFlowMarketRaw): PolymarketEvent {
-  const yesPrice = parseFloat(m.yesAsk ?? m.lastYesPrice ?? "") || 0.5;
-  const noPrice = parseFloat(m.noAsk ?? m.lastNoPrice ?? "") || 1 - yesPrice;
-  return makeEvent(
-    m.ticker,
-    "kalshi",
-    m.title || m.question || m.ticker,
-    yesPrice,
-    noPrice,
-    {
-      description: m.subtitle,
-      volume: m.volume,
-      liquidity: m.openInterest,
-      endDate: m.closeTime,
-    }
-  );
-}
-
-export async function fetchKalshiMarkets(limit = 20): Promise<PolymarketEvent[]> {
-  // Route through background worker to bypass CORS/403
-  const res = await fetchKalshiMarketsViaBackground({ limit: Math.min(limit * 2, 200) });
-  if (res.success && res.data) {
-    const markets = Array.isArray(res.data) ? res.data : [];
-    return markets.slice(0, limit).map(dflowToEvent);
-  }
-  throw new Error(res.error ?? "Failed to load Kalshi markets");
-}
-
-export async function searchKalshiMarkets(
-  query: string,
-  limit = 20
-): Promise<PolymarketEvent[]> {
-  // Background worker handles client-side filtering
-  const res = await fetchKalshiMarketsViaBackground({ limit: 200, query });
-  if (res.success && res.data) {
-    const markets = Array.isArray(res.data) ? res.data : [];
-    return markets.slice(0, limit).map(dflowToEvent);
-  }
-  throw new Error(res.error ?? "Failed to search Kalshi markets");
-}
-
-// ── Opinion, Limitless, Myriad (via Bot API — need API keys) ─
+// ── All non-Polymarket platforms (via Bot API — API keys stay server-side) ─
 
 async function fetchViaBotApi(
   platform: Platform,
@@ -139,7 +94,6 @@ export async function fetchPlatformMarkets(
 ): Promise<PolymarketEvent[]> {
   switch (platform) {
     case "kalshi":
-      return fetchKalshiMarkets(limit);
     case "opinion":
     case "limitless":
     case "myriad":
@@ -156,7 +110,6 @@ export async function searchPlatformMarkets(
 ): Promise<PolymarketEvent[]> {
   switch (platform) {
     case "kalshi":
-      return searchKalshiMarkets(query, limit);
     case "opinion":
     case "limitless":
     case "myriad":

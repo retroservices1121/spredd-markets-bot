@@ -367,52 +367,6 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
       }
     }
 
-    // ── Kalshi via DFlow (direct, no Bot API) ───────
-
-    case "FETCH_KALSHI_MARKETS": {
-      try {
-        const params = message.payload as { limit?: number; query?: string };
-        const limit = params?.limit ?? 40;
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 12000);
-        try {
-          const url = `https://c.prediction-markets-api.dflow.net/api/v1/markets?limit=${limit}&status=active`;
-          const res = await fetch(url, {
-            signal: controller.signal,
-            headers: { Accept: "application/json" },
-          });
-          if (!res.ok) {
-            return { success: false, error: `DFlow API ${res.status}` };
-          }
-          const data = await res.json();
-          let markets = data?.markets ?? data?.data ?? [];
-          // Client-side search filter
-          if (params?.query) {
-            const q = params.query.toLowerCase();
-            markets = markets.filter(
-              (m: { title?: string; question?: string; ticker?: string }) =>
-                (m.title || m.question || m.ticker || "")
-                  .toLowerCase()
-                  .includes(q)
-            );
-          }
-          return { success: true, data: markets };
-        } finally {
-          clearTimeout(timeout);
-        }
-      } catch (e) {
-        return {
-          success: false,
-          error:
-            e instanceof DOMException && e.name === "AbortError"
-              ? "Request timed out"
-              : e instanceof Error
-              ? e.message
-              : "Failed to load Kalshi markets",
-        };
-      }
-    }
-
     // ── Multi-platform markets via Bot API ────────
 
     case "GET_BOT_MARKETS": {
