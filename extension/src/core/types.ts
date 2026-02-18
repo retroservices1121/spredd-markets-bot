@@ -81,10 +81,13 @@ export type MessageType =
   | "GET_TRADE_QUOTE"
   | "EXECUTE_TRADE"
   | "CHECK_WALLET_LINKED"
-  // Multi-platform markets
+  // Multi-platform markets (via Bot API)
   | "GET_BOT_MARKETS"
   | "SEARCH_BOT_MARKETS"
   | "GET_BOT_MARKET_DETAIL"
+  // Direct platform market fetching (via background worker)
+  | "FETCH_PLATFORM_MARKETS"
+  | "SEARCH_PLATFORM_MARKETS"
   // Portfolio / Positions
   | "GET_POSITIONS"
   | "GET_PNL_SUMMARY";

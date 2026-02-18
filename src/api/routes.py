@@ -258,6 +258,42 @@ async def get_current_user_info(user: User = Depends(get_current_user)):
     )
 
 
+@router.get("/config/platform-keys")
+async def get_platform_keys(user: User = Depends(get_current_user)):
+    """Return platform API keys for direct market data fetching.
+
+    Keys are served to authenticated users so the extension can fetch
+    market data directly from each platform's API (faster than proxying
+    through the bot API).  Keys never appear in extension source code.
+    """
+    keys: dict[str, dict[str, str]] = {}
+    if settings.dflow_api_key:
+        keys["kalshi"] = {
+            "base_url": "https://c.prediction-markets-api.dflow.net",
+            "header": "x-api-key",
+            "key": settings.dflow_api_key,
+        }
+    if settings.opinion_api_key:
+        keys["opinion"] = {
+            "base_url": settings.opinion_api_url,
+            "header": "apikey",
+            "key": settings.opinion_api_key.strip(),
+        }
+    if settings.limitless_api_key:
+        keys["limitless"] = {
+            "base_url": settings.limitless_api_url,
+            "header": "X-API-Key",
+            "key": settings.limitless_api_key,
+        }
+    if settings.myriad_api_key:
+        keys["myriad"] = {
+            "base_url": settings.myriad_api_url,
+            "header": "x-api-key",
+            "key": settings.myriad_api_key,
+        }
+    return {"keys": keys}
+
+
 @router.post("/user/platform")
 async def set_active_platform(
     platform: str,

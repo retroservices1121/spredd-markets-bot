@@ -21,6 +21,15 @@ let DEFAULT_AUTO_LOCK_MINUTES = 15;
 // In-memory decrypted vault (cleared on lock or SW termination without session backup)
 let cachedVault: DecryptedVault | null = null;
 
+// Platform API keys (fetched from Bot API, never in source code)
+interface PlatformKeyConfig {
+  base_url: string;
+  header: string;
+  key: string;
+}
+let platformKeys: Record<string, PlatformKeyConfig> | null = null;
+let platformKeysLoading: Promise<void> | null = null;
+
 // ──────────────────────────────────────────
 // Session persistence (survives SW restarts)
 // ──────────────────────────────────────────
@@ -68,6 +77,7 @@ async function resetAutoLockAlarm(): Promise<void> {
 
 async function lockWallet(): Promise<void> {
   cachedVault = null;
+  platformKeys = null;
   await clearSession();
   await chrome.alarms.clear(ALARM_NAME);
 }
@@ -130,6 +140,154 @@ async function botApiFetch<T>(
     throw e;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+// ──────────────────────────────────────────
+// Platform API keys (fetched from Bot API on demand)
+// ──────────────────────────────────────────
+
+async function ensurePlatformKeys(): Promise<Record<string, PlatformKeyConfig>> {
+  if (platformKeys) return platformKeys;
+
+  // Avoid duplicate fetches
+  if (platformKeysLoading) {
+    await platformKeysLoading;
+    if (platformKeys) return platformKeys;
+  }
+
+  platformKeysLoading = (async () => {
+    try {
+      const data = await botApiFetch<{ keys: Record<string, PlatformKeyConfig> }>(
+        "/api/v1/config/platform-keys"
+      );
+      platformKeys = data.keys ?? {};
+    } catch {
+      platformKeys = {};
+    }
+  })();
+
+  await platformKeysLoading;
+  platformKeysLoading = null;
+  return platformKeys!;
+}
+
+/** Fetch JSON directly from a platform API using cached keys */
+async function platformFetch<T>(
+  platform: string,
+  path: string,
+  timeoutMs = 12000
+): Promise<T> {
+  const keys = await ensurePlatformKeys();
+  const config = keys[platform];
+  if (!config) throw new Error(`No API key for ${platform}`);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${config.base_url}${path}`, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        [config.header]: config.key,
+      },
+    });
+    if (!res.ok) throw new Error(`${platform} API ${res.status}`);
+    return res.json() as Promise<T>;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("Request timed out");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Platform-specific market fetchers
+
+interface RawPlatformMarket {
+  [key: string]: unknown;
+}
+
+async function fetchKalshiDirect(limit: number): Promise<RawPlatformMarket[]> {
+  const data = await platformFetch<{ markets?: RawPlatformMarket[]; data?: RawPlatformMarket[] }>(
+    "kalshi",
+    `/api/v1/markets?limit=${Math.min(limit * 2, 200)}&status=active`
+  );
+  return (data?.markets ?? data?.data ?? []).slice(0, limit);
+}
+
+async function fetchOpinionDirect(limit: number): Promise<RawPlatformMarket[]> {
+  const data = await platformFetch<{ result?: { list?: RawPlatformMarket[] } }>(
+    "opinion",
+    `/openapi/market?limit=${limit}&status=activated&sortBy=5`
+  );
+  return data?.result?.list ?? [];
+}
+
+async function fetchLimitlessDirect(limit: number): Promise<RawPlatformMarket[]> {
+  const data = await platformFetch<RawPlatformMarket[] | { data?: RawPlatformMarket[]; markets?: RawPlatformMarket[] }>(
+    "limitless",
+    `/markets/active?limit=${Math.min(limit, 25)}&page=1`
+  );
+  if (Array.isArray(data)) return data.slice(0, limit);
+  return (data?.data ?? data?.markets ?? []).slice(0, limit);
+}
+
+async function fetchMyriadDirect(limit: number): Promise<RawPlatformMarket[]> {
+  const data = await platformFetch<{ data?: RawPlatformMarket[] }>(
+    "myriad",
+    `/markets?limit=${limit}&state=open&sort=volume_24h&order=desc&network_id=2741`
+  );
+  return data?.data ?? [];
+}
+
+async function fetchPlatformDirect(platform: string, limit: number): Promise<RawPlatformMarket[]> {
+  switch (platform) {
+    case "kalshi": return fetchKalshiDirect(limit);
+    case "opinion": return fetchOpinionDirect(limit);
+    case "limitless": return fetchLimitlessDirect(limit);
+    case "myriad": return fetchMyriadDirect(limit);
+    default: throw new Error(`Unknown platform: ${platform}`);
+  }
+}
+
+async function searchPlatformDirect(platform: string, query: string, limit: number): Promise<RawPlatformMarket[]> {
+  switch (platform) {
+    case "kalshi": {
+      // DFlow has no search endpoint — fetch and filter client-side
+      const all = await fetchKalshiDirect(200);
+      const q = query.toLowerCase();
+      return all.filter((m) => {
+        const title = String(m.title || m.question || m.ticker || "");
+        return title.toLowerCase().includes(q);
+      }).slice(0, limit);
+    }
+    case "opinion": {
+      const data = await platformFetch<{ result?: { list?: RawPlatformMarket[] } }>(
+        "opinion",
+        `/openapi/market?keyword=${encodeURIComponent(query)}&limit=${limit}&status=activated`
+      );
+      return data?.result?.list ?? [];
+    }
+    case "limitless": {
+      const data = await platformFetch<RawPlatformMarket[] | { data?: RawPlatformMarket[] }>(
+        "limitless",
+        `/markets/search?query=${encodeURIComponent(query)}&limit=${limit}`
+      );
+      if (Array.isArray(data)) return data.slice(0, limit);
+      return (data?.data ?? []).slice(0, limit);
+    }
+    case "myriad": {
+      const data = await platformFetch<{ data?: RawPlatformMarket[] }>(
+        "myriad",
+        `/markets?keyword=${encodeURIComponent(query)}&limit=${limit}&network_id=2741`
+      );
+      return data?.data ?? [];
+    }
+    default: throw new Error(`Unknown platform: ${platform}`);
   }
 }
 
@@ -440,6 +598,49 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
         return {
           success: false,
           error: e instanceof Error ? e.message : "Failed to load market",
+        };
+      }
+    }
+
+    // ── Direct platform market fetching ────────────
+
+    case "FETCH_PLATFORM_MARKETS": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          platform: string;
+          limit?: number;
+        };
+        const markets = await fetchPlatformDirect(params.platform, params.limit ?? 20);
+        return { success: true, data: markets };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to load markets",
+        };
+      }
+    }
+
+    case "SEARCH_PLATFORM_MARKETS": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          platform: string;
+          query: string;
+          limit?: number;
+        };
+        const markets = await searchPlatformDirect(params.platform, params.query, params.limit ?? 20);
+        return { success: true, data: markets };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Search failed",
         };
       }
     }

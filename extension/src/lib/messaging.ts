@@ -116,6 +116,25 @@ export function getBotMarketDetail(params: {
   return sendMessage<BotApiMarket>("GET_BOT_MARKET_DETAIL", params);
 }
 
+// ── Direct platform market fetching (via background worker) ─
+
+/** Fetch markets directly from a platform's API (background worker has API keys) */
+export function fetchPlatformMarketsDirect(params: {
+  platform: string;
+  limit?: number;
+}) {
+  return sendMessage<Record<string, unknown>[]>("FETCH_PLATFORM_MARKETS", params);
+}
+
+/** Search markets directly from a platform's API */
+export function searchPlatformMarketsDirect(params: {
+  platform: string;
+  query: string;
+  limit?: number;
+}) {
+  return sendMessage<Record<string, unknown>[]>("SEARCH_PLATFORM_MARKETS", params);
+}
+
 // ── Portfolio / Positions ──────────────────────────────────
 
 /** Fetch user positions */

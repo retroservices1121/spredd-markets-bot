@@ -2,11 +2,17 @@
  * Platform market fetchers.
  *
  * Polymarket → Gamma API (direct, public) — handled in polymarket.ts
- * Kalshi, Opinion, Limitless, Myriad → Bot API via background worker (API keys stay server-side)
+ * All others → background worker fetches directly from each platform's API.
+ *              API keys are served by Bot API at unlock time, never in source code.
  */
 
 import type { PolymarketEvent, MarketInfo, MarketOutcome, Platform } from "@/core/markets";
-import { getBotMarkets, searchBotMarkets } from "@/lib/messaging";
+import {
+  getBotMarkets,
+  searchBotMarkets,
+  fetchPlatformMarketsDirect,
+  searchPlatformMarketsDirect,
+} from "@/lib/messaging";
 
 // ── Shared helpers ──────────────────────────────────────────
 
@@ -56,7 +62,163 @@ function makeEvent(
   };
 }
 
-// ── All non-Polymarket platforms (via Bot API — API keys stay server-side) ─
+// ── Raw response → BotApiMarket normalizers per platform ──────
+
+type RawMarket = Record<string, unknown>;
+
+function normalizeKalshi(m: RawMarket): BotApiMarket {
+  const yesPrice = parseFloat(String(m.yesAsk ?? m.lastYesPrice ?? "")) || 0.5;
+  return {
+    id: String(m.ticker ?? m.market_id ?? ""),
+    platform: "kalshi",
+    question: String(m.title || m.question || m.ticker || ""),
+    description: String(m.subtitle ?? ""),
+    yes_price: yesPrice,
+    no_price: parseFloat(String(m.noAsk ?? m.lastNoPrice ?? "")) || 1 - yesPrice,
+    volume: Number(m.volume ?? 0),
+    liquidity: Number(m.openInterest ?? 0),
+    endDate: String(m.closeTime ?? ""),
+    event_id: String(m.eventTicker ?? m.event_ticker ?? ""),
+    is_multi_outcome: false, // will be detected by grouping logic
+    outcome_name: String(m.yesSubtitle ?? m.subtitle ?? ""),
+  };
+}
+
+function normalizeOpinion(m: RawMarket): BotApiMarket {
+  const outcomes = m.outcomes as { name?: string; price?: number }[] | undefined;
+  let yesPrice = 0.5;
+  let noPrice = 0.5;
+  if (outcomes && outcomes.length >= 2) {
+    yesPrice = Number(outcomes[0]?.price ?? 0.5);
+    noPrice = Number(outcomes[1]?.price ?? 0.5);
+  }
+  return {
+    id: String(m.id ?? m.marketId ?? ""),
+    platform: "opinion",
+    question: String(m.question || m.title || ""),
+    description: String(m.description ?? ""),
+    image: String(m.image ?? m.icon ?? ""),
+    yes_price: yesPrice,
+    no_price: noPrice,
+    volume: Number(m.volume24h ?? m.volume ?? 0),
+    liquidity: Number(m.liquidity ?? 0),
+    endDate: String(m.endDate ?? m.closeTime ?? ""),
+    category: String(m.category ?? ""),
+  };
+}
+
+function normalizeLimitless(m: RawMarket): BotApiMarket {
+  const prices = m.prices as { yes?: number; no?: number } | undefined;
+  return {
+    id: String(m.id ?? m.address ?? ""),
+    platform: "limitless",
+    question: String(m.title || m.question || ""),
+    description: String(m.description ?? ""),
+    image: String(m.ogImageURI ?? m.imageUrl ?? m.image ?? ""),
+    yes_price: Number(prices?.yes ?? m.yesPrice ?? 0.5),
+    no_price: Number(prices?.no ?? m.noPrice ?? 0.5),
+    volume: Number(m.volumeFormatted ?? m.volume ?? 0),
+    liquidity: Number(m.liquidityFormatted ?? m.liquidity ?? 0),
+    endDate: String(m.deadline ?? m.expirationDate ?? ""),
+    category: String(m.category ?? ""),
+    event_id: String(m.negRiskMarketId ?? (m.group as Record<string, unknown> | undefined)?.id ?? ""),
+    is_multi_outcome: false,
+    outcome_name: String(m.outcomeName ?? ""),
+  };
+}
+
+function normalizeMyriad(m: RawMarket): BotApiMarket {
+  const outcomes = m.outcomes as { title?: string; price?: number }[] | undefined;
+  let yesPrice = 0.5;
+  let noPrice = 0.5;
+  if (outcomes && outcomes.length >= 2) {
+    yesPrice = Number(outcomes[0]?.price ?? 0.5);
+    noPrice = Number(outcomes[1]?.price ?? 0.5);
+  }
+  return {
+    id: String(m.id ?? m.slug ?? ""),
+    platform: "myriad",
+    question: String(m.title || m.question || ""),
+    description: String(m.description ?? ""),
+    image: String(m.imageUrl ?? m.image ?? ""),
+    yes_price: yesPrice,
+    no_price: noPrice,
+    volume: Number(m.volume24h ?? m.volume ?? 0),
+    liquidity: Number(m.liquidity ?? 0),
+    endDate: String(m.expiresAt ?? m.closeTime ?? ""),
+    category: String(m.category ?? ""),
+    slug: String(m.slug ?? ""),
+  };
+}
+
+function normalizeRawMarkets(platform: Platform, raw: RawMarket[]): BotApiMarket[] {
+  const normalizers: Partial<Record<Platform, (m: RawMarket) => BotApiMarket>> = {
+    kalshi: normalizeKalshi,
+    opinion: normalizeOpinion,
+    limitless: normalizeLimitless,
+    myriad: normalizeMyriad,
+  };
+  const normalizer = normalizers[platform];
+  if (!normalizer) return [];
+  return raw.map((m) => {
+    try { return normalizer(m); } catch { return null; }
+  }).filter((m): m is BotApiMarket => m !== null);
+}
+
+// ── Direct platform fetching (fast, background worker has keys) ─
+
+async function fetchDirect(
+  platform: Platform,
+  limit = 20
+): Promise<PolymarketEvent[]> {
+  const res = await fetchPlatformMarketsDirect({ platform, limit });
+  if (res.success && res.data) {
+    const raw = Array.isArray(res.data) ? res.data : [];
+    const normalized = normalizeRawMarkets(platform, raw);
+    // Detect multi-outcome groups for Kalshi/Limitless
+    detectMultiOutcome(normalized);
+    return botMarketsToEvents(normalized);
+  }
+  // Fall back to Bot API if direct fetch fails (e.g. no API key configured)
+  return fetchViaBotApi(platform, limit);
+}
+
+async function searchDirect(
+  platform: Platform,
+  query: string,
+  limit = 20
+): Promise<PolymarketEvent[]> {
+  const res = await searchPlatformMarketsDirect({ platform, query, limit });
+  if (res.success && res.data) {
+    const raw = Array.isArray(res.data) ? res.data : [];
+    const normalized = normalizeRawMarkets(platform, raw);
+    detectMultiOutcome(normalized);
+    return botMarketsToEvents(normalized);
+  }
+  return searchViaBotApi(platform, query, limit);
+}
+
+/** Detect multi-outcome events by grouping on event_id */
+function detectMultiOutcome(markets: BotApiMarket[]): void {
+  const groups = new Map<string, BotApiMarket[]>();
+  for (const m of markets) {
+    if (m.event_id) {
+      const g = groups.get(m.event_id);
+      if (g) g.push(m);
+      else groups.set(m.event_id, [m]);
+    }
+  }
+  for (const [, group] of groups) {
+    if (group.length > 1) {
+      for (const m of group) {
+        m.is_multi_outcome = true;
+        m.related_market_count = group.length;
+      }
+    }
+  }
+}
+
+// ── Bot API fallback ────────────────────────────────────────
 
 async function fetchViaBotApi(
   platform: Platform,
@@ -97,7 +259,7 @@ export async function fetchPlatformMarkets(
     case "opinion":
     case "limitless":
     case "myriad":
-      return fetchViaBotApi(platform, limit);
+      return fetchDirect(platform, limit);
     default:
       return [];
   }
@@ -113,7 +275,7 @@ export async function searchPlatformMarkets(
     case "opinion":
     case "limitless":
     case "myriad":
-      return searchViaBotApi(platform, query, limit);
+      return searchDirect(platform, query, limit);
     default:
       return [];
   }
