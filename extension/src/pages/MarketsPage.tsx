@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MarketSearch } from "@/components/markets/MarketSearch";
 import { MarketCard } from "@/components/markets/MarketCard";
 import { PlatformTabs, type PlatformFilter } from "@/components/markets/PlatformTabs";
+import { CategoryTabs } from "@/components/markets/CategoryTabs";
 import { useMarkets } from "@/hooks/useMarkets";
 import { RefreshCw, TrendingUp } from "lucide-react";
 
@@ -12,6 +13,7 @@ interface MarketsPageProps {
 
 export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
   const [platform, setPlatform] = useState<PlatformFilter>("polymarket");
+  const [category, setCategory] = useState<string>("all");
 
   const {
     events,
@@ -21,6 +23,23 @@ export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
     setSearchQuery,
     refresh,
   } = useMarkets(platform);
+
+  // Reset category when platform changes
+  useEffect(() => {
+    setCategory("all");
+  }, [platform]);
+
+  // Extract unique categories from events
+  const categories = useMemo(
+    () => [...new Set(events.map((e) => e.category).filter(Boolean))],
+    [events]
+  );
+
+  // Filter events by selected category
+  const filteredEvents = useMemo(
+    () => category === "all" ? events : events.filter((e) => e.category === category),
+    [events, category]
+  );
 
   return (
     <div className="p-4 space-y-3">
@@ -47,6 +66,11 @@ export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
       {/* Search */}
       <MarketSearch value={searchQuery} onChange={setSearchQuery} />
 
+      {/* Category tabs */}
+      {categories.length > 1 && (
+        <CategoryTabs categories={categories} selected={category} onChange={setCategory} />
+      )}
+
       {/* Error state */}
       {error && (
         <div className="text-sm text-spredd-red text-center py-4">
@@ -64,20 +88,21 @@ export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
       )}
 
       {/* Market list */}
-      {events.length > 0 && (
+      {filteredEvents.length > 0 && (
         <div className="space-y-2">
-          {events.map((event) => (
+          {filteredEvents.map((event) => (
             <MarketCard
               key={event.id}
               event={event}
               onClick={() => onSelectEvent(event.slug)}
+              showPlatform={platform === "all"}
             />
           ))}
         </div>
       )}
 
       {/* Empty state */}
-      {!loading && events.length === 0 && !error && (
+      {!loading && filteredEvents.length === 0 && !error && (
         <p className="text-sm text-muted-foreground text-center py-8">
           {searchQuery ? "No markets found" : "No active markets"}
         </p>

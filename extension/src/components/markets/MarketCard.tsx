@@ -1,13 +1,21 @@
-import type { PolymarketEvent } from "@/core/markets";
+import type { PolymarketEvent, Platform } from "@/core/markets";
+import { PLATFORMS } from "@/core/markets";
 import { PriceBar } from "./PriceBar";
 import { formatUSD } from "@/lib/utils";
 
 interface MarketCardProps {
   event: PolymarketEvent;
   onClick: () => void;
+  showPlatform?: boolean;
 }
 
-export function MarketCard({ event, onClick }: MarketCardProps) {
+/** Extract platform from slug format "platform/marketId" */
+function getPlatformMeta(slug: string) {
+  const prefix = slug.split("/")[0] as Platform;
+  return PLATFORMS.find((p) => p.id === prefix) ?? null;
+}
+
+export function MarketCard({ event, onClick, showPlatform }: MarketCardProps) {
   // Use the first market's outcomes for prices
   const market = event.markets[0];
   const yesPrice = market?.outcomes[0]?.price ?? 0.5;
@@ -40,6 +48,17 @@ export function MarketCard({ event, onClick }: MarketCardProps) {
             <span className="text-xs text-muted-foreground">
               Vol {formatUSD(event.volume)}
             </span>
+            {showPlatform && (() => {
+              const meta = getPlatformMeta(event.slug);
+              return meta ? (
+                <span
+                  className="text-xs px-1.5 py-0.5 rounded font-medium"
+                  style={{ background: `${meta.color}20`, color: meta.color }}
+                >
+                  {meta.label}
+                </span>
+              ) : null;
+            })()}
             {event.category && (
               <span className="text-xs px-1.5 py-0.5 rounded bg-secondary text-muted-foreground">
                 {event.category}

@@ -9,15 +9,16 @@ export interface PlatformMeta {
   label: string;
   chain: string;
   currency: string;
+  color: string;
 }
 
 /** All supported platforms with display info */
 export const PLATFORMS: PlatformMeta[] = [
-  { id: "polymarket", label: "Polymarket", chain: "Polygon", currency: "USDC.e" },
-  { id: "kalshi", label: "Kalshi", chain: "N/A", currency: "USD" },
-  { id: "opinion", label: "Opinion", chain: "Solana", currency: "USDC" },
-  { id: "limitless", label: "Limitless", chain: "Base", currency: "USDC" },
-  { id: "myriad", label: "Myriad", chain: "BSC", currency: "USDT" },
+  { id: "polymarket", label: "Polymarket", chain: "Polygon", currency: "USDC.e", color: "#6366f1" },
+  { id: "kalshi", label: "Kalshi", chain: "Solana", currency: "USDC", color: "#f59e0b" },
+  { id: "opinion", label: "Opinion", chain: "Solana", currency: "USDC", color: "#10b981" },
+  { id: "limitless", label: "Limitless", chain: "Base", currency: "USDC", color: "#3b82f6" },
+  { id: "myriad", label: "Myriad", chain: "BSC", currency: "USDT", color: "#8b5cf6" },
 ];
 
 /** A single outcome (Yes/No) within a market */

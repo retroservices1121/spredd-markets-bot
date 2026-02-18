@@ -34,7 +34,7 @@ function parsePlatformSlug(slug: string): { platform: Platform; slug: string } {
 function getCollateralNotice(platform: Platform): string {
   const meta = PLATFORMS.find((p) => p.id === platform);
   if (!meta) return "";
-  if (platform === "kalshi") return "Kalshi uses USD (regulated exchange)";
+  if (platform === "kalshi") return "Kalshi uses USDC on Solana (via DFlow)";
   return `${meta.label} uses ${meta.currency} on ${meta.chain}`;
 }
 
