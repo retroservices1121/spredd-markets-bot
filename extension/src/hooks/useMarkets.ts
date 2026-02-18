@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { PolymarketEvent } from "@/core/markets";
+import type { PolymarketEvent, Platform } from "@/core/markets";
 import { fetchEvents, searchEvents } from "@/services/polymarket";
-import { getBotMarkets, searchBotMarkets } from "@/lib/messaging";
-import { botMarketsToEvents } from "@/services/markets";
+import { fetchPlatformMarkets, searchPlatformMarkets } from "@/services/markets";
 import type { PlatformFilter } from "@/components/markets/PlatformTabs";
 
 interface UseMarketsReturn {
@@ -42,7 +41,7 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // "all" and "polymarket" use the fast Gamma API; others use Bot API
+  // "all" and "polymarket" use the Gamma API; others use direct platform APIs
   const useGammaApi = platform === "polymarket" || platform === "all";
 
   // Load initial/trending markets
@@ -53,7 +52,7 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
       setEvents(cached);
       setLoading(false);
       setError(null);
-      setHasMore(platform === "polymarket" || platform === "all");
+      setHasMore(useGammaApi);
       return;
     }
 
@@ -67,34 +66,16 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
         setHasMore(data.length === PAGE_SIZE);
         setCache(platform, data);
       } else {
-        const res = await getBotMarkets({
-          platform,
-          limit: PAGE_SIZE,
-          active: true,
-        });
-        if (res.success && res.data) {
-          const data = Array.isArray(res.data) ? res.data : [];
-          const converted = botMarketsToEvents(data);
-          setEvents(converted);
-          setHasMore(data.length === PAGE_SIZE);
-          setCache(platform, converted);
-        } else {
-          const msg = res.error ?? "Failed to load markets";
-          // Friendlier message for server errors
-          setError(
-            msg.includes("502") || msg.includes("503")
-              ? "Platform temporarily unavailable. Try again later."
-              : msg
-          );
-          setEvents([]);
-          setHasMore(false);
-        }
-        setOffset(PAGE_SIZE);
+        // Fetch directly from the platform's public API
+        const data = await fetchPlatformMarkets(platform as Platform, PAGE_SIZE);
+        setEvents(data);
+        setHasMore(false); // direct APIs don't paginate easily
+        setCache(platform, data);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load markets";
       setError(
-        msg.includes("502") || msg.includes("503")
+        msg.includes("timed out")
           ? "Platform temporarily unavailable. Try again later."
           : msg
       );
@@ -120,28 +101,18 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
           const data = await searchEvents(searchQuery.trim());
           setEvents(data);
         } else {
-          const res = await searchBotMarkets({
-            query: searchQuery.trim(),
-            platform,
-          });
-          if (res.success && res.data) {
-            const data = Array.isArray(res.data) ? res.data : [];
-            setEvents(botMarketsToEvents(data));
-          } else {
-            const msg = res.error ?? "Search failed";
-            setError(
-              msg.includes("502") || msg.includes("503")
-                ? "Platform temporarily unavailable. Try again later."
-                : msg
-            );
-            setEvents([]);
-          }
+          const data = await searchPlatformMarkets(
+            platform as Platform,
+            searchQuery.trim(),
+            PAGE_SIZE
+          );
+          setEvents(data);
         }
         setHasMore(false);
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Search failed";
         setError(
-          msg.includes("502") || msg.includes("503")
+          msg.includes("timed out")
             ? "Platform temporarily unavailable. Try again later."
             : msg
         );
@@ -174,7 +145,6 @@ export function useMarkets(platform: PlatformFilter = "all"): UseMarketsReturn {
   }, [searchQuery, loading, hasMore, offset, useGammaApi]);
 
   const refresh = useCallback(() => {
-    // Clear cache for this platform on manual refresh
     cache.delete(platform);
     setSearchQuery("");
     setOffset(0);
