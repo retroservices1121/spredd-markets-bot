@@ -85,25 +85,39 @@ function normalizeKalshi(m: RawMarket): BotApiMarket {
 }
 
 function normalizeOpinion(m: RawMarket): BotApiMarket {
-  const outcomes = m.outcomes as { name?: string; price?: number }[] | undefined;
+  // Opinion API uses "tokens" array with price per outcome
+  const tokens = m.tokens as { outcome?: string; index?: number; price?: number }[] | undefined;
   let yesPrice = 0.5;
   let noPrice = 0.5;
-  if (outcomes && outcomes.length >= 2) {
-    yesPrice = Number(outcomes[0]?.price ?? 0.5);
-    noPrice = Number(outcomes[1]?.price ?? 0.5);
+  if (tokens && tokens.length >= 2) {
+    for (const t of tokens) {
+      const outcome = String(t.outcome ?? "").toLowerCase();
+      if (outcome === "yes" || t.index === 0) yesPrice = Number(t.price ?? 0.5);
+      if (outcome === "no" || t.index === 1) noPrice = Number(t.price ?? 0.5);
+    }
+  } else {
+    yesPrice = Number(m.yesPrice ?? m.yes_price ?? 0.5);
+    noPrice = Number(m.noPrice ?? m.no_price ?? 0.5);
   }
+
+  // cutoffAt is a Unix timestamp
+  let endDate = "";
+  if (m.cutoffAt) {
+    try { endDate = new Date(Number(m.cutoffAt) * 1000).toISOString(); } catch { /* ignore */ }
+  }
+
   return {
-    id: String(m.id ?? m.marketId ?? ""),
+    id: String(m.marketId ?? m.market_id ?? m.id ?? ""),
     platform: "opinion",
-    question: String(m.question || m.title || ""),
-    description: String(m.description ?? ""),
+    question: String(m.marketTitle ?? m.market_title ?? m.title ?? ""),
+    description: String(m.rules ?? m.description ?? ""),
     image: String(m.image ?? m.icon ?? ""),
     yes_price: yesPrice,
     no_price: noPrice,
-    volume: Number(m.volume24h ?? m.volume ?? 0),
-    liquidity: Number(m.liquidity ?? 0),
-    endDate: String(m.endDate ?? m.closeTime ?? ""),
-    category: String(m.category ?? ""),
+    volume: Number(m.volume24h ?? m.volume_24h ?? m.volume ?? 0),
+    liquidity: Number(m.liquidity ?? m.openInterest ?? 0),
+    endDate,
+    category: String(m.category ?? m.topicType ?? ""),
   };
 }
 
