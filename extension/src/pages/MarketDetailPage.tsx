@@ -7,7 +7,7 @@ import { TradeConfirm } from "@/components/markets/TradeConfirm";
 import { TradeResult as TradeResultView } from "@/components/markets/TradeResult";
 import { useMarketDetail } from "@/hooks/useMarketDetail";
 import { useTrade } from "@/hooks/useTrade";
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { formatUSD } from "@/lib/utils";
 
 interface MarketDetailPageProps {
@@ -16,23 +16,15 @@ interface MarketDetailPageProps {
 }
 
 export function MarketDetailPage({ slug, onBack }: MarketDetailPageProps) {
-  const { event, orderbooks, loading, error } = useMarketDetail(slug);
+  const { event, loading, error } = useMarketDetail(slug);
   const [showConfirm, setShowConfirm] = useState(false);
   const [marketIndex, setMarketIndex] = useState(0);
 
   // Get the active market (first or selected)
   const market = event?.markets[marketIndex] ?? null;
 
-  const tokenIds = useMemo(() => {
-    if (!market) return null;
-    return {
-      yes: market.clobTokenIds[0],
-      no: market.clobTokenIds[1],
-    };
-  }, [market]);
-
-  // Pass conditionId as marketId for the Bot API
-  const trade = useTrade(tokenIds, orderbooks, market?.conditionId ?? null);
+  // Pass outcomes and conditionId to trade hook (bot API handles orderbooks server-side)
+  const trade = useTrade(market?.outcomes ?? null, market?.conditionId ?? null);
 
   const yesPrice = market?.outcomes[0]?.price ?? 0.5;
   const noPrice = market?.outcomes[1]?.price ?? 0.5;

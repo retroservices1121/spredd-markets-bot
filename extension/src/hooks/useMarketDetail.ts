@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
-import type { PolymarketEvent, Orderbook } from "@/core/markets";
-import { fetchEventBySlug, getOrderBook } from "@/services/polymarket";
+import type { PolymarketEvent } from "@/core/markets";
+import { fetchEventBySlug } from "@/services/polymarket";
 
 interface UseMarketDetailReturn {
   event: PolymarketEvent | null;
-  orderbooks: Record<string, Orderbook>;
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -12,7 +11,6 @@ interface UseMarketDetailReturn {
 
 export function useMarketDetail(slug: string | null): UseMarketDetailReturn {
   const [event, setEvent] = useState<PolymarketEvent | null>(null);
-  const [orderbooks, setOrderbooks] = useState<Record<string, Orderbook>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,27 +26,6 @@ export function useMarketDetail(slug: string | null): UseMarketDetailReturn {
         return;
       }
       setEvent(ev);
-
-      // Fetch orderbooks for all market outcomes in parallel
-      const books: Record<string, Orderbook> = {};
-      const tokenIds = ev.markets.flatMap((m) =>
-        m.outcomes.filter((o) => o.tokenId).map((o) => o.tokenId)
-      );
-
-      const results = await Promise.allSettled(
-        tokenIds.map(async (tid) => {
-          const ob = await getOrderBook(tid);
-          return { tid, ob };
-        })
-      );
-
-      for (const r of results) {
-        if (r.status === "fulfilled") {
-          books[r.value.tid] = r.value.ob;
-        }
-      }
-
-      setOrderbooks(books);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load market");
     } finally {
@@ -60,5 +37,5 @@ export function useMarketDetail(slug: string | null): UseMarketDetailReturn {
     load();
   }, [load]);
 
-  return { event, orderbooks, loading, error, refresh: load };
+  return { event, loading, error, refresh: load };
 }

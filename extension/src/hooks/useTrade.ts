@@ -4,11 +4,10 @@ import type {
   TradeResult,
   TradeSide,
   OutcomeSelection,
-  Orderbook,
+  MarketOutcome,
 } from "@/core/markets";
 import { calculateQuote } from "@/services/polymarket";
 import {
-  getTradeQuote,
   executeTrade,
   checkWalletLinked,
 } from "@/lib/messaging";
@@ -22,7 +21,7 @@ interface UseTradeReturn {
   amount: string;
   setAmount: (a: string) => void;
 
-  // Quote (client-side estimate from orderbook)
+  // Quote (client-side estimate from market prices)
   quote: TradeQuote | null;
 
   // Wallet link status
@@ -38,8 +37,7 @@ interface UseTradeReturn {
 }
 
 export function useTrade(
-  tokenIds: { yes: string; no: string } | null,
-  orderbooks: Record<string, Orderbook>,
+  outcomes: MarketOutcome[] | null,
   marketId: string | null
 ): UseTradeReturn {
   const [outcome, setOutcome] = useState<OutcomeSelection | null>(null);
@@ -70,18 +68,25 @@ export function useTrade(
     return () => { cancelled = true; };
   }, []);
 
-  // Calculate client-side quote from orderbook (for preview)
+  // Calculate client-side quote estimate from market prices
   const quote = useMemo(() => {
-    if (!outcome || !tokenIds) return null;
+    if (!outcome || !outcomes) return null;
     const amountNum = parseFloat(amount);
     if (!amountNum || amountNum <= 0) return null;
 
-    const tokenId = outcome === "yes" ? tokenIds.yes : tokenIds.no;
-    const ob = orderbooks[tokenId];
-    if (!ob) return null;
+    const selectedOutcome = outcome === "yes" ? outcomes[0] : outcomes[1];
+    if (!selectedOutcome) return null;
 
-    return calculateQuote(ob, tokenId, outcome, side, amountNum);
-  }, [outcome, tokenIds, amount, side, orderbooks]);
+    const emptyOrderbook = { bids: [], asks: [], midPrice: 0.5, spread: 0 };
+    return calculateQuote(
+      emptyOrderbook,
+      selectedOutcome.tokenId || marketId || "",
+      outcome,
+      side,
+      amountNum,
+      selectedOutcome.price
+    );
+  }, [outcome, outcomes, amount, side, marketId]);
 
   // Execute trade via Bot API
   const handleExecute = useCallback(async () => {
@@ -92,7 +97,6 @@ export function useTrade(
     setResult(null);
 
     try {
-      // Execute via Bot API (background worker signs auth headers)
       const res = await executeTrade({
         platform: "polymarket",
         marketId,
