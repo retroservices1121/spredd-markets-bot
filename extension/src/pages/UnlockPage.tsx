@@ -23,9 +23,7 @@ export function UnlockPage({ onUnlock, error }: UnlockPageProps) {
   return (
     <div className="flex flex-col items-center justify-center h-full p-6">
       {/* Logo */}
-      <div className="w-14 h-14 rounded-2xl bg-spredd-orange flex items-center justify-center mb-4">
-        <span className="text-xl font-bold text-white">S</span>
-      </div>
+      <img src="/icons/icon-128.png" alt="Spredd" className="w-14 h-14 rounded-2xl mb-4" />
 
       <h1 className="text-lg font-bold text-foreground mb-1">Welcome Back</h1>
       <p className="text-sm text-muted-foreground mb-6">

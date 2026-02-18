@@ -28,9 +28,7 @@ export function OnboardingPage({ onComplete }: OnboardingPageProps) {
   return (
     <div className="flex flex-col items-center justify-center h-full p-6 text-center">
       {/* Logo */}
-      <div className="w-16 h-16 rounded-2xl bg-spredd-orange flex items-center justify-center mb-4">
-        <span className="text-2xl font-bold text-white">S</span>
-      </div>
+      <img src="/icons/icon-128.png" alt="Spredd" className="w-16 h-16 rounded-2xl mb-4" />
 
       <h1 className="text-xl font-bold text-foreground mb-1">Spredd Wallet</h1>
       <p className="text-sm text-muted-foreground mb-8">
