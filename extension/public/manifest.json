@@ -7,10 +7,8 @@
   "host_permissions": [
     "https://spredd-markets-bot-production.up.railway.app/*",
     "https://gamma-api.polymarket.com/*",
-    "https://c.prediction-markets-api.dflow.net/*",
-    "https://proxy.opinion.trade:8443/*",
-    "https://myriad.markets/*",
-    "https://api.limitless.exchange/*"
+    "https://api.elections.kalshi.com/*",
+    "https://api-v2.myriadprotocol.com/*"
   ],
   "action": {
     "default_popup": "src/popup.html",
