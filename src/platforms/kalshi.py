@@ -304,7 +304,7 @@ class KalshiPlatform(BasePlatform):
 
         all_markets = []
         cursor = None
-        max_pages = 25  # Safety limit
+        max_pages = 5  # Cap at ~1000 markets to keep load times fast
 
         for page in range(max_pages):
             params = {"limit": 200, "status": "active"}
