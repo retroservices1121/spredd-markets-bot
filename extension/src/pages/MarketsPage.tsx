@@ -7,15 +7,16 @@ import { CategoryTabs } from "@/components/markets/CategoryTabs";
 import { useMarkets } from "@/hooks/useMarkets";
 import { RefreshCw, TrendingUp } from "lucide-react";
 
-/** Rapid-market detection: ends within 1 hour OR title contains short-timeframe keywords */
-const RAPID_TITLE_RE = /\b(5[\s-]?min|15[\s-]?min|30[\s-]?min|1[\s-]?hour|hourly)\b/i;
-const ONE_HOUR_MS = 60 * 60 * 1000;
+/** Rapid-market detection: ends within 2 hours OR title contains short-timeframe keywords */
+const RAPID_TITLE_RE =
+  /\b(5[\s-]?min|15[\s-]?min|30[\s-]?min|1[\s-]?hour|2[\s-]?hour|hourly|minute|quick|rapid|flash)\b/i;
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
 function isRapidMarket(event: { endDate: string; title: string }, now: number): boolean {
   if (RAPID_TITLE_RE.test(event.title)) return true;
   if (event.endDate) {
     const end = new Date(event.endDate).getTime();
-    if (end > now && end - now <= ONE_HOUR_MS) return true;
+    if (end > now && end - now <= TWO_HOURS_MS) return true;
   }
   return false;
 }
@@ -46,12 +47,9 @@ export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
   const categories = useMemo(() => {
     const apiCats = [...new Set(events.map((e) => e.category).filter(Boolean))];
     const synthetic: string[] = [];
-    // Add "Trending" if there are enough events to make it meaningful
+    // Always show Trending and Rapid — these are the hottest tabs
     if (events.length >= 5) synthetic.push("Trending");
-    // Add "Rapid" if any events qualify
-    const now = Date.now();
-    const hasRapid = events.some((e) => isRapidMarket(e, now));
-    if (hasRapid) synthetic.push("Rapid");
+    synthetic.push("Rapid");
     return [...synthetic, ...apiCats];
   }, [events]);
 
@@ -63,7 +61,14 @@ export function MarketsPage({ onSelectEvent }: MarketsPageProps) {
     }
     if (category === "Rapid") {
       const now = Date.now();
-      return events.filter((e) => isRapidMarket(e, now));
+      return events
+        .filter((e) => isRapidMarket(e, now))
+        .sort((a, b) => {
+          // Sort by soonest ending first
+          const aEnd = a.endDate ? new Date(a.endDate).getTime() : Infinity;
+          const bEnd = b.endDate ? new Date(b.endDate).getTime() : Infinity;
+          return aEnd - bEnd;
+        });
     }
     return events.filter((e) => e.category === category);
   }, [events, category]);
