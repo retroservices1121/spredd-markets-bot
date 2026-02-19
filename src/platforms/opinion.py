@@ -597,16 +597,22 @@ class OpinionPlatform(BasePlatform):
             data = await self._api_request("GET", f"/openapi/market/{market_id}")
 
             market_data = data.get("result", {}).get("data", data)
+            market = None
             if isinstance(market_data, dict) and market_data:
-                return self._parse_market(market_data)
+                market = self._parse_market(market_data)
+            else:
+                # Fallback: try with query param
+                data = await self._api_request("GET", "/openapi/market", params={"marketId": market_id})
+                market_data = data.get("result", {}).get("list", [])
+                if market_data:
+                    market = self._parse_market(market_data[0])
 
-            # Fallback: try with query param
-            data = await self._api_request("GET", "/openapi/market", params={"marketId": market_id})
-            market_data = data.get("result", {}).get("list", [])
-            if market_data:
-                return self._parse_market(market_data[0])
+            # Enrich with orderbook prices (API often omits prices, defaulting to 0.5)
+            if market:
+                enriched = await self._enrich_markets_with_orderbook_prices([market])
+                market = enriched[0] if enriched else market
 
-            return None
+            return market
 
         except PlatformError:
             return None
@@ -904,13 +910,23 @@ class OpinionPlatform(BasePlatform):
         market = await self.get_market(market_id)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.OPINION)
-        
+
         token_id = market.yes_token if outcome == Outcome.YES else market.no_token
         if not token_id:
             raise PlatformError(f"Token not found for {outcome.value}", Platform.OPINION)
-        
+
         # Get current price from orderbook
         orderbook = await self.get_orderbook(market_id, outcome)
+
+        # Update market prices from orderbook so displayed price matches
+        # execution price (avoids misleading "differs from mid-price" warning
+        # when _parse_market defaulted to 0.5)
+        if orderbook.best_ask and outcome == Outcome.YES:
+            market.yes_price = orderbook.best_ask
+            market.no_price = Decimal("1") - orderbook.best_ask
+        elif orderbook.best_ask and outcome == Outcome.NO:
+            market.no_price = orderbook.best_ask
+            market.yes_price = Decimal("1") - orderbook.best_ask
 
         # USDT on BSC
         usdt_address = "0x55d398326f99059fF775485246999027B3197955"
