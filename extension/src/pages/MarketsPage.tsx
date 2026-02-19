@@ -7,12 +7,22 @@ import { CategoryTabs } from "@/components/markets/CategoryTabs";
 import { useMarkets } from "@/hooks/useMarkets";
 import { RefreshCw, TrendingUp } from "lucide-react";
 
-/** Rapid-market detection: ends within 2 hours OR title contains short-timeframe keywords */
+/** Rapid-market detection: ticker pattern, title keywords, or ends within 2 hours */
 const RAPID_TITLE_RE =
   /\b(5[\s-]?min|15[\s-]?min|30[\s-]?min|1[\s-]?hour|2[\s-]?hour|hourly|minute|quick|rapid|flash)\b/i;
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
-function isRapidMarket(event: { endDate: string; title: string }, now: number): boolean {
+/**
+ * Kalshi rapid-market ticker prefixes:
+ *   15-minute: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M, KXDOGE15M
+ *   Hourly:    KXBTCD, KXETHD, KXSOLD, KXXRPD, KXDOGED
+ *   5-minute:  KXBTC5M, KXETH5M, KXSOL5M, etc.
+ */
+const RAPID_TICKER_RE =
+  /^kalshi\/(KX\w+(?:5M|15M|30M)|KXBTCD|KXETHD|KXSOLD|KXXRPD|KXDOGED)/i;
+
+function isRapidMarket(event: { endDate: string; title: string; slug: string }, now: number): boolean {
+  if (RAPID_TICKER_RE.test(event.slug)) return true;
   if (RAPID_TITLE_RE.test(event.title)) return true;
   if (event.endDate) {
     const end = new Date(event.endDate).getTime();
