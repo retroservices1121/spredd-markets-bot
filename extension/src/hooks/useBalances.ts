@@ -43,7 +43,13 @@ export function useBalances({
 
   const filteredBalances =
     selectedChain === "all"
-      ? balances
+      ? [...balances].sort((a, b) => {
+          const balA = parseFloat(a.formatted) || 0;
+          const balB = parseFloat(b.formatted) || 0;
+          // Sort by USD value first, then by raw balance for non-USD tokens
+          if (a.usdValue !== b.usdValue) return b.usdValue - a.usdValue;
+          return balB - balA;
+        })
       : balances.filter((b) => b.chainId === selectedChain);
 
   return { balances: filteredBalances, totalUsd, loading, refresh };
