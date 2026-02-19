@@ -25,16 +25,29 @@ function getEvmProvider(rpcUrl: string): JsonRpcProvider {
   return provider;
 }
 
-/** Raw Solana JSON-RPC call via fetch */
+const SOLANA_RPC_URLS = [
+  CHAINS.solana.rpcUrl,
+  "https://api.mainnet-beta.solana.com",
+];
+
+/** Raw Solana JSON-RPC call via fetch with fallback */
 async function solanaRpc(method: string, params: unknown[]): Promise<unknown> {
-  const res = await fetch(CHAINS.solana.rpcUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const json = await res.json();
-  if (json.error) throw new Error(json.error.message);
-  return json.result;
+  let lastError: Error | null = null;
+  for (const rpcUrl of SOLANA_RPC_URLS) {
+    try {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error.message);
+      return json.result;
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+    }
+  }
+  throw lastError ?? new Error("All Solana RPCs failed");
 }
 
 async function fetchEvmTokenBalance(

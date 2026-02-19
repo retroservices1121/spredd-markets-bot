@@ -160,7 +160,7 @@ export const CHAINS: Record<ChainId, ChainConfig> = {
     name: "Solana",
     family: "solana",
     chainId: 0,
-    rpcUrl: "https://rpc.ankr.com/solana",
+    rpcUrl: "https://solana-rpc.publicnode.com",
     explorerUrl: "https://solscan.io",
     nativeSymbol: "SOL",
     nativeDecimals: 9,
