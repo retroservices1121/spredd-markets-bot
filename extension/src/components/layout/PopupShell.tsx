@@ -21,7 +21,7 @@ export function PopupShell({
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <img src="/icons/icon-32.png" alt="Spredd" className="w-6 h-6 rounded-full" />
-          <span className="font-bold text-sm text-foreground">Spredd</span>
+          <span className="font-bold text-sm text-foreground">Spredd Markets</span>
         </div>
         <button
           onClick={onLock}

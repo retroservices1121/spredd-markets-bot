@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Spredd Wallet",
+  "name": "Spredd Markets",
   "version": "0.2.0",
   "description": "Non-custodial multi-chain wallet for prediction markets",
   "permissions": ["storage", "alarms"],

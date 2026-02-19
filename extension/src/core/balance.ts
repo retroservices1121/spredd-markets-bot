@@ -1,11 +1,10 @@
 /**
  * Multi-chain balance fetching.
  * EVM: ethers JsonRpcProvider for native + ERC20
- * Solana: Connection for SOL + SPL tokens
+ * Solana: raw JSON-RPC fetch (avoids @solana/web3.js Node.js polyfill issues)
  */
 
 import { JsonRpcProvider, Contract, formatUnits } from "ethers";
-import { Connection, PublicKey } from "@solana/web3.js";
 import { CHAINS, ALL_CHAIN_IDS, EVM_CHAIN_IDS } from "./chains";
 import type { ChainId, TokenBalance, TokenConfig } from "./types";
 
@@ -14,14 +13,8 @@ const ERC20_ABI = [
   "function balanceOf(address) view returns (uint256)",
 ];
 
-// SPL Token program
-const TOKEN_PROGRAM_ID = new PublicKey(
-  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-);
-
 // Provider cache
 const evmProviders = new Map<string, JsonRpcProvider>();
-let solanaConnection: Connection | null = null;
 
 function getEvmProvider(rpcUrl: string): JsonRpcProvider {
   let provider = evmProviders.get(rpcUrl);
@@ -32,11 +25,16 @@ function getEvmProvider(rpcUrl: string): JsonRpcProvider {
   return provider;
 }
 
-function getSolanaConnection(): Connection {
-  if (!solanaConnection) {
-    solanaConnection = new Connection(CHAINS.solana.rpcUrl, "confirmed");
-  }
-  return solanaConnection;
+/** Raw Solana JSON-RPC call via fetch */
+async function solanaRpc(method: string, params: unknown[]): Promise<unknown> {
+  const res = await fetch(CHAINS.solana.rpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message);
+  return json.result;
 }
 
 async function fetchEvmTokenBalance(
@@ -85,12 +83,14 @@ async function fetchSolanaBalances(
   solanaAddress: string
 ): Promise<TokenBalance[]> {
   const results: TokenBalance[] = [];
-  const connection = getSolanaConnection();
-  const pubkey = new PublicKey(solanaAddress);
 
   // Native SOL
   try {
-    const lamports = await connection.getBalance(pubkey);
+    const result = await solanaRpc("getBalance", [
+      solanaAddress,
+      { commitment: "confirmed" },
+    ]);
+    const lamports = (result as { value: number }).value;
     const solBalance = lamports / 1e9;
     results.push({
       chainId: "solana",
@@ -117,28 +117,30 @@ async function fetchSolanaBalances(
 
   // SPL USDC
   try {
-    const usdcMint = new PublicKey(CHAINS.solana.tokens[1].address);
-    const tokenAccounts = await connection.getTokenAccountsByOwner(pubkey, {
-      mint: usdcMint,
-    });
+    const usdcMint = CHAINS.solana.tokens[1].address;
+    const result = await solanaRpc("getTokenAccountsByOwner", [
+      solanaAddress,
+      { mint: usdcMint },
+      { encoding: "jsonParsed", commitment: "confirmed" },
+    ]);
 
-    let totalUsdc = 0n;
-    for (const { account } of tokenAccounts.value) {
-      // Token account data: first 64 bytes are mint + owner, next 8 bytes are amount (little-endian u64)
-      const data = account.data;
-      const amount = data.readBigUInt64LE(64);
-      totalUsdc += amount;
+    let totalUsdc = 0;
+    const accounts = (result as { value: Array<{
+      account: { data: { parsed: { info: { tokenAmount: { uiAmount: number } } } } }
+    }> }).value;
+
+    for (const entry of accounts) {
+      totalUsdc += entry.account.data.parsed.info.tokenAmount.uiAmount;
     }
 
-    const formatted = Number(totalUsdc) / 1e6;
     results.push({
       chainId: "solana",
       symbol: "USDC",
       name: "USD Coin",
-      balance: totalUsdc.toString(),
+      balance: Math.round(totalUsdc * 1e6).toString(),
       decimals: 6,
-      formatted: formatted.toString(),
-      usdValue: formatted,
+      formatted: totalUsdc.toString(),
+      usdValue: totalUsdc,
       isNative: false,
     });
   } catch {
