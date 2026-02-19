@@ -70,11 +70,19 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // Auto-detect mode based on chains
+  // Manual mode toggle
   const setMode = useCallback((m: SwapMode) => {
     setModeRaw(m);
     if (m === "swap") {
+      // Sync toChain to fromChain for same-chain swap
       setToChain(fromChain);
+    } else {
+      // Bridge: set toChain to polygon (default destination) if same as fromChain
+      if (fromChain === "polygon") {
+        setToChain("base" as ChainId);
+      } else {
+        setToChain("polygon");
+      }
     }
   }, [fromChain]);
 
@@ -84,15 +92,6 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
       setToChain(fromChain);
     }
   }, [fromChain, mode]);
-
-  // When chains diverge, auto-switch to bridge
-  useEffect(() => {
-    if (fromChain !== toChain && mode === "swap") {
-      setModeRaw("bridge");
-    } else if (fromChain === toChain && mode === "bridge") {
-      setModeRaw("swap");
-    }
-  }, [fromChain, toChain, mode]);
 
   // Fetch bridge chains on mount
   useEffect(() => {
