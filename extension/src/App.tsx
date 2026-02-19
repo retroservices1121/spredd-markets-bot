@@ -68,7 +68,7 @@ export default function App() {
         return <PortfolioPage />;
 
       case "settings":
-        return <SettingsPage onLock={lock} />;
+        return <SettingsPage onLock={lock} vault={vaultData} onVaultUpdated={refresh} />;
 
       default:
         return <WalletPage vault={vaultData} />;

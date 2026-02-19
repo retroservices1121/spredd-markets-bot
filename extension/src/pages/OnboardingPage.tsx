@@ -30,7 +30,7 @@ export function OnboardingPage({ onComplete }: OnboardingPageProps) {
       {/* Logo */}
       <img src="/icons/icon-128.png" alt="Spredd" className="w-16 h-16 rounded-2xl mb-4" />
 
-      <h1 className="text-xl font-bold text-foreground mb-1">Spredd Wallet</h1>
+      <h1 className="text-xl font-bold text-foreground mb-1">Spredd Markets</h1>
       <p className="text-sm text-muted-foreground mb-8">
         Your multi-chain wallet for prediction markets
       </p>

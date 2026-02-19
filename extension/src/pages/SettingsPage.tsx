@@ -1,13 +1,15 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Lock, Key, Loader2 } from "lucide-react";
+import { Lock, Key, Plus, Loader2 } from "lucide-react";
 import { getAutoLock, setAutoLock } from "@/lib/messaging";
-import { decryptVault } from "@/core/vault";
-import type { DecryptedVault } from "@/core/types";
+import { decryptVault, encryptVault } from "@/core/vault";
+import type { DecryptedVault, VaultMeta } from "@/core/types";
 
 interface SettingsPageProps {
   onLock: () => void;
+  vault?: DecryptedVault | null;
+  onVaultUpdated?: () => void;
 }
 
 const TIMEOUT_OPTIONS = [
@@ -17,13 +19,23 @@ const TIMEOUT_OPTIONS = [
   { label: "60 min", value: 60 },
 ];
 
-export function SettingsPage({ onLock }: SettingsPageProps) {
+export function SettingsPage({ onLock, vault, onVaultUpdated }: SettingsPageProps) {
   const [autoLockMinutes, setAutoLockMinutes] = useState(15);
   const [showExport, setShowExport] = useState(false);
   const [exportPassword, setExportPassword] = useState("");
   const [exportData, setExportData] = useState<string | null>(null);
   const [exportError, setExportError] = useState("");
   const [exportLoading, setExportLoading] = useState(false);
+
+  // Import key state
+  const [showImportKey, setShowImportKey] = useState<"evm" | "solana" | null>(null);
+  const [importKeyValue, setImportKeyValue] = useState("");
+  const [importPassword, setImportPassword] = useState("");
+  const [importError, setImportError] = useState("");
+  const [importLoading, setImportLoading] = useState(false);
+
+  const missingEvm = vault && !vault.evmAddress;
+  const missingSolana = vault && !vault.solanaAddress;
 
   useEffect(() => {
     getAutoLock().then((res) => {
@@ -48,12 +60,12 @@ export function SettingsPage({ onLock }: SettingsPageProps) {
         return;
       }
       const json = await decryptVault(result.vault_encrypted, exportPassword);
-      const vault = JSON.parse(json) as DecryptedVault;
-      if (vault.mnemonic) {
-        setExportData(vault.mnemonic);
+      const v = JSON.parse(json) as DecryptedVault;
+      if (v.mnemonic) {
+        setExportData(v.mnemonic);
       } else {
         setExportData(
-          vault.evmPrivateKey || vault.solanaPrivateKey || "No keys found"
+          v.evmPrivateKey || v.solanaPrivateKey || "No keys found"
         );
       }
     } catch {
@@ -63,8 +75,153 @@ export function SettingsPage({ onLock }: SettingsPageProps) {
     }
   }
 
+  async function handleImportKey() {
+    if (!showImportKey) return;
+    setImportLoading(true);
+    setImportError("");
+
+    try {
+      // Decrypt existing vault
+      const stored = await chrome.storage.local.get("vault_encrypted");
+      if (!stored.vault_encrypted) {
+        setImportError("No vault found");
+        return;
+      }
+      const json = await decryptVault(stored.vault_encrypted, importPassword);
+      const existing = JSON.parse(json) as DecryptedVault;
+
+      const keyTrimmed = importKeyValue.trim();
+
+      if (showImportKey === "evm") {
+        if (!/^(0x)?[0-9a-fA-F]{64}$/.test(keyTrimmed)) {
+          setImportError("Invalid EVM private key");
+          return;
+        }
+        const { Wallet } = await import("ethers");
+        const wallet = new Wallet(
+          keyTrimmed.startsWith("0x") ? keyTrimmed : `0x${keyTrimmed}`
+        );
+        existing.evmPrivateKey = wallet.privateKey;
+        existing.evmAddress = wallet.address;
+      } else {
+        if (!/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(keyTrimmed)) {
+          setImportError("Invalid Solana private key");
+          return;
+        }
+        const { Keypair } = await import("@solana/web3.js");
+        const bs58 = (await import("bs58")).default;
+        const decoded = bs58.decode(keyTrimmed);
+        const keypair = Keypair.fromSecretKey(decoded);
+        existing.solanaPrivateKey = bs58.encode(keypair.secretKey);
+        existing.solanaAddress = keypair.publicKey.toBase58();
+      }
+
+      // Re-encrypt and store
+      const encrypted = await encryptVault(JSON.stringify(existing), importPassword);
+      const meta: VaultMeta = {
+        version: 1,
+        createdAt: Date.now(),
+        evmAddress: existing.evmAddress,
+        solanaAddress: existing.solanaAddress,
+      };
+      await chrome.storage.local.set({
+        vault_encrypted: encrypted,
+        vault_meta: meta,
+      });
+
+      // Re-unlock with updated vault
+      await chrome.runtime.sendMessage({
+        type: "UNLOCK_VAULT",
+        payload: { password: importPassword },
+      });
+
+      setShowImportKey(null);
+      setImportKeyValue("");
+      setImportPassword("");
+      onVaultUpdated?.();
+    } catch {
+      setImportError("Wrong password or invalid key");
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
   return (
     <div className="p-4 space-y-6">
+      {/* Import missing key */}
+      {(missingEvm || missingSolana) && (
+        <div>
+          <h3 className="text-sm font-medium text-foreground mb-2">
+            Add Wallet
+          </h3>
+          {showImportKey ? (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Import {showImportKey === "evm" ? "EVM" : "Solana"} private key
+              </p>
+              <input
+                value={importKeyValue}
+                onChange={(e) => { setImportKeyValue(e.target.value); setImportError(""); }}
+                placeholder={showImportKey === "evm" ? "0x... (hex private key)" : "Base58-encoded key"}
+                className="w-full px-3 py-2 rounded-lg bg-secondary border border-input text-xs font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                autoFocus
+              />
+              <Input
+                type="password"
+                value={importPassword}
+                onChange={(e) => { setImportPassword(e.target.value); setImportError(""); }}
+                placeholder="Enter wallet password to confirm"
+              />
+              {importError && <p className="text-xs text-spredd-red">{importError}</p>}
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  disabled={!importKeyValue.trim() || !importPassword || importLoading}
+                  onClick={handleImportKey}
+                >
+                  {importLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Import"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setShowImportKey(null);
+                    setImportKeyValue("");
+                    setImportPassword("");
+                    setImportError("");
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {missingSolana && (
+                <Button
+                  variant="secondary"
+                  className="w-full justify-start"
+                  onClick={() => setShowImportKey("solana")}
+                >
+                  <Plus className="w-4 h-4" />
+                  Import Solana Key
+                </Button>
+              )}
+              {missingEvm && (
+                <Button
+                  variant="secondary"
+                  className="w-full justify-start"
+                  onClick={() => setShowImportKey("evm")}
+                >
+                  <Plus className="w-4 h-4" />
+                  Import EVM Key
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Auto-lock timeout */}
       <div>
         <h3 className="text-sm font-medium text-foreground mb-2">
@@ -174,7 +331,7 @@ export function SettingsPage({ onLock }: SettingsPageProps) {
 
       {/* Version */}
       <div className="text-center">
-        <p className="text-xs text-muted-foreground">Spredd Wallet v0.1.0</p>
+        <p className="text-xs text-muted-foreground">Spredd Markets v0.2.0</p>
       </div>
     </div>
   );

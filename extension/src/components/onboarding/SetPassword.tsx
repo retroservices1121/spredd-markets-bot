@@ -8,6 +8,9 @@ import type { DecryptedVault, VaultMeta } from "@/core/types";
 
 interface SetPasswordProps {
   mnemonic: string | null;
+  evmPrivateKey?: string;
+  solanaPrivateKey?: string;
+  /** @deprecated Use evmPrivateKey/solanaPrivateKey instead */
   privateKey?: string;
   onComplete: () => void;
   onBack: () => void;
@@ -15,6 +18,8 @@ interface SetPasswordProps {
 
 export function SetPassword({
   mnemonic,
+  evmPrivateKey,
+  solanaPrivateKey,
   privateKey,
   onComplete,
   onBack,
@@ -42,36 +47,56 @@ export function SetPassword({
 
       if (mnemonic) {
         vault = await deriveKeysFromMnemonic(mnemonic);
-      } else if (privateKey) {
-        // Determine key type
-        const isEvmKey = /^(0x)?[0-9a-fA-F]{64}$/.test(privateKey);
-        if (isEvmKey) {
-          const { Wallet } = await import("ethers");
-          const wallet = new Wallet(
-            privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`
-          );
-          vault = {
-            mnemonic: null,
-            evmPrivateKey: wallet.privateKey,
-            solanaPrivateKey: "",
-            evmAddress: wallet.address,
-            solanaAddress: "",
-          };
-        } else {
+      } else {
+        // Handle separate EVM and Solana keys
+        const evm = evmPrivateKey || privateKey;
+        const sol = solanaPrivateKey;
+
+        let evmAddr = "";
+        let evmPk = "";
+        let solAddr = "";
+        let solPk = "";
+
+        if (evm) {
+          const isEvmKey = /^(0x)?[0-9a-fA-F]{64}$/.test(evm);
+          if (isEvmKey) {
+            const { Wallet } = await import("ethers");
+            const wallet = new Wallet(
+              evm.startsWith("0x") ? evm : `0x${evm}`
+            );
+            evmPk = wallet.privateKey;
+            evmAddr = wallet.address;
+          } else if (!sol) {
+            // Legacy: single key that's Solana
+            const { Keypair } = await import("@solana/web3.js");
+            const bs58 = (await import("bs58")).default;
+            const decoded = bs58.decode(evm);
+            const keypair = Keypair.fromSecretKey(decoded);
+            solPk = bs58.encode(keypair.secretKey);
+            solAddr = keypair.publicKey.toBase58();
+          }
+        }
+
+        if (sol) {
           const { Keypair } = await import("@solana/web3.js");
           const bs58 = (await import("bs58")).default;
-          const decoded = bs58.decode(privateKey);
+          const decoded = bs58.decode(sol);
           const keypair = Keypair.fromSecretKey(decoded);
-          vault = {
-            mnemonic: null,
-            evmPrivateKey: "",
-            solanaPrivateKey: bs58.encode(keypair.secretKey),
-            evmAddress: "",
-            solanaAddress: keypair.publicKey.toBase58(),
-          };
+          solPk = bs58.encode(keypair.secretKey);
+          solAddr = keypair.publicKey.toBase58();
         }
-      } else {
-        throw new Error("No mnemonic or private key provided");
+
+        if (!evmAddr && !solAddr) {
+          throw new Error("No valid keys provided");
+        }
+
+        vault = {
+          mnemonic: null,
+          evmPrivateKey: evmPk,
+          solanaPrivateKey: solPk,
+          evmAddress: evmAddr,
+          solanaAddress: solAddr,
+        };
       }
 
       // Encrypt and store
