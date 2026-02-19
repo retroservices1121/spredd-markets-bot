@@ -716,6 +716,7 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
         const params = message.payload as {
           source_chain: string;
           amount: string;
+          dest_chain?: string;
         };
         const data = await botApiFetch("/api/v1/bridge/quote", {
           method: "POST",
@@ -741,6 +742,7 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
           source_chain: string;
           amount: string;
           mode: string;
+          dest_chain?: string;
         };
         const data = await botApiFetch("/api/v1/bridge/execute", {
           method: "POST",
@@ -766,6 +768,8 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
           chain: string;
           from_token: string;
           from_decimals: number;
+          to_token?: string;
+          to_decimals?: number;
           amount: string;
         };
         const data = await botApiFetch("/api/v1/swap/quote", {
@@ -792,6 +796,8 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
           chain: string;
           from_token: string;
           from_decimals: number;
+          to_token?: string;
+          to_decimals?: number;
           amount: string;
         };
         const data = await botApiFetch("/api/v1/swap/execute", {

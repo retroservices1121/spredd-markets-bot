@@ -1110,6 +1110,7 @@ class BridgeQuoteRequest(BaseModel):
     """Bridge quote request."""
     source_chain: str
     amount: str
+    dest_chain: str = "polygon"
 
 
 class BridgeQuoteResponse(BaseModel):
@@ -1126,6 +1127,7 @@ class BridgeExecuteRequest(BaseModel):
     source_chain: str
     amount: str
     mode: str = "fast"  # "fast" or "standard"
+    dest_chain: str = "polygon"
 
 
 class BridgeExecuteResponse(BaseModel):
@@ -1167,13 +1169,12 @@ async def get_bridge_chains(
 
     chains = []
     for chain, balance in balances.items():
-        if chain != BridgeChain.POLYGON:  # Polygon is destination, not source
-            chains.append({
-                "id": chain.value,
-                "name": chain.value.title(),
-                "balance": str(balance),
-                "has_balance": balance > Decimal("1"),  # Minimum $1 to bridge
-            })
+        chains.append({
+            "id": chain.value,
+            "name": chain.value.title(),
+            "balance": str(balance),
+            "has_balance": balance > Decimal("1"),  # Minimum $1 to bridge
+        })
 
     return {
         "chains": chains,
@@ -1188,7 +1189,7 @@ async def get_bridge_quote(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """Get a quote for bridging USDC to Polygon."""
+    """Get a quote for bridging USDC to another chain."""
     from ..services.bridge import bridge_service, BridgeChain
 
     # Initialize bridge service if needed
@@ -1199,6 +1200,11 @@ async def get_bridge_quote(
         source_chain = BridgeChain(request.source_chain.lower())
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid source chain: {request.source_chain}")
+
+    try:
+        dest_chain = BridgeChain(request.dest_chain.lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid dest chain: {request.dest_chain}")
 
     amount = Decimal(str(request.amount))
 
@@ -1225,14 +1231,14 @@ async def get_bridge_quote(
     # Get fast bridge quote
     fast_quote = bridge_service.get_fast_bridge_quote(
         source_chain,
-        BridgeChain.POLYGON,
+        dest_chain,
         amount,
         wallet.public_key
     )
 
     return BridgeQuoteResponse(
         source_chain=source_chain.value,
-        dest_chain="polygon",
+        dest_chain=dest_chain.value,
         amount=str(amount),
         fast_bridge={
             "output_amount": str(fast_quote.output_amount),
@@ -1258,7 +1264,7 @@ async def execute_bridge(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """Execute a bridge transfer to Polygon."""
+    """Execute a bridge transfer."""
     import asyncio
     from ..services.bridge import bridge_service, BridgeChain
     from ..utils.encryption import decrypt
@@ -1271,6 +1277,11 @@ async def execute_bridge(
         source_chain = BridgeChain(request.source_chain.lower())
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid source chain: {request.source_chain}")
+
+    try:
+        dest_chain = BridgeChain(request.dest_chain.lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid dest chain: {request.dest_chain}")
 
     amount = Decimal(str(request.amount))
 
@@ -1300,7 +1311,7 @@ async def execute_bridge(
             bridge_service.bridge_usdc_fast,
             private_key,
             source_chain,
-            BridgeChain.POLYGON,
+            dest_chain,
             amount,
         )
     else:
@@ -1308,7 +1319,7 @@ async def execute_bridge(
             bridge_service.bridge_usdc,
             private_key,
             source_chain,
-            BridgeChain.POLYGON,
+            dest_chain,
             amount,
         )
 
@@ -1316,10 +1327,10 @@ async def execute_bridge(
         return BridgeExecuteResponse(
             success=True,
             source_chain=source_chain.value,
-            dest_chain="polygon",
+            dest_chain=dest_chain.value,
             amount=str(bridge_result.amount),
             tx_hash=bridge_result.burn_tx_hash,
-            message=f"Bridge successful! USDC will arrive on Polygon shortly.",
+            message=f"Bridge successful! USDC will arrive on {dest_chain.value.title()} shortly.",
         )
     else:
         raise HTTPException(
@@ -1337,6 +1348,8 @@ class SwapQuoteRequest(BaseModel):
     chain: str
     from_token: str = "native"  # "native" or token contract address
     from_decimals: int = 18
+    to_token: str = "native"  # "native" means default USDC, or token contract address
+    to_decimals: int = 6
     amount: str  # Amount in whole units (e.g. "0.5" for 0.5 ETH)
 
 
@@ -1344,6 +1357,7 @@ class SwapQuoteResponse(BaseModel):
     """Swap quote response."""
     chain: str
     from_token: str
+    to_token: str = ""
     amount: str
     output_amount: str
     fee_amount: str
@@ -1359,6 +1373,8 @@ class SwapExecuteRequest(BaseModel):
     chain: str
     from_token: str = "native"
     from_decimals: int = 18
+    to_token: str = "native"
+    to_decimals: int = 6
     amount: str
 
 
@@ -1389,9 +1405,6 @@ async def get_swap_quote(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid chain: {request.chain}")
 
-    if not bridge_service.supports_swap(chain):
-        raise HTTPException(status_code=400, detail=f"Swap not supported on {request.chain}")
-
     amount = Decimal(str(request.amount))
 
     # Get user's EVM wallet
@@ -1409,6 +1422,9 @@ async def get_swap_quote(
     # Determine from_token address
     from_token = NATIVE_TOKEN if request.from_token == "native" else request.from_token
 
+    # Determine to_token: "native" means default (USDC), otherwise use provided address
+    to_token_addr = None if request.to_token == "native" else request.to_token
+
     # Get swap quote
     quote = bridge_service.get_swap_quote(
         chain,
@@ -1416,11 +1432,14 @@ async def get_swap_quote(
         wallet.public_key,
         from_token=from_token,
         from_decimals=request.from_decimals,
+        to_token=to_token_addr,
+        to_decimals=request.to_decimals,
     )
 
     return SwapQuoteResponse(
         chain=chain.value,
         from_token=request.from_token,
+        to_token=request.to_token,
         amount=str(amount),
         output_amount=str(quote.output_amount),
         fee_amount=str(quote.fee_amount),
@@ -1477,6 +1496,9 @@ async def execute_swap(
     # Determine from_token address
     from_token = NATIVE_TOKEN if request.from_token == "native" else request.from_token
 
+    # Determine to_token: "native" means default (USDC), otherwise use provided address
+    to_token_addr = None if request.to_token == "native" else request.to_token
+
     # Execute swap in thread pool (blocking operation)
     swap_result = await asyncio.to_thread(
         bridge_service.execute_swap,
@@ -1486,6 +1508,8 @@ async def execute_swap(
         None,  # No progress callback
         from_token,
         request.from_decimals,
+        to_token_addr,
+        request.to_decimals,
     )
 
     if swap_result.success:

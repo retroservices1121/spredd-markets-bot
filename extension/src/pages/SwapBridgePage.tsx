@@ -165,22 +165,17 @@ export function SwapBridgePage({ initialMode, onBack }: SwapBridgePageProps) {
         <div className="flex gap-2">
           {swap.mode === "bridge" ? (
             <>
-              <div className="flex-1">
-                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
-                  Chain
-                </label>
-                <div className="w-full px-3 py-2 rounded-lg bg-secondary text-sm text-muted-foreground">
-                  Polygon
-                </div>
-              </div>
-              <div className="flex-1">
-                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
-                  Token
-                </label>
-                <div className="w-full px-3 py-2 rounded-lg bg-secondary text-sm text-muted-foreground">
-                  USDC
-                </div>
-              </div>
+              <SwapChainSelect
+                label="Chain"
+                selected={swap.toChain}
+                onChange={swap.setToChain}
+                excludeChain={swap.fromChain}
+              />
+              <SwapTokenSelect
+                chainId={swap.toChain}
+                selected={swap.toToken}
+                onChange={swap.setToToken}
+              />
             </>
           ) : (
             <>
@@ -192,14 +187,11 @@ export function SwapBridgePage({ initialMode, onBack }: SwapBridgePageProps) {
                   {swap.fromChain.charAt(0).toUpperCase() + swap.fromChain.slice(1)}
                 </div>
               </div>
-              <div className="flex-1">
-                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1 block">
-                  Token
-                </label>
-                <div className="w-full px-3 py-2 rounded-lg bg-secondary text-sm text-muted-foreground">
-                  USDC
-                </div>
-              </div>
+              <SwapTokenSelect
+                chainId={swap.fromChain}
+                selected={swap.toToken}
+                onChange={swap.setToToken}
+              />
             </>
           )}
         </div>

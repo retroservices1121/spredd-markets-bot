@@ -2353,9 +2353,11 @@ class BridgeService:
         wallet_address: str,
         from_token: str = NATIVE_TOKEN,
         from_decimals: int = 18,
+        to_token: str = None,
+        to_decimals: int = 6,
     ) -> LiFiBridgeQuote:
         """
-        Get quote for swapping a token to USDC on the same chain.
+        Get quote for swapping a token to another token on the same chain.
 
         Args:
             chain: Chain to swap on
@@ -2363,10 +2365,13 @@ class BridgeService:
             wallet_address: User's wallet address
             from_token: Token address to swap from (default: native token)
             from_decimals: Decimals for the from_token (default: 18)
+            to_token: Token address to swap to (default: USDC on the chain)
+            to_decimals: Decimals for the to_token (default: 6)
         """
         import httpx
 
-        if chain not in SWAP_SUPPORTED_CHAINS:
+        # Only check SWAP_SUPPORTED_CHAINS when using default USDC output
+        if to_token is None and chain not in SWAP_SUPPORTED_CHAINS:
             return LiFiBridgeQuote(
                 input_amount=native_amount,
                 output_amount=Decimal(0),
@@ -2381,23 +2386,27 @@ class BridgeService:
             chain_id = LIFI_CHAIN_IDS[chain]
             amount_raw = int(native_amount * Decimal(10**from_decimals))
 
-            # Get USDC address for output
-            to_token = LIFI_USDC.get(chain)
-            if not to_token:
-                return LiFiBridgeQuote(
-                    input_amount=native_amount,
-                    output_amount=Decimal(0),
-                    fee_amount=Decimal(0),
-                    fee_percent=0,
-                    estimated_time_seconds=0,
-                    tool_name="",
-                    error=f"USDC not configured for {chain.value}"
-                )
+            if to_token is not None:
+                # Custom output token — use provided address and decimals directly
+                pass
+            else:
+                # Default: swap to USDC (or USDT on BSC)
+                to_token = LIFI_USDC.get(chain)
+                if not to_token:
+                    return LiFiBridgeQuote(
+                        input_amount=native_amount,
+                        output_amount=Decimal(0),
+                        fee_amount=Decimal(0),
+                        fee_percent=0,
+                        estimated_time_seconds=0,
+                        tool_name="",
+                        error=f"USDC not configured for {chain.value}"
+                    )
 
-            # Use BSC USDT if on BSC
-            to_decimals = 18 if chain == BridgeChain.BSC else 6
-            if chain == BridgeChain.BSC:
-                to_token = LIFI_USDT_BSC
+                # Use BSC USDT if on BSC
+                to_decimals = 18 if chain == BridgeChain.BSC else 6
+                if chain == BridgeChain.BSC:
+                    to_token = LIFI_USDT_BSC
 
             url = "https://li.quest/v1/quote"
             params = {
@@ -2461,7 +2470,11 @@ class BridgeService:
                         if info["address"].lower() == from_token.lower() and info["chain"] == chain:
                             input_symbol = info["symbol"]
                             break
-                out_symbol = "USDT" if chain == BridgeChain.BSC else "USDC"
+                # Determine output symbol
+                action = data.get("action", {})
+                out_symbol = action.get("toToken", {}).get("symbol", "")
+                if not out_symbol:
+                    out_symbol = "USDT" if chain == BridgeChain.BSC else "USDC"
 
                 logger.info(
                     "Swap quote received",
@@ -2501,9 +2514,11 @@ class BridgeService:
         progress_callback: ProgressCallback = None,
         from_token: str = NATIVE_TOKEN,
         from_decimals: int = 18,
+        to_token: str = None,
+        to_decimals: int = 6,
     ) -> BridgeResult:
         """
-        Execute a token → USDC swap on the same chain.
+        Execute a token swap on the same chain.
 
         Args:
             private_key: EVM account for signing
@@ -2512,6 +2527,8 @@ class BridgeService:
             progress_callback: Optional progress callback
             from_token: Token address to swap from (default: native token)
             from_decimals: Decimals for the from_token (default: 18)
+            to_token: Token address to swap to (default: USDC on the chain)
+            to_decimals: Decimals for the to_token (default: 6)
         """
         import httpx
 
@@ -2532,7 +2549,7 @@ class BridgeService:
                 progress_callback("💱 Getting swap quote...", 0, 60)
 
             # Get quote
-            quote = self.get_swap_quote(chain, native_amount, wallet, from_token=from_token, from_decimals=from_decimals)
+            quote = self.get_swap_quote(chain, native_amount, wallet, from_token=from_token, from_decimals=from_decimals, to_token=to_token, to_decimals=to_decimals)
             if quote.error:
                 return BridgeResult(
                     success=False,

@@ -29,6 +29,8 @@ interface UseSwapReturn {
   setToChain: (c: ChainId) => void;
   fromToken: TokenConfig | null;
   setFromToken: (t: TokenConfig | null) => void;
+  toToken: TokenConfig | null;
+  setToToken: (t: TokenConfig | null) => void;
   amount: string;
   setAmount: (a: string) => void;
   bridgeSpeed: "fast" | "standard";
@@ -55,6 +57,7 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
   const [fromChain, setFromChain] = useState<ChainId>("polygon");
   const [toChain, setToChain] = useState<ChainId>("polygon");
   const [fromToken, setFromToken] = useState<TokenConfig | null>(null);
+  const [toToken, setToToken] = useState<TokenConfig | null>(null);
   const [amount, setAmount] = useState("");
   const [bridgeSpeed, setBridgeSpeed] = useState<"fast" | "standard">("fast");
 
@@ -102,7 +105,7 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
     });
   }, []);
 
-  // Set default from token when chain changes
+  // Set default from token when fromChain changes
   useEffect(() => {
     const chainConfig = CHAINS[fromChain];
     if (chainConfig && chainConfig.tokens.length > 0) {
@@ -111,6 +114,16 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
       setFromToken(native || chainConfig.tokens[0]);
     }
   }, [fromChain]);
+
+  // Set default to token when toChain changes
+  useEffect(() => {
+    const chainConfig = CHAINS[toChain];
+    if (chainConfig && chainConfig.tokens.length > 0) {
+      // Default to USDC on the target chain
+      const usdc = chainConfig.tokens.find((t) => t.symbol.toUpperCase().includes("USDC"));
+      setToToken(usdc || chainConfig.tokens[0]);
+    }
+  }, [toChain]);
 
   // Debounced quote fetch
   useEffect(() => {
@@ -123,16 +136,21 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
     if (!amountNum || amountNum <= 0) return;
 
     if (mode === "swap" && !fromToken) return;
+    if (mode === "swap" && !toToken) return;
 
     setQuoteLoading(true);
 
     debounceRef.current = setTimeout(async () => {
       try {
         if (mode === "swap") {
+          // Determine to_token for the API: "native" means default USDC
+          const toTokenAddr = toToken?.isNative ? "native" : toToken?.address || "native";
           const res = await getSwapQuote({
             chain: fromChain,
             from_token: fromToken?.isNative ? "native" : fromToken?.address || "native",
             from_decimals: fromToken?.decimals || 18,
+            to_token: toTokenAddr,
+            to_decimals: toToken?.decimals || 6,
             amount: amount,
           });
 
@@ -154,7 +172,7 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
             fromChain,
             toChain: fromChain,
             fromToken: fromToken?.symbol || "TOKEN",
-            toToken: "USDC",
+            toToken: toToken?.symbol || "USDC",
             inputAmount: amount,
             outputAmount: d.output_amount,
             feeAmount: d.fee_amount,
@@ -168,6 +186,7 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
           const res = await getBridgeQuote({
             source_chain: fromChain,
             amount: amount,
+            dest_chain: toChain,
           });
 
           if (!res.success || !res.data) {
@@ -192,9 +211,9 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
           setQuote({
             mode: "bridge",
             fromChain,
-            toChain: "polygon",
+            toChain,
             fromToken: "USDC",
-            toToken: "USDC",
+            toToken: toToken?.symbol || "USDC",
             inputAmount: amount,
             outputAmount: selected.output_amount,
             feeAmount: selected.fee_amount,
@@ -215,7 +234,7 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [mode, fromChain, toChain, fromToken, amount, bridgeSpeed]);
+  }, [mode, fromChain, toChain, fromToken, toToken, amount, bridgeSpeed]);
 
   // Execute swap or bridge
   const handleExecute = useCallback(async () => {
@@ -227,10 +246,13 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
 
     try {
       if (mode === "swap") {
+        const toTokenAddr = toToken?.isNative ? "native" : toToken?.address || "native";
         const res = await executeSwap({
           chain: fromChain,
           from_token: fromToken?.isNative ? "native" : fromToken?.address || "native",
           from_decimals: fromToken?.decimals || 18,
+          to_token: toTokenAddr,
+          to_decimals: toToken?.decimals || 6,
           amount,
         });
 
@@ -246,6 +268,7 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
           source_chain: fromChain,
           amount,
           mode: bridgeSpeed,
+          dest_chain: toChain,
         });
 
         if (!res.success) {
@@ -263,7 +286,7 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
     } finally {
       setExecuting(false);
     }
-  }, [quote, mode, fromChain, fromToken, amount, bridgeSpeed]);
+  }, [quote, mode, fromChain, fromToken, toToken, toChain, amount, bridgeSpeed]);
 
   const reset = useCallback(() => {
     setAmount("");
@@ -282,6 +305,8 @@ export function useSwap(initialMode: SwapMode = "swap"): UseSwapReturn {
     setToChain,
     fromToken,
     setFromToken,
+    toToken,
+    setToToken,
     amount,
     setAmount,
     bridgeSpeed,

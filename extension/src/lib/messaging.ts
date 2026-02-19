@@ -153,30 +153,35 @@ export function getPnlSummary(params?: { platform?: string }) {
 
 // ── Swap & Bridge ─────────────────────────────────────────
 
-/** Get a swap quote (same-chain token → USDC) */
+/** Get a swap quote (same-chain token → token) */
 export function getSwapQuote(params: {
   chain: string;
   from_token: string;
   from_decimals: number;
+  to_token?: string;
+  to_decimals?: number;
   amount: string;
 }) {
   return sendMessage<SwapQuoteData>("GET_SWAP_QUOTE", params);
 }
 
-/** Execute a swap (same-chain token → USDC) */
+/** Execute a swap (same-chain token → token) */
 export function executeSwap(params: {
   chain: string;
   from_token: string;
   from_decimals: number;
+  to_token?: string;
+  to_decimals?: number;
   amount: string;
 }) {
   return sendMessage<SwapBridgeResult>("EXECUTE_SWAP", params);
 }
 
-/** Get a bridge quote (cross-chain USDC → USDC) */
+/** Get a bridge quote (cross-chain) */
 export function getBridgeQuote(params: {
   source_chain: string;
   amount: string;
+  dest_chain?: string;
 }) {
   return sendMessage<BridgeQuoteData>("GET_BRIDGE_QUOTE", params);
 }
@@ -186,6 +191,7 @@ export function executeBridge(params: {
   source_chain: string;
   amount: string;
   mode: string;
+  dest_chain?: string;
 }) {
   return sendMessage<SwapBridgeResult>("EXECUTE_BRIDGE", params);
 }

@@ -8,6 +8,7 @@ export type SwapMode = "swap" | "bridge";
 export interface SwapQuoteData {
   chain: string;
   from_token: string;
+  to_token: string;
   amount: string;
   output_amount: string;
   fee_amount: string;

@@ -9,6 +9,7 @@ interface SwapChainSelectProps {
   selected: ChainId;
   onChange: (chain: ChainId) => void;
   disabled?: boolean;
+  excludeChain?: ChainId;
 }
 
 export function SwapChainSelect({
@@ -16,6 +17,7 @@ export function SwapChainSelect({
   selected,
   onChange,
   disabled,
+  excludeChain,
 }: SwapChainSelectProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -55,7 +57,7 @@ export function SwapChainSelect({
 
       {open && (
         <div className="absolute top-full left-0 mt-1 w-full bg-popover border border-border rounded-lg shadow-xl z-50 overflow-hidden max-h-48 overflow-y-auto">
-          {ALL_CHAIN_IDS.map((id) => {
+          {ALL_CHAIN_IDS.filter((id) => id !== excludeChain).map((id) => {
             const c = CHAINS[id];
             return (
               <button
