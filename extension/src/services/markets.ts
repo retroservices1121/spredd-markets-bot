@@ -281,6 +281,10 @@ export async function fetchPlatformMarkets(
 ): Promise<PolymarketEvent[]> {
   switch (platform) {
     case "kalshi":
+      // Kalshi uses the backend API (cache-warmed every 60s with guaranteed
+      // rapid markets) instead of direct DFlow pagination which is slow and
+      // may miss 15-min/5-min/hourly markets buried deep in the list.
+      return fetchViaBotApi(platform, Math.max(limit, 200));
     case "opinion":
     case "limitless":
     case "myriad":
@@ -297,6 +301,8 @@ export async function searchPlatformMarkets(
 ): Promise<PolymarketEvent[]> {
   switch (platform) {
     case "kalshi":
+      // Use backend API search for Kalshi (has full market cache)
+      return searchViaBotApi(platform, query, limit);
     case "opinion":
     case "limitless":
     case "myriad":

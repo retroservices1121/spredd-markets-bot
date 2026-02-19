@@ -579,8 +579,16 @@ async def get_all_markets(
         except Exception as e:
             print(f"Error fetching {plat} markets: {e}")
 
-    # Sort by volume
-    results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
+    # Sort: boost Kalshi rapid markets to the top so they survive limit truncation,
+    # then sort the rest by volume.
+    if platform and platform.lower() == "kalshi":
+        rapid = [r for r in results if _is_rapid_market(r["id"])]
+        regular = [r for r in results if not _is_rapid_market(r["id"])]
+        rapid.sort(key=lambda x: x.get("endDate") or "9999", reverse=False)
+        regular.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
+        results = rapid + regular
+    else:
+        results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
 
     # Update cache
     _markets_cache[cache_key] = (now, results)
@@ -615,6 +623,19 @@ _WARM_INTERVAL = 60  # seconds between background refreshes
 _cache_warmer_task: asyncio.Task | None = None
 
 _ALL_PLATFORMS = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
+
+
+_RAPID_PREFIXES = (
+    "KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M",
+    "KXBTC5M", "KXETH5M", "KXSOL5M", "KXXRP5M", "KXDOGE5M",
+    "KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXDOGED",
+)
+
+
+def _is_rapid_market(market_id: str) -> bool:
+    """Check if a Kalshi market is a rapid (5-min, 15-min, hourly) market."""
+    t = (market_id or "").upper()
+    return any(t.startswith(p) for p in _RAPID_PREFIXES)
 
 
 async def _warm_markets_cache() -> None:
@@ -663,6 +684,19 @@ async def _warm_markets_cache() -> None:
                     "outcome_name": m.outcome_name,
                     "related_market_count": m.related_market_count,
                 })
+
+            # For Kalshi: boost rapid markets (5-min, 15-min, hourly) to the
+            # top so they survive any limit truncation. They're sorted by
+            # soonest ending first, then the rest by volume.
+            if plat == "kalshi":
+                rapid = [r for r in results if _is_rapid_market(r["id"])]
+                regular = [r for r in results if not _is_rapid_market(r["id"])]
+                rapid.sort(key=lambda x: x.get("endDate") or "9999", reverse=False)
+                regular.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
+                results = rapid + regular
+                print(f"[CacheWarmer] Kalshi: {len(rapid)} rapid + {len(regular)} regular markets")
+            else:
+                results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
 
             now = time.time()
             _markets_cache[(plat, True)] = (now, results)
