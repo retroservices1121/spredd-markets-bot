@@ -1,3 +1,4 @@
+import { ArrowLeftRight, ArrowUpDown } from "lucide-react";
 import { ChainSelector } from "@/components/wallet/ChainSelector";
 import { AddressBanner } from "@/components/wallet/AddressBanner";
 import { BalanceCard } from "@/components/wallet/BalanceCard";
@@ -9,9 +10,11 @@ import type { DecryptedVault } from "@/core/types";
 
 interface WalletPageProps {
   vault: DecryptedVault;
+  onOpenSwap?: () => void;
+  onOpenBridge?: () => void;
 }
 
-export function WalletPage({ vault }: WalletPageProps) {
+export function WalletPage({ vault, onOpenSwap, onOpenBridge }: WalletPageProps) {
   const { selected, selectChain } = useChain();
   const { balances, totalUsd, loading, refresh } = useBalances({
     evmAddress: vault.evmAddress,
@@ -38,6 +41,24 @@ export function WalletPage({ vault }: WalletPageProps) {
 
       {/* Balance card */}
       <BalanceCard totalUsd={totalUsd} loading={loading} onRefresh={refresh} />
+
+      {/* Swap & Bridge buttons */}
+      <div className="flex gap-3">
+        <button
+          onClick={onOpenSwap}
+          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-secondary hover:bg-secondary/80 transition-colors text-sm font-medium"
+        >
+          <ArrowLeftRight className="w-4 h-4 text-spredd-orange" />
+          Swap
+        </button>
+        <button
+          onClick={onOpenBridge}
+          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-secondary hover:bg-secondary/80 transition-colors text-sm font-medium"
+        >
+          <ArrowUpDown className="w-4 h-4 text-spredd-orange" />
+          Bridge
+        </button>
+      </div>
 
       {/* Token list */}
       <div>

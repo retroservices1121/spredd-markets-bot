@@ -1329,6 +1329,181 @@ async def execute_bridge(
 
 
 # ===================
+# Swap Endpoints
+# ===================
+
+class SwapQuoteRequest(BaseModel):
+    """Swap quote request."""
+    chain: str
+    from_token: str = "native"  # "native" or token contract address
+    from_decimals: int = 18
+    amount: str  # Amount in whole units (e.g. "0.5" for 0.5 ETH)
+
+
+class SwapQuoteResponse(BaseModel):
+    """Swap quote response."""
+    chain: str
+    from_token: str
+    amount: str
+    output_amount: str
+    fee_amount: str
+    fee_percent: float
+    estimated_time: str
+    tool_name: str
+    available: bool
+    error: Optional[str] = None
+
+
+class SwapExecuteRequest(BaseModel):
+    """Swap execution request."""
+    chain: str
+    from_token: str = "native"
+    from_decimals: int = 18
+    amount: str
+
+
+class SwapExecuteResponse(BaseModel):
+    """Swap execution response."""
+    success: bool
+    chain: str
+    amount: str
+    tx_hash: Optional[str] = None
+    message: str
+
+
+@router.post("/swap/quote", response_model=SwapQuoteResponse)
+async def get_swap_quote(
+    request: SwapQuoteRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """Get a quote for swapping a token to USDC on the same chain."""
+    from ..services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN
+
+    # Initialize bridge service if needed
+    if not bridge_service._initialized:
+        bridge_service.initialize()
+
+    try:
+        chain = BridgeChain(request.chain.lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid chain: {request.chain}")
+
+    if not bridge_service.supports_swap(chain):
+        raise HTTPException(status_code=400, detail=f"Swap not supported on {request.chain}")
+
+    amount = Decimal(str(request.amount))
+
+    # Get user's EVM wallet
+    result = await session.execute(
+        select(Wallet).where(
+            Wallet.user_id == user.id,
+            Wallet.chain_family == ChainFamily.EVM
+        )
+    )
+    wallet = result.scalar_one_or_none()
+
+    if not wallet:
+        raise HTTPException(status_code=400, detail="EVM wallet not found")
+
+    # Determine from_token address
+    from_token = NATIVE_TOKEN if request.from_token == "native" else request.from_token
+
+    # Get swap quote
+    quote = bridge_service.get_swap_quote(
+        chain,
+        amount,
+        wallet.public_key,
+        from_token=from_token,
+        from_decimals=request.from_decimals,
+    )
+
+    return SwapQuoteResponse(
+        chain=chain.value,
+        from_token=request.from_token,
+        amount=str(amount),
+        output_amount=str(quote.output_amount),
+        fee_amount=str(quote.fee_amount),
+        fee_percent=quote.fee_percent,
+        estimated_time=f"~{quote.estimated_time_seconds}s" if quote.estimated_time_seconds else "~30s",
+        tool_name=quote.tool_name or "DEX",
+        available=quote.error is None,
+        error=quote.error,
+    )
+
+
+@router.post("/swap/execute", response_model=SwapExecuteResponse)
+async def execute_swap(
+    request: SwapExecuteRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """Execute a token swap to USDC on the same chain."""
+    import asyncio
+    from ..services.bridge import bridge_service, BridgeChain, NATIVE_TOKEN
+    from ..utils.encryption import decrypt
+
+    # Initialize bridge service if needed
+    if not bridge_service._initialized:
+        bridge_service.initialize()
+
+    try:
+        chain = BridgeChain(request.chain.lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid chain: {request.chain}")
+
+    amount = Decimal(str(request.amount))
+
+    # Get user's EVM wallet
+    result = await session.execute(
+        select(Wallet).where(
+            Wallet.user_id == user.id,
+            Wallet.chain_family == ChainFamily.EVM
+        )
+    )
+    wallet = result.scalar_one_or_none()
+
+    if not wallet:
+        raise HTTPException(status_code=400, detail="EVM wallet not found")
+
+    # Decrypt private key
+    private_key = decrypt(
+        wallet.encrypted_private_key,
+        settings.encryption_key,
+        user.telegram_id,
+        "",  # No PIN required
+    )
+
+    # Determine from_token address
+    from_token = NATIVE_TOKEN if request.from_token == "native" else request.from_token
+
+    # Execute swap in thread pool (blocking operation)
+    swap_result = await asyncio.to_thread(
+        bridge_service.execute_swap,
+        private_key,
+        chain,
+        amount,
+        None,  # No progress callback
+        from_token,
+        request.from_decimals,
+    )
+
+    if swap_result.success:
+        return SwapExecuteResponse(
+            success=True,
+            chain=chain.value,
+            amount=str(swap_result.amount),
+            tx_hash=swap_result.burn_tx_hash,
+            message="Swap successful!",
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=swap_result.error_message or "Swap failed"
+        )
+
+
+# ===================
 # Position Endpoints
 # ===================
 

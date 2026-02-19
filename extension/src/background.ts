@@ -689,6 +689,125 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
       }
     }
 
+    // ── Swap & Bridge ──────────────────────────────
+
+    case "GET_BRIDGE_CHAINS": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const data = await botApiFetch("/api/v1/bridge/chains");
+        return { success: true, data };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to load chains",
+        };
+      }
+    }
+
+    case "GET_BRIDGE_QUOTE": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          source_chain: string;
+          amount: string;
+        };
+        const data = await botApiFetch("/api/v1/bridge/quote", {
+          method: "POST",
+          body: params,
+          timeoutMs: 30000,
+        });
+        return { success: true, data };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Bridge quote failed",
+        };
+      }
+    }
+
+    case "EXECUTE_BRIDGE": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          source_chain: string;
+          amount: string;
+          mode: string;
+        };
+        const data = await botApiFetch("/api/v1/bridge/execute", {
+          method: "POST",
+          body: params,
+          timeoutMs: 120000,
+        });
+        return { success: true, data };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Bridge failed",
+        };
+      }
+    }
+
+    case "GET_SWAP_QUOTE": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          chain: string;
+          from_token: string;
+          from_decimals: number;
+          amount: string;
+        };
+        const data = await botApiFetch("/api/v1/swap/quote", {
+          method: "POST",
+          body: params,
+          timeoutMs: 30000,
+        });
+        return { success: true, data };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Swap quote failed",
+        };
+      }
+    }
+
+    case "EXECUTE_SWAP": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const params = message.payload as {
+          chain: string;
+          from_token: string;
+          from_decimals: number;
+          amount: string;
+        };
+        const data = await botApiFetch("/api/v1/swap/execute", {
+          method: "POST",
+          body: params,
+          timeoutMs: 60000,
+        });
+        return { success: true, data };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Swap failed",
+        };
+      }
+    }
+
     default:
       return { success: false, error: "Unknown message type" };
   }

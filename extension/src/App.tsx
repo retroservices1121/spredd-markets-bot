@@ -9,12 +9,15 @@ import { SettingsPage } from "@/pages/SettingsPage";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { PortfolioPage } from "@/pages/PortfolioPage";
+import { SwapBridgePage } from "@/pages/SwapBridgePage";
 import { Loader2 } from "lucide-react";
+import type { SwapMode } from "@/core/swap";
 
 export default function App() {
   const { state, vaultData, error, unlock, lock, refresh } = useVault();
   const [activeTab, setActiveTab] = useState<TabId>("wallet");
   const [selectedEventSlug, setSelectedEventSlug] = useState<string | null>(null);
+  const [walletSubPage, setWalletSubPage] = useState<SwapMode | null>(null);
 
   // Loading state
   if (state === "loading") {
@@ -47,7 +50,22 @@ export default function App() {
   const renderContent = () => {
     switch (activeTab) {
       case "wallet":
-        return <WalletPage vault={vaultData} />;
+        if (walletSubPage) {
+          return (
+            <SwapBridgePage
+              vault={vaultData}
+              initialMode={walletSubPage}
+              onBack={() => setWalletSubPage(null)}
+            />
+          );
+        }
+        return (
+          <WalletPage
+            vault={vaultData}
+            onOpenSwap={() => setWalletSubPage("swap")}
+            onOpenBridge={() => setWalletSubPage("bridge")}
+          />
+        );
 
       case "markets":
         if (selectedEventSlug) {
@@ -75,10 +93,13 @@ export default function App() {
     }
   };
 
-  // Clear detail view when switching away from markets tab
+  // Clear detail views when switching tabs
   const handleTabChange = (tab: TabId) => {
     if (tab !== "markets") {
       setSelectedEventSlug(null);
+    }
+    if (tab !== "wallet") {
+      setWalletSubPage(null);
     }
     setActiveTab(tab);
   };

@@ -5,6 +5,7 @@
 import type { Message, MessageResponse, MessageType } from "@/core/types";
 import type { BotQuoteResponse, BotOrderResponse, Position, PnlSummaryData } from "@/core/markets";
 import type { BotApiMarket } from "@/services/markets";
+import type { SwapQuoteData, BridgeQuoteData, BridgeChainsResponse, SwapBridgeResult } from "@/core/swap";
 
 /**
  * Send a typed message to the background service worker and await a response.
@@ -148,4 +149,48 @@ export function getPositions(params?: {
 /** Fetch PnL summary */
 export function getPnlSummary(params?: { platform?: string }) {
   return sendMessage<PnlSummaryData>("GET_PNL_SUMMARY", params);
+}
+
+// ── Swap & Bridge ─────────────────────────────────────────
+
+/** Get a swap quote (same-chain token → USDC) */
+export function getSwapQuote(params: {
+  chain: string;
+  from_token: string;
+  from_decimals: number;
+  amount: string;
+}) {
+  return sendMessage<SwapQuoteData>("GET_SWAP_QUOTE", params);
+}
+
+/** Execute a swap (same-chain token → USDC) */
+export function executeSwap(params: {
+  chain: string;
+  from_token: string;
+  from_decimals: number;
+  amount: string;
+}) {
+  return sendMessage<SwapBridgeResult>("EXECUTE_SWAP", params);
+}
+
+/** Get a bridge quote (cross-chain USDC → USDC) */
+export function getBridgeQuote(params: {
+  source_chain: string;
+  amount: string;
+}) {
+  return sendMessage<BridgeQuoteData>("GET_BRIDGE_QUOTE", params);
+}
+
+/** Execute a bridge transfer */
+export function executeBridge(params: {
+  source_chain: string;
+  amount: string;
+  mode: string;
+}) {
+  return sendMessage<SwapBridgeResult>("EXECUTE_BRIDGE", params);
+}
+
+/** Get available bridge source chains with balances */
+export function getBridgeChains() {
+  return sendMessage<BridgeChainsResponse>("GET_BRIDGE_CHAINS");
 }

@@ -91,7 +91,13 @@ export type MessageType =
   | "SEARCH_PLATFORM_MARKETS"
   // Portfolio / Positions
   | "GET_POSITIONS"
-  | "GET_PNL_SUMMARY";
+  | "GET_PNL_SUMMARY"
+  // Swap & Bridge
+  | "GET_SWAP_QUOTE"
+  | "EXECUTE_SWAP"
+  | "GET_BRIDGE_QUOTE"
+  | "EXECUTE_BRIDGE"
+  | "GET_BRIDGE_CHAINS";
 
 export interface Message {
   type: MessageType;
