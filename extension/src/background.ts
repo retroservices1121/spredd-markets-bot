@@ -211,12 +211,79 @@ interface RawPlatformMarket {
   [key: string]: unknown;
 }
 
-async function fetchKalshiDirect(limit: number): Promise<RawPlatformMarket[]> {
-  const data = await platformFetch<{ markets?: RawPlatformMarket[]; data?: RawPlatformMarket[] }>(
-    "kalshi",
-    `/api/v1/markets?limit=${Math.min(limit * 2, 200)}&status=active`
-  );
-  return (data?.markets ?? data?.data ?? []).slice(0, limit);
+/**
+ * Fetch Kalshi markets with pagination to ensure we get rapid markets
+ * (5-min, 15-min, hourly) which may be deep in the list.
+ */
+const RAPID_PREFIXES = [
+  "KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M",
+  "KXBTC5M", "KXETH5M", "KXSOL5M", "KXXRP5M", "KXDOGE5M",
+  "KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXDOGED",
+];
+
+function isRapidTicker(ticker: string): boolean {
+  const t = ticker.toUpperCase();
+  return RAPID_PREFIXES.some((p) => t.startsWith(p));
+}
+
+// Cache Kalshi markets in the background worker (2 min TTL)
+let kalshiCache: { markets: RawPlatformMarket[]; ts: number } | null = null;
+const KALSHI_CACHE_TTL = 120_000;
+
+async function fetchKalshiDirect(_limit: number): Promise<RawPlatformMarket[]> {
+  // Return cached if fresh
+  if (kalshiCache && Date.now() - kalshiCache.ts < KALSHI_CACHE_TTL) {
+    return kalshiCache.markets;
+  }
+
+  const all: RawPlatformMarket[] = [];
+  let cursor: string | undefined;
+  const maxPages = 4; // ~750 general markets
+  let hasRapid = false;
+
+  for (let page = 0; page < maxPages; page++) {
+    const qs = `limit=200&status=active${cursor ? `&cursor=${cursor}` : ""}`;
+    const data = await platformFetch<{
+      markets?: RawPlatformMarket[];
+      data?: RawPlatformMarket[];
+      cursor?: string;
+    }>("kalshi", `/api/v1/markets?${qs}`);
+
+    const pageMarkets = data?.markets ?? data?.data ?? [];
+    for (const m of pageMarkets) {
+      all.push(m);
+      const ticker = String(m.ticker ?? m.market_id ?? "");
+      if (isRapidTicker(ticker)) hasRapid = true;
+    }
+
+    cursor = data?.cursor ?? undefined;
+    if (!cursor || pageMarkets.length === 0) break;
+  }
+
+  // If no rapid markets found yet, keep paginating to find them
+  if (!hasRapid && cursor) {
+    for (let page = 0; page < 10; page++) {
+      const cursorVal: string = cursor;
+      const extraData: {
+        markets?: RawPlatformMarket[];
+        data?: RawPlatformMarket[];
+        cursor?: string;
+      } = await platformFetch("kalshi", `/api/v1/markets?limit=200&status=active&cursor=${cursorVal}`);
+
+      const extraMarkets = extraData?.markets ?? extraData?.data ?? [];
+      for (const m of extraMarkets) {
+        all.push(m);
+        const ticker = String(m.ticker ?? m.market_id ?? "");
+        if (isRapidTicker(ticker)) hasRapid = true;
+      }
+
+      cursor = extraData?.cursor ?? undefined;
+      if (!cursor || extraMarkets.length === 0 || hasRapid) break;
+    }
+  }
+
+  kalshiCache = { markets: all, ts: Date.now() };
+  return all;
 }
 
 async function fetchOpinionDirect(limit: number): Promise<RawPlatformMarket[]> {
