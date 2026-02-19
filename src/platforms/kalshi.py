@@ -302,9 +302,21 @@ class KalshiPlatform(BasePlatform):
         if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
             return self._markets_cache
 
+        # Rapid-market ticker prefixes (5-min, 15-min, hourly)
+        rapid_prefixes = (
+            "KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M",
+            "KXBTC5M", "KXETH5M", "KXSOL5M", "KXXRP5M", "KXDOGE5M",
+            "KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXDOGED",
+        )
+
+        def _is_rapid(ticker: str) -> bool:
+            t = ticker.upper()
+            return any(t.startswith(p) for p in rapid_prefixes)
+
         all_markets = []
         cursor = None
-        max_pages = 5  # Cap at ~1000 markets to keep load times fast
+        max_pages = 4  # Cap at ~750 general markets to keep load times fast
+        has_rapid = False
 
         for page in range(max_pages):
             params = {"limit": 200, "status": "active"}
@@ -320,7 +332,10 @@ class KalshiPlatform(BasePlatform):
             page_markets = data.get("markets", data.get("data", []))
             for item in page_markets:
                 try:
-                    all_markets.append(self._parse_market(item))
+                    m = self._parse_market(item)
+                    all_markets.append(m)
+                    if _is_rapid(m.market_id):
+                        has_rapid = True
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
 
@@ -330,7 +345,34 @@ class KalshiPlatform(BasePlatform):
                 break
             cursor = new_cursor
 
-        logger.info("Fetched all DFlow markets", total=len(all_markets), pages=page + 1)
+        # If no rapid markets found in the first batch, keep paginating
+        # up to a hard ceiling to ensure they're included.
+        if not has_rapid and cursor:
+            extra_limit = 10  # up to 10 extra pages to find rapid markets
+            for page in range(extra_limit):
+                params = {"limit": 200, "status": "active", "cursor": cursor}
+                try:
+                    data = await self._metadata_request("GET", "/api/v1/markets", params=params)
+                except Exception as e:
+                    logger.warning("Failed to fetch extra page for rapid markets", error=str(e))
+                    break
+
+                page_markets = data.get("markets", data.get("data", []))
+                for item in page_markets:
+                    try:
+                        m = self._parse_market(item)
+                        all_markets.append(m)
+                        if _is_rapid(m.market_id):
+                            has_rapid = True
+                    except Exception as e:
+                        pass
+
+                new_cursor = data.get("cursor")
+                if not new_cursor or not page_markets or has_rapid:
+                    break
+                cursor = new_cursor
+
+        logger.info("Fetched DFlow markets", total=len(all_markets), has_rapid=has_rapid)
 
         # Detect multi-outcome events by grouping by event_id
         event_groups = defaultdict(list)
