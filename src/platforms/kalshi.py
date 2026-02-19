@@ -405,6 +405,15 @@ class KalshiPlatform(BasePlatform):
 
                     m.outcome_name = outcome_name[:50] if outcome_name else None
 
+        # Sort rapid markets (5-min, 15-min, hourly) to the top so they
+        # always appear in browse results regardless of pagination limit.
+        rapid = [m for m in all_markets if _is_rapid(m.market_id)]
+        regular = [m for m in all_markets if not _is_rapid(m.market_id)]
+        rapid.sort(key=lambda m: m.close_time or "", reverse=False)  # soonest first
+        all_markets = rapid + regular
+
+        logger.info("Sorted rapid markets to top", rapid_count=len(rapid), total=len(all_markets))
+
         # Update cache
         self._markets_cache = all_markets
         self._markets_cache_time = now

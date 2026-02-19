@@ -39,8 +39,9 @@ function getCollateralNotice(platform: Platform): string {
 }
 
 export function MarketDetailPage({ slug, onBack }: MarketDetailPageProps) {
-  const { platform, slug: resolvedSlug } = parsePlatformSlug(slug);
-  const { event, loading, error } = useMarketDetail(resolvedSlug);
+  const { platform } = parsePlatformSlug(slug);
+  // Pass full slug (with platform prefix) so useMarketDetail can detect the platform
+  const { event, loading, error } = useMarketDetail(slug);
   const [showConfirm, setShowConfirm] = useState(false);
   const [marketIndex, setMarketIndex] = useState(0);
 
