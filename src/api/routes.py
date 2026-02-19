@@ -3,6 +3,7 @@ FastAPI routes for Spredd Mini App.
 Exposes bot functionality via REST API.
 """
 
+import asyncio
 import time
 import uuid
 from decimal import Decimal
@@ -603,6 +604,150 @@ def _evict_cache(cache: dict, ttl: float) -> None:
     stale = [k for k, v in cache.items() if (now - v[0]) > ttl * 5]
     for k in stale:
         del cache[k]
+
+
+# ---------------------------------------------------------------------------
+# Background cache warmer — pre-fetches markets every 60s so every request
+# is an instant cache hit. Populates the same _markets_cache / _trending_cache
+# dicts that the endpoints already read from.
+# ---------------------------------------------------------------------------
+_WARM_INTERVAL = 60  # seconds between background refreshes
+_cache_warmer_task: asyncio.Task | None = None
+
+_ALL_PLATFORMS = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
+
+
+async def _warm_markets_cache() -> None:
+    """Fetch markets for each platform + 'all' and store in _markets_cache."""
+    from ..platforms import platform_registry
+
+    # Warm per-platform caches
+    for plat in _ALL_PLATFORMS:
+        try:
+            platform_instance = platform_registry.get(Platform(plat))
+            if not platform_instance:
+                continue
+
+            markets = await platform_instance.get_markets(limit=1000, active_only=True)
+            results = []
+            for m in markets:
+                image = None
+                if m.raw_data:
+                    if "event" in m.raw_data:
+                        image = m.raw_data["event"].get("image")
+                    elif "image" in m.raw_data:
+                        image = m.raw_data["image"]
+
+                slug = m.event_id or m.market_id
+
+                results.append({
+                    "id": m.market_id,
+                    "platform": plat,
+                    "question": m.title,
+                    "description": m.description,
+                    "image": image,
+                    "category": m.category or "OTHER",
+                    "outcomes": ["Yes", "No"],
+                    "outcomePrices": [
+                        str(float(m.yes_price)) if m.yes_price else "0.5",
+                        str(float(m.no_price)) if m.no_price else "0.5",
+                    ],
+                    "volume": float(m.volume_24h) if m.volume_24h else 0,
+                    "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
+                    "liquidity": float(m.liquidity) if m.liquidity else 0,
+                    "endDate": m.close_time,
+                    "slug": slug,
+                    "active": m.is_active,
+                    "event_id": m.event_id,
+                    "is_multi_outcome": m.is_multi_outcome,
+                    "outcome_name": m.outcome_name,
+                    "related_market_count": m.related_market_count,
+                })
+
+            now = time.time()
+            _markets_cache[(plat, True)] = (now, results)
+        except Exception as e:
+            print(f"[CacheWarmer] Error warming {plat}: {e}")
+
+    # Build the combined "all" cache from per-platform caches
+    all_results = []
+    for plat in _ALL_PLATFORMS:
+        cached = _markets_cache.get((plat, True))
+        if cached:
+            all_results.extend(cached[1])
+    all_results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
+    _markets_cache[("all", True)] = (time.time(), all_results)
+
+
+async def _warm_trending_cache() -> None:
+    """Pre-warm the trending markets cache."""
+    from ..platforms import platform_registry
+
+    results = []
+    for plat in _ALL_PLATFORMS:
+        try:
+            platform_instance = platform_registry.get(Platform(plat))
+            if not platform_instance or not hasattr(platform_instance, "get_trending_markets"):
+                continue
+            markets = await platform_instance.get_trending_markets(limit=50)
+            for m in markets:
+                results.append({
+                    "platform": plat,
+                    "id": m.market_id,
+                    "title": m.title,
+                    "yes_price": float(m.yes_price) if m.yes_price else None,
+                    "no_price": float(m.no_price) if m.no_price else None,
+                    "volume": str(m.volume_24h) if m.volume_24h else None,
+                    "is_active": m.is_active,
+                })
+        except Exception as e:
+            print(f"[CacheWarmer] Error warming trending {plat}: {e}")
+
+    now = time.time()
+    _trending_cache["all"] = (now, results)
+
+    # Also cache per-platform trending
+    for plat in _ALL_PLATFORMS:
+        plat_results = [r for r in results if r["platform"] == plat]
+        if plat_results:
+            _trending_cache[plat] = (now, plat_results)
+
+
+async def _cache_warmer_loop() -> None:
+    """Background loop that refreshes market caches every _WARM_INTERVAL seconds."""
+    # Initial warm — run immediately on startup
+    print("[CacheWarmer] Initial cache warm starting...")
+    try:
+        await _warm_markets_cache()
+        await _warm_trending_cache()
+        print("[CacheWarmer] Initial cache warm complete")
+    except Exception as e:
+        print(f"[CacheWarmer] Initial warm failed: {e}")
+
+    while True:
+        await asyncio.sleep(_WARM_INTERVAL)
+        try:
+            await _warm_markets_cache()
+            await _warm_trending_cache()
+        except Exception as e:
+            print(f"[CacheWarmer] Refresh failed: {e}")
+
+
+def start_cache_warmer() -> None:
+    """Start the background cache warmer task."""
+    global _cache_warmer_task
+    if _cache_warmer_task is None or _cache_warmer_task.done():
+        _cache_warmer_task = asyncio.create_task(_cache_warmer_loop())
+        print("[CacheWarmer] Background cache warmer started (60s interval)")
+
+
+def stop_cache_warmer() -> None:
+    """Stop the background cache warmer task."""
+    global _cache_warmer_task
+    if _cache_warmer_task and not _cache_warmer_task.done():
+        _cache_warmer_task.cancel()
+        _cache_warmer_task = None
+        print("[CacheWarmer] Background cache warmer stopped")
 
 
 @router.get("/markets/search")
@@ -2049,12 +2194,16 @@ def create_api_app() -> FastAPI:
         except Exception as e:
             print(f"[API] Failed to start price poller: {e}")
 
+        # Start background cache warmer for instant market responses
+        start_cache_warmer()
+
     @app.on_event("shutdown")
     async def shutdown_realtime():
         """Stop real-time data services on app shutdown."""
         from src.services.polymarket_ws import polymarket_ws_manager
         from src.services.price_poller import price_poller
 
+        stop_cache_warmer()
         await polymarket_ws_manager.stop()
         await price_poller.stop()
         print("[API] Real-time services stopped")
