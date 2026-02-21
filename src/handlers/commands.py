@@ -1016,10 +1016,10 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 market = await platform.get_market(pos.market_id, search_title=pos.market_title, include_closed=True)
 
             if not market:
-                # Market not found - likely expired/delisted
-                # Auto-close these positions to clean up database and speed up future queries
-                await update_position(pos.id, status=PositionStatus.EXPIRED, token_amount="0")
-                logger.info(f"Auto-closed position {pos.id} - market {pos.market_id} not found (likely expired)")
+                # Market not found from API - but tokens may still exist on-chain
+                # Keep position visible so user can attempt manual redemption
+                logger.info(f"Position {pos.id} - market {pos.market_id} not found in API (keeping visible)")
+                active_positions.append(pos)
                 continue
 
             # Check market resolution status
@@ -1038,15 +1038,39 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 )
 
                 if winning_str and winning_str == outcome_str:
-                    # Won - check if platform auto-settles
+                    # Won - try to auto-redeem
                     if pos.platform == Platform.KALSHI:
                         # Kalshi auto-settles - funds already in wallet, mark as redeemed
                         await update_position(pos.id, status=PositionStatus.REDEEMED, token_amount="0")
                         logger.info(f"Auto-marked Kalshi position {pos.id} as redeemed (auto-settled)")
                     else:
-                        # Other platforms require manual redemption
-                        logger.info(f"Position {pos.id} won! market={pos.market_id}")
-                        active_positions.append(pos)
+                        # Try auto-redeem for Polymarket/other on-chain platforms
+                        try:
+                            chain_family = get_chain_family_for_platform(pos.platform)
+                            private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family)
+                            if private_key:
+                                from src.db.models import Outcome as OutcomeEnum
+                                redeem_outcome = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
+                                token_amount = Decimal(pos.token_amount) / Decimal(10**6)
+                                redeem_id = pos.event_id if pos.event_id else pos.market_id
+                                result = await platform.redeem_position(
+                                    market_id=redeem_id,
+                                    outcome=redeem_outcome,
+                                    token_amount=token_amount,
+                                    private_key=private_key,
+                                )
+                                if result.success:
+                                    await update_position(pos.id, status=PositionStatus.REDEEMED, token_amount="0")
+                                    logger.info(f"Auto-redeemed winning position {pos.id} for ~${token_amount:.2f}")
+                                else:
+                                    # Redemption failed - show position so user can retry manually
+                                    logger.warning(f"Auto-redeem failed for {pos.id}: {result.error_message}")
+                                    active_positions.append(pos)
+                            else:
+                                active_positions.append(pos)
+                        except Exception as redeem_err:
+                            logger.warning(f"Auto-redeem error for {pos.id}: {redeem_err}")
+                            active_positions.append(pos)
                 elif winning_str and winning_str != outcome_str:
                     # Lost - auto-close the position (only if we KNOW they lost)
                     await update_position(pos.id, status=PositionStatus.CLOSED, token_amount="0")
