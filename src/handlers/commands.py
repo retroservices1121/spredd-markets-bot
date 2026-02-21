@@ -840,7 +840,7 @@ Type /cancel to cancel.
 
 
 async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /markets command - show trending markets with pagination."""
+    """Handle /markets command - show categories menu (same as button flow)."""
     if not update.effective_user or not update.message:
         return
 
@@ -849,95 +849,45 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("Please /start first!")
         return
 
-    platform_info = PLATFORM_INFO[user.active_platform]
     platform = get_platform(user.active_platform)
+    categories = platform.get_available_categories()
 
-    await update.message.reply_text(
-        f"🔍 Loading {platform_info['emoji']} {platform_info['name']} markets...",
-        parse_mode=ParseMode.HTML,
-    )
+    platform_info = PLATFORM_INFO[user.active_platform]
+    text = f"{platform_info['emoji']} <b>Browse {platform_info['name']} Markets</b>\n\n"
+    text += "Select a category to see related markets:\n"
 
-    per_page = 10
+    buttons = []
+    # Trending button at the top
+    buttons.append([InlineKeyboardButton("🔥 Trending", callback_data="markets:trending")])
 
-    try:
-        # Fetch more to account for deduplication of multi-outcome events
-        markets = await platform.get_markets(limit=(per_page * 3) + 1, offset=0, active_only=True)
+    # Create 2-column layout for categories
+    for i in range(0, len(categories), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(categories):
+                cat = categories[i + j]
+                row.append(InlineKeyboardButton(
+                    f"{cat['emoji']} {cat['label']}",
+                    callback_data=f"category:{cat['id']}"
+                ))
+        buttons.append(row)
 
-        # Deduplicate multi-outcome events by event_id or title
-        seen_events = set()
-        unique_markets = []
-        for market in markets:
-            # Use event_id for multi-outcome, fallback to title for dedup
-            if market.is_multi_outcome:
-                # Use event_id if available, otherwise use title as dedup key
-                dedup_key = market.event_id if market.event_id else market.title
-            else:
-                dedup_key = market.market_id
-
-            if dedup_key not in seen_events:
-                seen_events.add(dedup_key)
-                unique_markets.append(market)
-
-        markets = unique_markets
-        has_next = len(markets) > per_page
-        markets = markets[:per_page]
-
-        if not markets:
-            await update.message.reply_text(
-                f"No markets found on {platform_info['name']}. Try /search [query]",
-                parse_mode=ParseMode.HTML,
-            )
-            return
-
-        # Enrich with actual orderbook ask prices (replaces mid-prices)
-        await enrich_orderbook_prices(markets, platform)
-
-        text = f"{platform_info['emoji']} <b>Trending on {platform_info['name']}</b>\n"
-        text += f"<i>Page 1</i>\n\n"
-
-        buttons = []
-        for i, market in enumerate(markets, 1):
-            title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
-            yes_prob = format_probability(market.yes_price)
-            exp = format_expiration(market.close_time)
-
-            # Indicator for multi-outcome markets
-            multi_indicator = f" [{market.related_market_count} options]" if market.is_multi_outcome else ""
-
-            text += f"<b>{i}.</b> {title}{multi_indicator}\n"
-            if market.is_multi_outcome and market.outcome_name:
-                text += f"   {escape_html(market.outcome_name)}: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
-            else:
-                text += f"   YES: {yes_prob} • Vol: {format_usd(market.volume_24h)} • Exp: {exp}\n\n"
-
-            buttons.append([
-                InlineKeyboardButton(
-                    f"{i}. {market.title[:30]}...",
-                    callback_data=f"market:{user.active_platform.value}:{market.market_id[:40]}"
-                )
-            ])
-
-        # Pagination buttons (page 0, only show Next if available)
-        if has_next:
-            buttons.append([InlineKeyboardButton("Next »", callback_data="markets:page:1")])
-
+    # Add fast crypto markets buttons
+    if user.active_platform == Platform.KALSHI:
         buttons.append([
-            InlineKeyboardButton("📂 Categories", callback_data="markets:refresh"),
-            InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh"),
+            InlineKeyboardButton("⏱️ 15m Markets", callback_data="markets:15m"),
+            InlineKeyboardButton("🕐 Hourly Markets", callback_data="markets:hourly"),
+        ])
+    if user.active_platform == Platform.MYRIAD:
+        buttons.append([
+            InlineKeyboardButton("🕐 5m Candles", callback_data="markets:5m"),
         ])
 
-        await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-
-    except Exception as e:
-        logger.error("Failed to get markets", error=str(e))
-        await update.message.reply_text(
-            f"❌ Failed to load markets: {friendly_error(str(e))}",
-            parse_mode=ParseMode.HTML,
-        )
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
