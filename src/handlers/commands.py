@@ -2070,6 +2070,9 @@ Select which prediction market you want to trade on:
             context.user_data.pop("pending_confirm", None)
             await query.edit_message_text("❌ Order cancelled.")
 
+        elif action == "chain":
+            await handle_chain_toggle(query, parts[1], context)
+
         elif action == "wallet":
             if parts[1] == "refresh":
                 await handle_wallet_refresh(query, update.effective_user.id)
@@ -7926,6 +7929,157 @@ Please try again or redeem manually.
         )
 
 
+async def handle_chain_toggle(query, chain: str, context) -> None:
+    """Toggle between Polygon (Polymarket) and Solana (Jupiter) settlement for a pending buy."""
+    pending = context.user_data.get("pending_confirm")
+    if not pending:
+        await query.edit_message_text("❌ Order expired. Please try again.")
+        return
+
+    # Determine new platform based on chain selection
+    if chain == "solana":
+        new_platform = "jupiter"
+    else:
+        new_platform = "polymarket"
+
+    # Skip if already on the selected chain
+    if pending["platform"] == new_platform:
+        return
+
+    # Update pending platform
+    pending["platform"] = new_platform
+    market_id = pending["market_id"]
+    outcome = pending["outcome"]
+    amount = Decimal(pending["amount"])
+
+    try:
+        platform_enum = Platform(new_platform)
+    except ValueError:
+        await query.edit_message_text("❌ Invalid platform.")
+        return
+
+    platform = get_platform(platform_enum)
+
+    try:
+        market = await platform.get_market(market_id)
+        if not market:
+            await query.edit_message_text("❌ Market not found on this chain. Try the other one.")
+            # Revert platform
+            pending["platform"] = "polymarket" if new_platform == "jupiter" else "jupiter"
+            return
+
+        collateral_sym = get_collateral_for_market(platform_enum, market)
+
+        from src.db.models import Outcome as OutcomeEnum
+        outcome_enum = OutcomeEnum.YES if outcome == "yes" else OutcomeEnum.NO
+
+        quote = await platform.get_quote(
+            market_id=market_id,
+            outcome=outcome_enum,
+            side="buy",
+            amount=amount,
+        )
+
+        expected_tokens = quote.expected_output
+        price = quote.price_per_token
+
+        fee = calculate_fee(str(amount))
+        fee_display = format_usdc(fee)
+
+        # Price warning
+        displayed_price = market.yes_price if outcome == "yes" else market.no_price
+        price_warning = ""
+        if displayed_price and price:
+            diff = abs(float(price) - float(displayed_price))
+            if diff > 0.05:
+                price_warning = f"\n⚠️ <b>Note:</b> Execution price ({format_probability(price)}) differs from displayed mid-price ({format_probability(displayed_price)}) due to orderbook depth.\n"
+
+        # Liquidity warning
+        liquidity_warning = ""
+        if quote.quote_data:
+            warning_msg = quote.quote_data.get("liquidity_warning")
+            if warning_msg:
+                liquidity_warning = f"\n⚠️ <b>Warning:</b> {warning_msg}\n"
+
+        # Player prop detection
+        import re
+        def has_ou_keywords(text):
+            if not text:
+                return False
+            t = text.lower()
+            if re.search(r'\bover\b', t) or re.search(r'\bunder\b', t):
+                return True
+            return "o/u" in t or " ou " in t
+
+        question_text = ""
+        if market.raw_data and isinstance(market.raw_data, dict):
+            market_raw = market.raw_data.get("market", {})
+            if isinstance(market_raw, dict):
+                question_text = market_raw.get("question") or market_raw.get("groupItemTitle") or ""
+
+        is_player_prop = (
+            has_ou_keywords(market.title) or
+            has_ou_keywords(market.outcome_name) or
+            has_ou_keywords(question_text)
+        )
+
+        if is_player_prop:
+            side_label = "OVER" if outcome == "yes" else "UNDER"
+            token_label = "OVER" if outcome == "yes" else "UNDER"
+        else:
+            side_label = outcome.upper()
+            token_label = outcome.upper()
+
+        settlement_line = ""
+        if new_platform == "jupiter":
+            settlement_line = "\n🔗 <b>Settlement:</b> Solana (via Jupiter)\n"
+
+        text = f"""
+📋 <b>Order Quote</b>
+
+Market: {escape_html(market.title[:50])}...
+Side: BUY {side_label}
+
+💰 <b>You Pay:</b> {amount} {collateral_sym}
+💸 <b>Fee (2%):</b> {fee_display}
+📦 <b>You Receive:</b> ~{expected_tokens:.2f} {token_label} tokens
+📊 <b>Execution Price:</b> {format_probability(price)} per token
+{settlement_line}{price_warning}{liquidity_warning}"""
+
+        # Build keyboard with updated chain markers
+        if chain == "solana":
+            chain_row = [
+                InlineKeyboardButton("⬡ Polygon", callback_data="chain:polygon"),
+                InlineKeyboardButton("◎ Solana ✓", callback_data="chain:solana"),
+            ]
+        else:
+            chain_row = [
+                InlineKeyboardButton("⬡ Polygon ✓", callback_data="chain:polygon"),
+                InlineKeyboardButton("◎ Solana", callback_data="chain:solana"),
+            ]
+
+        keyboard = InlineKeyboardMarkup([
+            chain_row,
+            [InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_buy")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy")],
+        ])
+
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+        logger.error("Chain toggle quote failed", error=str(e))
+        # Revert platform on failure
+        pending["platform"] = "polymarket" if new_platform == "jupiter" else "jupiter"
+        await query.edit_message_text(
+            f"❌ Failed to get quote on {'Solana' if chain == 'solana' else 'Polygon'}: {friendly_error(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, amount_text: str) -> None:
     """Process buy order amount from user."""
     if not update.effective_user or not update.message:
@@ -8074,10 +8228,20 @@ Side: BUY {side_label}
 📊 <b>Execution Price:</b> {format_probability(price)} per token
 {price_warning}{liquidity_warning}"""
 
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_buy")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy")],
-        ])
+        if platform_value == "polymarket":
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⬡ Polygon ✓", callback_data="chain:polygon"),
+                    InlineKeyboardButton("◎ Solana", callback_data="chain:solana"),
+                ],
+                [InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_buy")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy")],
+            ])
+        else:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_buy")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy")],
+            ])
 
         await update.message.reply_text(
             text,
