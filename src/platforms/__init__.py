@@ -32,7 +32,7 @@ PLATFORM_INFO = {
     Platform.POLYMARKET: {
         "name": "Polymarket",
         "emoji": "🔮",
-        "chain": "Polygon",
+        "chain": "Polygon / Solana",
         "chain_family": ChainFamily.EVM,
         "description": "World's largest prediction market",
         "collateral": "USDC",
