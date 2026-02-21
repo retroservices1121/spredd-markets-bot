@@ -121,6 +121,8 @@ def friendly_error(error: str) -> str:
         return "Invalid wallet address. Please check and try again."
     if "decryption failed" in error_lower or "invalid pin" in error_lower:
         return "Incorrect PIN. Please try again."
+    if "not available in your region" in error_lower or "unsupported_region" in error_lower:
+        return "Trading is not available in this region. The server's location may be restricted by this platform."
     if "api" in error_lower and "error" in error_lower:
         return "The trading platform is having issues. Please try again later."
     if "minimum" in error_lower:

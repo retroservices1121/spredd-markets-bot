@@ -123,13 +123,18 @@ class JupiterPlatform(BasePlatform):
             return response.json()
 
         except httpx.HTTPStatusError as e:
+            # Extract human-readable message from Jupiter error response
+            error_msg = f"API error: {e.response.status_code}"
             try:
-                error_body = e.response.text
+                error_body = e.response.json()
+                api_message = error_body.get("message", "")
+                if api_message:
+                    error_msg = api_message
                 logger.error("Jupiter API error", status=e.response.status_code, body=error_body)
             except Exception:
-                pass
+                logger.error("Jupiter API error", status=e.response.status_code)
             raise PlatformError(
-                f"API error: {e.response.status_code}",
+                error_msg,
                 Platform.JUPITER,
                 str(e.response.status_code),
             )
