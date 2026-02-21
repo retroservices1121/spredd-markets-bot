@@ -507,11 +507,11 @@ class JupiterPlatform(BasePlatform):
                 "marketId": quote.market_id,
                 "isYes": is_yes,
                 "isBuy": is_buy,
-                "depositAmount": deposit_amount,
+                "depositAmount": str(deposit_amount),
                 "depositMint": USDC_MINT,
             }
 
-            logger.debug("Jupiter order request", payload=order_payload)
+            logger.info("Jupiter order request", payload=order_payload)
 
             response = await self._api_request(
                 "POST",
@@ -524,6 +524,9 @@ class JupiterPlatform(BasePlatform):
             if not tx_b64:
                 raise PlatformError("No transaction in order response", Platform.JUPITER)
 
+            logger.info("Jupiter order created, signing transaction",
+                        order_id=response.get("externalOrderId"))
+
             # Decode, sign, and submit
             tx_data = base64.b64decode(tx_b64)
             tx = VersionedTransaction.from_bytes(tx_data)
@@ -534,6 +537,8 @@ class JupiterPlatform(BasePlatform):
             # Submit to Solana
             if not self._solana_client:
                 raise RuntimeError("Solana client not initialized")
+
+            logger.info("Submitting signed transaction to Solana")
 
             result = await self._solana_client.send_transaction(
                 signed_tx,
@@ -557,14 +562,18 @@ class JupiterPlatform(BasePlatform):
                 explorer_url=self.get_explorer_url(tx_hash),
             )
 
+        except PlatformError:
+            raise  # Let API errors (geo-block, minimum, etc.) propagate clearly
         except Exception as e:
-            logger.error("Jupiter trade execution failed", error=str(e))
+            error_str = str(e)
+            logger.error("Jupiter trade execution failed",
+                         error=error_str, error_type=type(e).__name__)
             return TradeResult(
                 success=False,
                 tx_hash=None,
                 input_amount=quote.input_amount,
                 output_amount=None,
-                error_message=str(e),
+                error_message=f"{type(e).__name__}: {error_str}",
                 explorer_url=None,
             )
 
