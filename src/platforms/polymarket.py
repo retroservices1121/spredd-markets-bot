@@ -850,27 +850,35 @@ class PolymarketPlatform(BasePlatform):
             params["active"] = "true"
             params["closed"] = "false"
 
-        data = await self._gamma_request("GET", "/events", params=params)
-
-        # Also fetch 5-min / 15-min rapid crypto markets by duration tags
-        # These rotate frequently and may not appear in top volume results
-        existing_ids = {e.get("id") for e in (data if isinstance(data, list) else [])}
-        for rapid_tag in ("5M", "15M", "1H"):
+        # Fetch main events and rapid tag events in parallel
+        async def _fetch_rapid(tag: str):
             try:
-                rapid_data = await self._gamma_request("GET", "/events", params={
+                return await self._gamma_request("GET", "/events", params={
                     "active": "true",
                     "closed": "false",
-                    "tag_slug": rapid_tag,
+                    "tag_slug": tag,
                     "limit": 20,
                     "order": "endDate",
                     "ascending": "false",
                 })
-                for event in (rapid_data if isinstance(rapid_data, list) else []):
-                    if event.get("id") not in existing_ids:
-                        existing_ids.add(event.get("id"))
-                        data.append(event)
             except Exception as e:
-                logger.warning("Failed to fetch rapid markets", tag=rapid_tag, error=str(e))
+                logger.warning("Failed to fetch rapid markets", tag=tag, error=str(e))
+                return []
+
+        main_result, *rapid_results = await asyncio.gather(
+            self._gamma_request("GET", "/events", params=params),
+            _fetch_rapid("5M"),
+            _fetch_rapid("15M"),
+            _fetch_rapid("1H"),
+        )
+
+        data = main_result if isinstance(main_result, list) else []
+        existing_ids = {e.get("id") for e in data}
+        for rapid_data in rapid_results:
+            for event in (rapid_data if isinstance(rapid_data, list) else []):
+                if event.get("id") not in existing_ids:
+                    existing_ids.add(event.get("id"))
+                    data.append(event)
 
         def is_market_expired(event_data: dict, market_data: dict = None) -> bool:
             """Check if a market has expired.

@@ -180,21 +180,23 @@ class KalshiPlatform(BasePlatform):
         """
         names: dict[str, str] = {}
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{self.KALSHI_PUBLIC_API}/events/{event_id}")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for market in data.get("markets", []):
-                        ticker = market.get("ticker")
-                        # yes_sub_title contains the outcome name (e.g., "Patrick Mahomes")
-                        name = market.get("yes_sub_title") or market.get("subtitle")
-                        if ticker and name:
-                            names[ticker] = name
-                    logger.debug(
-                        "Fetched Kalshi event names",
-                        event_id=event_id,
-                        count=len(names),
-                    )
+            resp = await self._http_client.get(
+                f"{self.KALSHI_PUBLIC_API}/events/{event_id}",
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                for market in data.get("markets", []):
+                    ticker = market.get("ticker")
+                    # yes_sub_title contains the outcome name (e.g., "Patrick Mahomes")
+                    name = market.get("yes_sub_title") or market.get("subtitle")
+                    if ticker and name:
+                        names[ticker] = name
+                logger.debug(
+                    "Fetched Kalshi event names",
+                    event_id=event_id,
+                    count=len(names),
+                )
         except Exception as e:
             logger.warning("Failed to fetch Kalshi event names", event_id=event_id, error=str(e))
         return names
@@ -381,29 +383,36 @@ class KalshiPlatform(BasePlatform):
                 event_groups[m.event_id].append(m)
 
         # Mark multi-outcome markets and fetch names from Kalshi public API
-        for event_id, group in event_groups.items():
-            if len(group) > 1:
-                kalshi_names = await self._fetch_kalshi_event_names(event_id)
+        # Fetch all event names in parallel for speed
+        multi_event_ids = [eid for eid, grp in event_groups.items() if len(grp) > 1]
+        name_results = await asyncio.gather(
+            *(self._fetch_kalshi_event_names(eid) for eid in multi_event_ids)
+        )
+        event_names_map = dict(zip(multi_event_ids, name_results))
 
-                for m in group:
-                    m.is_multi_outcome = True
-                    m.related_market_count = len(group)
+        for event_id in multi_event_ids:
+            group = event_groups[event_id]
+            kalshi_names = event_names_map[event_id]
 
-                    outcome_name = kalshi_names.get(m.market_id)
+            for m in group:
+                m.is_multi_outcome = True
+                m.related_market_count = len(group)
 
-                    if not outcome_name:
-                        raw = m.raw_data or {}
-                        if raw.get("yesSubtitle"):
-                            outcome_name = raw["yesSubtitle"]
-                        elif m.description and m.description != m.title:
-                            outcome_name = m.description
+                outcome_name = kalshi_names.get(m.market_id)
 
-                    if not outcome_name and m.market_id and "-" in m.market_id:
-                        ticker_parts = m.market_id.split("-")
-                        if len(ticker_parts) >= 3:
-                            outcome_name = ticker_parts[-1]
+                if not outcome_name:
+                    raw = m.raw_data or {}
+                    if raw.get("yesSubtitle"):
+                        outcome_name = raw["yesSubtitle"]
+                    elif m.description and m.description != m.title:
+                        outcome_name = m.description
 
-                    m.outcome_name = outcome_name[:50] if outcome_name else None
+                if not outcome_name and m.market_id and "-" in m.market_id:
+                    ticker_parts = m.market_id.split("-")
+                    if len(ticker_parts) >= 3:
+                        outcome_name = ticker_parts[-1]
+
+                m.outcome_name = outcome_name[:50] if outcome_name else None
 
         # Sort rapid markets (5-min, 15-min, hourly) to the top so they
         # always appear in browse results regardless of pagination limit.
