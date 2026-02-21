@@ -123,7 +123,15 @@ def friendly_error(error: str) -> str:
         return "Incorrect PIN. Please try again."
     if "not available in your region" in error_lower or "unsupported_region" in error_lower:
         return "Trading is not available in this region. The server's location may be restricted by this platform."
-    if "api" in error_lower and "error" in error_lower:
+    # Kalshi/DFlow API errors - extract the detail after the status code
+    if ("kalshi api" in error_lower or "dflow" in error_lower) and ":" in error:
+        # e.g. "Kalshi API 400: insufficient balance" -> show the detail part
+        detail = error.split(":", 1)[1].strip() if ":" in error else error
+        if detail and len(detail) > 3:
+            return escape_html(detail)
+    if "api error" in error_lower and error_lower.strip() == "api error":
+        return "The trading platform is having issues. Please try again later."
+    if "api" in error_lower and "error" in error_lower and "50" in error_lower:
         return "The trading platform is having issues. Please try again later."
     if "minimum" in error_lower:
         return "Amount is below the minimum. Please increase your trade amount."

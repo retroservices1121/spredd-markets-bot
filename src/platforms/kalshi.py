@@ -161,14 +161,22 @@ class KalshiPlatform(BasePlatform):
             return response.json()
 
         except httpx.HTTPStatusError as e:
-            # Log response body for debugging
+            # Include response body in error for better debugging
+            error_body = ""
             try:
                 error_body = e.response.text
                 logger.error("DFlow API error", status=e.response.status_code, body=error_body)
             except:
                 pass
+            # Try to extract a meaningful message from the response
+            detail = ""
+            try:
+                error_json = e.response.json()
+                detail = error_json.get("message") or error_json.get("error") or error_json.get("detail") or ""
+            except:
+                detail = error_body[:200] if error_body else ""
             raise PlatformError(
-                f"API error: {e.response.status_code}",
+                f"Kalshi API {e.response.status_code}: {detail}" if detail else f"Kalshi API error {e.response.status_code}",
                 Platform.KALSHI,
                 str(e.response.status_code),
             )
