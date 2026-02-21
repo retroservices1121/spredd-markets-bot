@@ -7946,9 +7946,10 @@ async def handle_chain_toggle(query, chain: str, context) -> None:
     if pending["platform"] == new_platform:
         return
 
-    # Update pending platform
-    pending["platform"] = new_platform
-    market_id = pending["market_id"]
+    # Save original polymarket market_id on first toggle
+    if "polymarket_market_id" not in pending:
+        pending["polymarket_market_id"] = pending["market_id"]
+
     outcome = pending["outcome"]
     amount = Decimal(pending["amount"])
 
@@ -7961,11 +7962,44 @@ async def handle_chain_toggle(query, chain: str, context) -> None:
     platform = get_platform(platform_enum)
 
     try:
-        market = await platform.get_market(market_id)
+        # Jupiter uses different market IDs than Polymarket — look up by title
+        if new_platform == "jupiter":
+            market_title = pending.get("market_title", "")
+            if not market_title:
+                await query.edit_message_text("❌ Cannot switch chain — market title missing.")
+                return
+
+            # Search Jupiter for the matching market
+            from src.platforms.jupiter import jupiter_platform
+            results = await jupiter_platform.search_markets(market_title, limit=5)
+            market = None
+            title_lower = market_title.lower().strip()
+            for m in results:
+                if m.title.lower().strip() == title_lower:
+                    market = m
+                    break
+            # Fallback: use first result if close enough
+            if not market and results:
+                market = results[0]
+
+            if market:
+                pending["jupiter_market_id"] = market.market_id
+                pending["market_id"] = market.market_id
+            else:
+                await query.edit_message_text("❌ This market is not available on Solana (Jupiter).")
+                return
+        else:
+            # Switching back to Polygon — restore original Polymarket market_id
+            pending["market_id"] = pending["polymarket_market_id"]
+            market = await platform.get_market(pending["market_id"])
+
+        pending["platform"] = new_platform
+        market_id = pending["market_id"]
+
         if not market:
-            await query.edit_message_text("❌ Market not found on this chain. Try the other one.")
-            # Revert platform
+            await query.edit_message_text("❌ Market not found. Try the other chain.")
             pending["platform"] = "polymarket" if new_platform == "jupiter" else "jupiter"
+            pending["market_id"] = pending["polymarket_market_id"]
             return
 
         collateral_sym = get_collateral_for_market(platform_enum, market)
@@ -8072,8 +8106,9 @@ Side: BUY {side_label}
 
     except Exception as e:
         logger.error("Chain toggle quote failed", error=str(e))
-        # Revert platform on failure
+        # Revert platform and market_id on failure
         pending["platform"] = "polymarket" if new_platform == "jupiter" else "jupiter"
+        pending["market_id"] = pending.get("polymarket_market_id", pending["market_id"])
         await query.edit_message_text(
             f"❌ Failed to get quote on {'Solana' if chain == 'solana' else 'Polygon'}: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
@@ -8166,6 +8201,7 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             "market_id": market_id,
             "outcome": outcome,
             "amount": str(amount),
+            "market_title": market.title,
         }
 
         # Get market's displayed price (mid-price) for comparison
