@@ -192,6 +192,10 @@ class BridgeResult:
     burn_tx_hash: Optional[str] = None
     mint_tx_hash: Optional[str] = None
     error_message: Optional[str] = None
+    received_amount: Optional[Decimal] = None
+    tx_hash: Optional[str] = None
+    explorer_url: Optional[str] = None
+    dest_tx_hash: Optional[str] = None
 
 
 @dataclass
