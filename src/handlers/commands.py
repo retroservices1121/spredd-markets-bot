@@ -7954,6 +7954,18 @@ async def handle_polymarket_chain_select(query, chain: str, telegram_id: int) ->
     """Handle chain selection for Polymarket: Polygon stays Polymarket, Solana switches to Jupiter."""
     if chain == "solana":
         platform = Platform.JUPITER
+        # Check Jupiter API key is configured
+        if not settings.is_platform_configured("jupiter"):
+            await query.edit_message_text(
+                "⚠️ <b>Solana settlement is not available yet.</b>\n\n"
+                "Jupiter API key is not configured. Please use Polygon for now.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬡ Use Polygon", callback_data="polychain:polygon")],
+                    [InlineKeyboardButton("🔄 Switch Platform", callback_data="menu:platform")],
+                ]),
+            )
+            return
     else:
         platform = Platform.POLYMARKET
 
