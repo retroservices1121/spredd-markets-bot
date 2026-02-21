@@ -105,7 +105,7 @@ def main():
     
     polygon_rpc = prompt(
         "Polygon RPC URL",
-        default="https://polygon-rpc.com"
+        default="https://rpc.ankr.com/polygon"
     )
     
     bsc_rpc = prompt(

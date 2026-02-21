@@ -141,7 +141,7 @@ class Settings(BaseSettings):
         description="Private key for EVM treasury wallet (hex format, for referral payouts on Polygon)"
     )
     treasury_evm_rpc_url: str = Field(
-        default="https://polygon-rpc.com",
+        default="https://rpc.ankr.com/polygon",
         description="RPC URL for EVM treasury transactions (Polygon)"
     )
     usdc_contract_polygon: str = Field(
