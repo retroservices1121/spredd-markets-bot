@@ -2061,47 +2061,38 @@ class PolymarketPlatform(BasePlatform):
                     resolution_time=None,
                 )
 
-            # Get condition ID - market_id might be truncated
-            # IMPORTANT: include_closed=True to find resolved/closed markets
+            # Try to get market from API, but don't fail if unavailable
+            # (old resolved markets may no longer be in the Gamma API)
             market = await self.get_market(market_id, include_closed=True)
-            if not market or not market.raw_data:
-                return MarketResolution(
-                    is_resolved=False,
-                    winning_outcome=None,
-                    resolution_time=None,
-                )
+            condition_id = market_id  # market_id IS the conditionId for Polymarket positions
 
-            # Get the full condition ID from market data
-            # raw_data is {"event": ..., "market": ...}, conditionId is in the market dict
-            market_raw = market.raw_data.get("market", {}) if isinstance(market.raw_data, dict) else {}
-            condition_id = market_raw.get("conditionId") or market.market_id
-            if not condition_id:
-                return MarketResolution(
-                    is_resolved=False,
-                    winning_outcome=None,
-                    resolution_time=None,
-                )
+            if market and market.raw_data:
+                # Get the full condition ID from market data if available
+                market_raw = market.raw_data.get("market", {}) if isinstance(market.raw_data, dict) else {}
+                condition_id = market_raw.get("conditionId") or market.market_id or market_id
 
-            # Check if market is closed/resolved from API data
-            closed = market_raw.get("closed", False)
-            resolved = market_raw.get("resolved", False)
+                # Check if market is closed/resolved from API data
+                closed = market_raw.get("closed", False)
+                resolved = market_raw.get("resolved", False)
 
-            if not closed and not resolved:
-                return MarketResolution(
-                    is_resolved=False,
-                    winning_outcome=None,
-                    resolution_time=None,
-                )
+                if not closed and not resolved:
+                    return MarketResolution(
+                        is_resolved=False,
+                        winning_outcome=None,
+                        resolution_time=None,
+                    )
 
-            # Get resolution from raw_data if available
-            resolution_data = market_raw.get("resolution")
-            if resolution_data:
-                winning = "yes" if resolution_data == "Yes" else "no" if resolution_data == "No" else None
-                return MarketResolution(
-                    is_resolved=True,
-                    winning_outcome=winning,
-                    resolution_time=market_raw.get("resolutionTime"),
-                )
+                # Get resolution from raw_data if available
+                resolution_data = market_raw.get("resolution")
+                if resolution_data:
+                    winning = "yes" if resolution_data == "Yes" else "no" if resolution_data == "No" else None
+                    return MarketResolution(
+                        is_resolved=True,
+                        winning_outcome=winning,
+                        resolution_time=market_raw.get("resolutionTime"),
+                    )
+
+            # Market not in API or no resolution data — check on-chain via CTF contract
 
             # Otherwise check CTF contract for payout numerators
             ctf_contract = self._sync_web3.eth.contract(
@@ -2179,20 +2170,14 @@ class PolymarketPlatform(BasePlatform):
                     explorer_url=None,
                 )
 
-            # Get market to find condition ID (include_closed since market is resolved)
+            # Use market_id directly as conditionId — this is what positions store
+            # (old resolved markets may no longer be in the Gamma API, so don't require it)
+            condition_id = market_id
             market = await self.get_market(market_id, include_closed=True)
-            if not market or not market.raw_data:
-                return RedemptionResult(
-                    success=False,
-                    tx_hash=None,
-                    amount_redeemed=None,
-                    error_message="Market not found",
-                    explorer_url=None,
-                )
+            if market and market.raw_data:
+                market_raw = market.raw_data.get("market", {}) if isinstance(market.raw_data, dict) else {}
+                condition_id = market_raw.get("conditionId") or market.market_id or market_id
 
-            # raw_data is {"event": ..., "market": ...}, conditionId is in the market dict
-            market_raw = market.raw_data.get("market", {}) if isinstance(market.raw_data, dict) else {}
-            condition_id = market_raw.get("conditionId") or market.market_id
             if not condition_id:
                 return RedemptionResult(
                     success=False,
