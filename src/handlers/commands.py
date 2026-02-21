@@ -7662,8 +7662,8 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
     platform_info = PLATFORM_INFO[position.platform]
     chain_family = get_chain_family_for_platform(position.platform)
 
-    # Get correct collateral symbol for this market's network
-    sell_market_info = await platform.get_market(position.market_id)
+    # Get correct collateral symbol for this market's network (include_closed for near-expiry)
+    sell_market_info = await platform.get_market(position.market_id, include_closed=True)
     collateral_sym = get_collateral_for_market(position.platform, sell_market_info)
 
     outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()

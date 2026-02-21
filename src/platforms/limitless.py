@@ -1069,7 +1069,8 @@ class LimitlessPlatform(BasePlatform):
             token_id: Optional token ID override
             order_type: "market" for immediate fill with slippage, "limit" for exact price
         """
-        market = await self.get_market(market_id)
+        # include_closed so sells work on near-expiry markets
+        market = await self.get_market(market_id, include_closed=True)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.LIMITLESS)
 

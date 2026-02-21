@@ -1546,7 +1546,8 @@ class PolymarketPlatform(BasePlatform):
             amount: Amount to trade
             token_id: Optional token ID to use (required for sells to use position's stored token)
         """
-        market = await self.get_market(market_id)
+        # Use include_closed=True so sells work on near-expiry markets
+        market = await self.get_market(market_id, include_closed=True)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.POLYMARKET)
 

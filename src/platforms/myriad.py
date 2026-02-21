@@ -878,7 +878,8 @@ class MyriadPlatform(BasePlatform):
         token_id: str = None,
     ) -> Quote:
         """Get a quote for a trade using Myriad's quote API."""
-        market = await self.get_market(market_id)
+        # include_closed so sells work on near-expiry markets
+        market = await self.get_market(market_id, include_closed=True)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.MYRIAD)
 
