@@ -182,16 +182,16 @@ Master Key (64-char hex) + User ID + Optional PIN
 ## 8. BUSINESS MODEL
 
 ### Transaction Fees
-- **2% fee** on all trades
+- **1% fee** on all trades
 - Distributed to: platform treasury + referrers + partners
 
 ### 3-Tier Referral Program
 
 | Tier | Relationship | Commission |
 |------|--------------|------------|
-| Tier 1 | Direct referral | 25% of fee (0.5% of trade) |
-| Tier 2 | Referrer's referrer | 5% of fee (0.1% of trade) |
-| Tier 3 | Third level | 3% of fee (0.06% of trade) |
+| Tier 1 | Direct referral | 25% of fee (0.25% of trade) |
+| Tier 2 | Referrer's referrer | 5% of fee (0.05% of trade) |
+| Tier 3 | Third level | 3% of fee (0.03% of trade) |
 
 ### Partner Program
 - Influencers, communities, trading groups
@@ -345,7 +345,7 @@ Master Key (64-char hex) + User ID + Optional PIN
 2. **Distribution**: Telegram's 800M users vs. niche web3 apps
 3. **UX Breakthrough**: No seed phrases, no gas complexity, no wallet extensions
 4. **Technical Moat**: Platform adapters + cross-chain bridge + encryption infrastructure
-5. **Revenue Model**: Proven unit economics with 2% fees + referrals + partnerships
+5. **Revenue Model**: Proven unit economics with 1% fees + referrals + partnerships
 
 ---
 

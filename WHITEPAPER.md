@@ -340,7 +340,7 @@ Master Key (Environment) + User ID + PIN (Optional)
 
 ### 8.1 Platform Fees
 
-**Transaction Fee**: 2% on all trades (configurable)
+**Transaction Fee**: 1% on all trades (configurable)
 
 Fee distribution:
 - Platform revenue
@@ -352,9 +352,9 @@ Fee distribution:
 **Three-Tier Commission Structure:**
 | Tier | Relationship | Commission |
 |------|--------------|------------|
-| Tier 1 | Direct referral | 25% of fee (0.5% of trade) |
-| Tier 2 | Referrer's referrer | 5% of fee (0.1% of trade) |
-| Tier 3 | Third level | 3% of fee (0.06% of trade) |
+| Tier 1 | Direct referral | 25% of fee (0.25% of trade) |
+| Tier 2 | Referrer's referrer | 5% of fee (0.05% of trade) |
+| Tier 3 | Third level | 3% of fee (0.03% of trade) |
 
 Users can withdraw earned commissions (minimum 5 USDC).
 

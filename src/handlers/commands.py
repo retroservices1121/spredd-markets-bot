@@ -6911,11 +6911,11 @@ The PIN ensures only YOU can export your wallet's private keys. This prevents un
             "text": """<b>Fee Structure:</b>
 
 <b>Spredd Bot Fees:</b>
-• <b>2% transaction fee</b> on all trades
+• <b>1% transaction fee</b> on all trades
 • No deposit/withdrawal fees
 • Fee supports referral program rewards
 
-<b>Referral Rewards (from our 2% fee):</b>
+<b>Referral Rewards (from our 1% fee):</b>
 • Tier 1 referrers earn 25% of fee
 • Tier 2 referrers earn 5% of fee
 • Tier 3 referrers earn 3% of fee
@@ -8252,7 +8252,7 @@ Market: {escape_html(market.title[:50])}...
 Side: BUY {side_label}
 
 💰 <b>You Pay:</b> {amount} {collateral_sym}
-💸 <b>Fee (2%):</b> {fee_display}
+💸 <b>Fee (1%):</b> {fee_display}
 📦 <b>You Receive:</b> ~{expected_tokens:.2f} {token_label} tokens
 📊 <b>Execution Price:</b> {format_probability(price)} per token
 {price_warning}{liquidity_warning}"""
@@ -10930,7 +10930,7 @@ async def getfees_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         text = """⚙️ <b>Referral Fee Configuration</b>
 
-<b>Current Rates (% of 2% fee):</b>
+<b>Current Rates (% of 1% fee):</b>
 ├ Tier 1 (Direct): <code>{:.1f}%</code>{}
 ├ Tier 2: <code>{:.1f}%</code>{}
 └ Tier 3: <code>{:.1f}%</code>{}

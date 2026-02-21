@@ -118,8 +118,8 @@ class Settings(BaseSettings):
         description="Solana wallet address to receive platform fees (must be valid Solana address)"
     )
     kalshi_fee_bps: int = Field(
-        default=200,
-        description="Platform fee in basis points (200 = 2%)"
+        default=100,
+        description="Platform fee in basis points (100 = 1%)"
     )
 
     # EVM Fee Collection (Polymarket/Opinion/Limitless/Myriad)
@@ -128,8 +128,8 @@ class Settings(BaseSettings):
         description="EVM wallet address to receive platform fees"
     )
     evm_fee_bps: int = Field(
-        default=200,
-        description="Platform fee in basis points for EVM platforms (200 = 2%)"
+        default=100,
+        description="Platform fee in basis points for EVM platforms (100 = 1%)"
     )
 
     # ===================

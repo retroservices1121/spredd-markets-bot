@@ -2,7 +2,7 @@
 Fee service for handling transaction fees and referral distributions.
 
 Fee Structure:
-- 2% transaction fee on all trades
+- 1% transaction fee on all trades
 - Referral commissions from the fee:
   - Tier 1 (direct referrer): 25% of fee
   - Tier 2: 5% of fee
@@ -31,7 +31,7 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 
 # Fee configuration
-TRANSACTION_FEE_BPS = 200  # 2% = 200 basis points
+TRANSACTION_FEE_BPS = 100  # 1% = 100 basis points
 
 # Default tier commissions (can be overridden via admin commands)
 DEFAULT_TIER_COMMISSIONS = {
@@ -160,7 +160,7 @@ def get_chain_family_for_platform(platform: Platform) -> ChainFamily:
 
 def calculate_fee(amount_usdc: str) -> str:
     """
-    Calculate the 2% transaction fee.
+    Calculate the 1% transaction fee.
 
     Args:
         amount_usdc: Trade amount in USDC (as string for precision)
@@ -183,7 +183,7 @@ def calculate_net_amount(amount_usdc: str) -> str:
         amount_usdc: Trade amount in USDC
 
     Returns:
-        Net amount after 2% fee
+        Net amount after 1% fee
     """
     amount = Decimal(amount_usdc)
     fee = Decimal(calculate_fee(amount_usdc))

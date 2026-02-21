@@ -32,7 +32,7 @@ const FAQ_ITEMS = [
   },
   {
     q: "What are the fees?",
-    a: "Spredd charges 1% on all trades. No deposit/withdrawal fees. Platform fees vary: Kalshi ~2% on winnings, Polymarket ~2% trading fee. Network gas fees are minimal (SOL ~$0.001, Polygon ~$0.01, BSC ~$0.10).",
+    a: "Spredd charges 1% on all trades. No deposit/withdrawal fees. Platform fees vary by market. Network gas fees are minimal (SOL ~$0.001, Polygon ~$0.01, BSC ~$0.10).",
   },
   {
     q: "How do I deposit?",

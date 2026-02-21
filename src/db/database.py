@@ -1306,9 +1306,9 @@ async def get_analytics_stats(
             except:
                 pass
 
-        # Calculate fee revenue as 2% of trade volume
-        # Fee is 200 basis points (2%) on every trade
-        fee_revenue = trade_volume * Decimal("0.02")
+        # Calculate fee revenue as 1% of trade volume
+        # Fee is 100 basis points (1%) on every trade
+        fee_revenue = trade_volume * Decimal("0.01")
 
         # Get referral payouts from fee_transactions
         referral_query = select(FeeTransaction).where(
@@ -1380,8 +1380,8 @@ async def get_analytics_by_platform(
                 except:
                     pass
 
-            # Calculate fee revenue as 2% of trade volume
-            fee_revenue = trade_volume * Decimal("0.02")
+            # Calculate fee revenue as 1% of trade volume
+            fee_revenue = trade_volume * Decimal("0.01")
 
             # Get unique users who traded on this platform
             user_query = select(sql_func.count(sql_func.distinct(Order.user_id))).where(
@@ -1465,7 +1465,7 @@ async def get_top_traders(
                     "first_name": user.first_name,
                     "volume": trader["volume"],
                     "trade_count": trader["trade_count"],
-                    "fees_paid": trader["volume"] * Decimal("0.02"),
+                    "fees_paid": trader["volume"] * Decimal("0.01"),
                 })
 
         return result

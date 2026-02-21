@@ -19,17 +19,17 @@ This document explains how to run referral campaigns using the Spredd Markets Bo
 
 ## How Referral Commissions Work
 
-When a user trades, we take a 2% fee. This fee is distributed to referrers:
+When a user trades, we take a 1% fee. This fee is distributed to referrers:
 
-- **Tier 1 (Direct Referrer):** Default 25% of fee (0.5% of trade)
-- **Tier 2 (Referrer's Referrer):** Default 5% of fee (0.1% of trade)
-- **Tier 3:** Default 3% of fee (0.06% of trade)
+- **Tier 1 (Direct Referrer):** Default 25% of fee (0.25% of trade)
+- **Tier 2 (Referrer's Referrer):** Default 5% of fee (0.05% of trade)
+- **Tier 3:** Default 3% of fee (0.03% of trade)
 
 **Example:** User trades $100
-- Fee collected: $2.00
-- Tier 1 referrer earns: $0.50 (25% of $2)
-- Tier 2 referrer earns: $0.10 (5% of $2)
-- Tier 3 referrer earns: $0.06 (3% of $2)
+- Fee collected: $1.00
+- Tier 1 referrer earns: $0.25 (25% of $1)
+- Tier 2 referrer earns: $0.05 (5% of $1)
+- Tier 3 referrer earns: $0.03 (3% of $1)
 
 ---
 
