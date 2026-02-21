@@ -309,21 +309,27 @@ class KalshiPlatform(BasePlatform):
         if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
             return self._markets_cache
 
-        # Rapid-market ticker prefixes (5-min, 15-min, hourly)
-        rapid_prefixes = (
-            "KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M",
-            "KXBTC5M", "KXETH5M", "KXSOL5M", "KXXRP5M", "KXDOGE5M",
-            "KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXDOGED",
-        )
+        # Rapid-market ticker prefixes grouped by type
+        RAPID_5M = ("KXBTC5M", "KXETH5M", "KXSOL5M", "KXXRP5M", "KXDOGE5M")
+        RAPID_15M = ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M")
+        RAPID_HOURLY = ("KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXDOGED")
+        rapid_prefixes = RAPID_5M + RAPID_15M + RAPID_HOURLY
 
         def _is_rapid(ticker: str) -> bool:
             t = ticker.upper()
             return any(t.startswith(p) for p in rapid_prefixes)
 
+        def _rapid_type(ticker: str) -> str | None:
+            t = ticker.upper()
+            if any(t.startswith(p) for p in RAPID_5M): return "5m"
+            if any(t.startswith(p) for p in RAPID_15M): return "15m"
+            if any(t.startswith(p) for p in RAPID_HOURLY): return "hourly"
+            return None
+
         all_markets = []
         cursor = None
         max_pages = 4  # Cap at ~750 general markets to keep load times fast
-        has_rapid = False
+        found_rapid_types: set[str] = set()
 
         for page in range(max_pages):
             params = {"limit": 200, "status": "active"}
@@ -341,8 +347,9 @@ class KalshiPlatform(BasePlatform):
                 try:
                     m = self._parse_market(item)
                     all_markets.append(m)
-                    if _is_rapid(m.market_id):
-                        has_rapid = True
+                    rt = _rapid_type(m.market_id)
+                    if rt:
+                        found_rapid_types.add(rt)
                 except Exception as e:
                     logger.warning("Failed to parse market", error=str(e))
 
@@ -352,10 +359,12 @@ class KalshiPlatform(BasePlatform):
                 break
             cursor = new_cursor
 
-        # If no rapid markets found in the first batch, keep paginating
-        # up to a hard ceiling to ensure they're included.
-        if not has_rapid and cursor:
-            extra_limit = 10  # up to 10 extra pages to find rapid markets
+        # Keep paginating until all three rapid types (5m, 15m, hourly) are
+        # found.  The old code stopped as soon as ANY rapid type appeared,
+        # which meant 15-min markets on later pages were silently skipped.
+        all_rapid_types = {"5m", "15m", "hourly"}
+        if found_rapid_types < all_rapid_types and cursor:
+            extra_limit = 16
             for page in range(extra_limit):
                 params = {"limit": 200, "status": "active", "cursor": cursor}
                 try:
@@ -369,17 +378,23 @@ class KalshiPlatform(BasePlatform):
                     try:
                         m = self._parse_market(item)
                         all_markets.append(m)
-                        if _is_rapid(m.market_id):
-                            has_rapid = True
+                        rt = _rapid_type(m.market_id)
+                        if rt:
+                            found_rapid_types.add(rt)
                     except Exception as e:
                         pass
 
                 new_cursor = data.get("cursor")
-                if not new_cursor or not page_markets or has_rapid:
+                if not new_cursor or not page_markets or found_rapid_types >= all_rapid_types:
                     break
                 cursor = new_cursor
 
-        logger.info("Fetched DFlow markets", total=len(all_markets), has_rapid=has_rapid)
+        logger.info(
+            "Fetched DFlow markets",
+            total=len(all_markets),
+            rapid_types=sorted(found_rapid_types),
+            missing_rapid=sorted(all_rapid_types - found_rapid_types),
+        )
 
         # Detect multi-outcome events by grouping by event_id
         event_groups = defaultdict(list)
