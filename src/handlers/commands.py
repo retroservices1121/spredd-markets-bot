@@ -247,6 +247,8 @@ def platform_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     for platform_id in platform_registry.all_platforms:
         info = PLATFORM_INFO[platform_id]
+        if info.get("hidden"):
+            continue
         label = f"{info['emoji']} {info['name']}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"platform:{platform_id.value}")])
     return InlineKeyboardMarkup(buttons)
@@ -2496,6 +2498,8 @@ async def handle_platform_menu(query, telegram_id: int) -> None:
     buttons = []
     for platform_id in platform_registry.all_platforms:
         info = PLATFORM_INFO[platform_id]
+        if info.get("hidden"):
+            continue
         label = f"{info['emoji']} {info['name']}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"platform:{platform_id.value}")])
 
