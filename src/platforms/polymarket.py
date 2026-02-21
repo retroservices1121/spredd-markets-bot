@@ -850,11 +850,7 @@ class PolymarketPlatform(BasePlatform):
             params["active"] = "true"
             params["closed"] = "false"
 
-        # Main fetch first, then rapid tag fetches in parallel to avoid rate limits
-        data = await self._gamma_request("GET", "/events", params=params)
-        if not isinstance(data, list):
-            data = []
-
+        # Fetch main events and rapid tag events in parallel
         async def _fetch_rapid(tag: str):
             try:
                 return await self._gamma_request("GET", "/events", params={
@@ -869,12 +865,14 @@ class PolymarketPlatform(BasePlatform):
                 logger.warning("Failed to fetch rapid markets", tag=tag, error=str(e))
                 return []
 
-        rapid_results = await asyncio.gather(
+        main_result, *rapid_results = await asyncio.gather(
+            self._gamma_request("GET", "/events", params=params),
             _fetch_rapid("5M"),
             _fetch_rapid("15M"),
             _fetch_rapid("1H"),
         )
 
+        data = main_result if isinstance(main_result, list) else []
         existing_ids = {e.get("id") for e in data}
         for rapid_data in rapid_results:
             for event in (rapid_data if isinstance(rapid_data, list) else []):
