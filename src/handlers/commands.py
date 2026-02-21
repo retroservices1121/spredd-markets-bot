@@ -244,6 +244,37 @@ def format_expiration(close_time, show_time: bool = True) -> str:
         return close_str[:20] if len(close_str) > 20 else close_str
 
 
+async def enrich_orderbook_prices(markets: list, platform) -> None:
+    """Replace mid-prices with actual orderbook ask prices for display.
+
+    Fetches best_ask for YES outcome from the orderbook for each market
+    so users see the real price they'd pay, not the misleading mid-price.
+    Only affects platforms that return mid-prices (e.g. Polymarket).
+    Kalshi/Jupiter already return ask prices from their API.
+    """
+    from src.db.models import Outcome as OutcomeEnum
+
+    # Only enrich Polymarket markets (others already use ask prices)
+    if not markets or not hasattr(platform, 'get_orderbook'):
+        return
+    platform_name = getattr(getattr(markets[0], 'platform', None), 'value', '')
+    if platform_name != 'polymarket':
+        return
+
+    async def fetch_ask(market):
+        try:
+            ob = await platform.get_orderbook(market.market_id, OutcomeEnum.YES)
+            if ob and ob.best_ask:
+                market.yes_price = ob.best_ask
+            if ob and ob.best_bid:
+                # no_price = 1 - yes_bid (what you'd pay to buy NO via selling YES)
+                market.no_price = max(Decimal("0.01"), Decimal("1") - ob.best_bid)
+        except Exception:
+            pass  # Keep original price as fallback
+
+    await asyncio.gather(*[fetch_ask(m) for m in markets])
+
+
 def platform_keyboard() -> InlineKeyboardMarkup:
     """Create platform selection keyboard."""
     buttons = []
@@ -858,6 +889,9 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
+        # Enrich with actual orderbook ask prices (replaces mid-prices)
+        await enrich_orderbook_prices(markets, platform)
+
         text = f"{platform_info['emoji']} <b>Trending on {platform_info['name']}</b>\n"
         text += f"<i>Page 1</i>\n\n"
 
@@ -949,6 +983,9 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
         
+        # Enrich with actual orderbook ask prices (replaces mid-prices)
+        await enrich_orderbook_prices(markets, platform)
+
         text = f"🔍 <b>Results for \"{escape_html(query)}\"</b>\n\n"
 
         buttons = []
@@ -1150,11 +1187,20 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                 # Fallback to numeric ID with title search if slug lookup failed
                 market = await platform.get_market(pos.market_id, search_title=pos.market_title, include_closed=True)
             if market:
-                # Get the price for the outcome the user holds
-                if outcome_str == "YES":
-                    current_price = market.yes_price
-                else:
-                    current_price = market.no_price
+                # Fetch orderbook bid price (what you'd actually get selling)
+                # instead of mid-price which creates misleading P&L
+                try:
+                    from src.db.models import Outcome as OutcomeEnum
+                    ob_outcome = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
+                    ob = await platform.get_orderbook(market.market_id, ob_outcome)
+                    if ob and ob.best_bid:
+                        current_price = ob.best_bid
+                    elif ob and ob.best_ask:
+                        current_price = ob.best_ask
+                    else:
+                        current_price = market.yes_price if outcome_str == "YES" else market.no_price
+                except Exception:
+                    current_price = market.yes_price if outcome_str == "YES" else market.no_price
         except Exception:
             pass
 
@@ -1193,7 +1239,17 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
             if not market and pos.event_id:
                 market = await platform.get_market(pos.market_id, search_title=pos.market_title, include_closed=True)
             if market:
-                fresh_price = market.yes_price if outcome_str == "YES" else market.no_price
+                # Use orderbook bid price (real exit price) instead of mid-price
+                try:
+                    from src.db.models import Outcome as OutcomeEnum
+                    ob_outcome = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
+                    ob = await platform.get_orderbook(market.market_id, ob_outcome)
+                    if ob and ob.best_bid:
+                        fresh_price = ob.best_bid
+                    else:
+                        fresh_price = market.yes_price if outcome_str == "YES" else market.no_price
+                except Exception:
+                    fresh_price = market.yes_price if outcome_str == "YES" else market.no_price
         except Exception:
             pass
 
@@ -6237,6 +6293,9 @@ async def handle_trending_markets(query, telegram_id: int, page: int = 0) -> Non
             )
             return
 
+        # Enrich with actual orderbook ask prices (replaces mid-prices)
+        await enrich_orderbook_prices(markets, platform)
+
         page_display = page + 1
         text = f"{platform_info['emoji']} <b>Trending on {platform_info['name']}</b>\n"
         text += f"<i>Page {page_display}</i>\n\n"
@@ -6378,6 +6437,9 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
         start_idx = page * MARKETS_PER_PAGE
         end_idx = min(start_idx + MARKETS_PER_PAGE, total_markets)
         markets = all_markets[start_idx:end_idx]
+
+        # Enrich with actual orderbook ask prices (replaces mid-prices)
+        await enrich_orderbook_prices(markets, platform)
 
         text = f"{category_emoji} <b>{category_label} Markets</b>"
         if total_pages > 1:
@@ -7543,10 +7605,17 @@ async def handle_sell_start(query, position_id: str, telegram_id: int) -> None:
             market = await platform.get_market(position.market_id, search_title=position.market_title)
         if market:
             outcome_str = position.outcome.upper() if isinstance(position.outcome, str) else position.outcome.value.upper()
-            if outcome_str == "YES":
-                current_price = market.yes_price
-            else:
-                current_price = market.no_price
+            # Use orderbook bid price (real exit price) instead of mid-price
+            try:
+                from src.db.models import Outcome as OutcomeEnum
+                ob_outcome = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
+                ob = await platform.get_orderbook(market.market_id, ob_outcome)
+                if ob and ob.best_bid:
+                    current_price = ob.best_bid
+                else:
+                    current_price = market.yes_price if outcome_str == "YES" else market.no_price
+            except Exception:
+                current_price = market.yes_price if outcome_str == "YES" else market.no_price
     except Exception:
         pass
 
@@ -8134,13 +8203,7 @@ async def handle_buy_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             "amount": str(amount),
         }
 
-        # Get market's displayed price (mid-price) for comparison
-        displayed_price = market.yes_price if outcome == "yes" else market.no_price
         price_warning = ""
-        if displayed_price and price:
-            diff = abs(float(price) - float(displayed_price))
-            if diff > 0.05:  # More than 5% difference
-                price_warning = f"\n⚠️ <b>Note:</b> Execution price ({format_probability(price)}) differs from displayed mid-price ({format_probability(displayed_price)}) due to orderbook depth.\n"
 
         # Check for liquidity warning from Limitless
         liquidity_warning = ""
@@ -10228,6 +10291,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 return
             
+            # Enrich with actual orderbook ask prices (replaces mid-prices)
+            await enrich_orderbook_prices(markets, platform)
+
             response = f"🔍 <b>Results for \"{escape_html(text)}\"</b>\n\n"
 
             buttons = []
