@@ -53,11 +53,11 @@ class Settings(BaseSettings):
     # EVM Configuration (shared for Polygon, BSC & L2s)
     # ===================
     polygon_rpc_url: str = Field(
-        default="https://rpc.ankr.com/polygon",
+        default="https://polygon-bor-rpc.publicnode.com",
         description="Polygon RPC endpoint"
     )
     polygon_rpc_fallbacks: str = Field(
-        default="https://polygon-bor-rpc.publicnode.com,https://1rpc.io/matic,https://polygon-mainnet.public.blastapi.io",
+        default="https://1rpc.io/matic,https://rpc.ankr.com/polygon",
         description="Comma-separated fallback Polygon RPC endpoints"
     )
     bsc_rpc_url: str = Field(
@@ -141,7 +141,7 @@ class Settings(BaseSettings):
         description="Private key for EVM treasury wallet (hex format, for referral payouts on Polygon)"
     )
     treasury_evm_rpc_url: str = Field(
-        default="https://rpc.ankr.com/polygon",
+        default="https://polygon-bor-rpc.publicnode.com",
         description="RPC URL for EVM treasury transactions (Polygon)"
     )
     usdc_contract_polygon: str = Field(
