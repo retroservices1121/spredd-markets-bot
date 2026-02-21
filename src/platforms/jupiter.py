@@ -214,10 +214,12 @@ class JupiterPlatform(BasePlatform):
                     "includeMarkets": "true",
                     "sortBy": "volume",
                     "sortDirection": "desc",
+                    "start": "0",
+                    "end": "20",
                 },
             )
 
-            events = data if isinstance(data, list) else data.get("events", data.get("data", []))
+            events = data if isinstance(data, list) else data.get("data", data.get("events", []))
 
             for event in events:
                 event_id = event.get("eventId") or event.get("id", "")
