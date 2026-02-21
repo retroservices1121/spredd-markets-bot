@@ -54,6 +54,7 @@ class KalshiPlatform(BasePlatform):
     
     def __init__(self):
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._kalshi_public_client: Optional[httpx.AsyncClient] = None
         self._solana_client: Optional[SolanaClient] = None
         self._api_key = settings.dflow_api_key
         self._fee_account = settings.kalshi_fee_account
@@ -72,6 +73,9 @@ class KalshiPlatform(BasePlatform):
             headers=headers,
         )
 
+        # Separate client for Kalshi public API (no DFlow API key)
+        self._kalshi_public_client = httpx.AsyncClient(timeout=10.0)
+
         self._solana_client = SolanaClient(settings.solana_rpc_url)
 
         fee_enabled = bool(self._fee_account and len(self._fee_account) >= 32)
@@ -88,6 +92,8 @@ class KalshiPlatform(BasePlatform):
         """Close connections."""
         if self._http_client:
             await self._http_client.aclose()
+        if self._kalshi_public_client:
+            await self._kalshi_public_client.aclose()
         if self._solana_client:
             await self._solana_client.close()
     
@@ -180,9 +186,8 @@ class KalshiPlatform(BasePlatform):
         """
         names: dict[str, str] = {}
         try:
-            resp = await self._http_client.get(
+            resp = await self._kalshi_public_client.get(
                 f"{self.KALSHI_PUBLIC_API}/events/{event_id}",
-                timeout=10.0,
             )
             if resp.status_code == 200:
                 data = resp.json()
