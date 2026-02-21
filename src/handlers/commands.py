@@ -728,16 +728,22 @@ Type /cancel to cancel.
     if solana_wallet:
         text += f"<b>🟣 Solana</b> (Kalshi)\n"
         text += f"<code>{solana_wallet.public_key}</code>\n"
-        for bal in balances.get(ChainFamily.SOLANA, []):
+        sol_bals = [bal for bal in balances.get(ChainFamily.SOLANA, []) if bal.amount > 0]
+        for bal in sol_bals:
             text += f"  • {bal.formatted}\n"
+        if not sol_bals:
+            text += "  • <i>No balance</i>\n"
         text += "\n"
 
     # EVM wallet (for Polymarket, Opinion, Limitless & Myriad)
     if evm_wallet:
         text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
-        for bal in balances.get(ChainFamily.EVM, []):
+        evm_bals = [bal for bal in balances.get(ChainFamily.EVM, []) if bal.amount > 0]
+        for bal in evm_bals:
             text += f"  • {bal.formatted} ({bal.chain.value})\n"
+        if not evm_bals:
+            text += "  • <i>No balance</i>\n"
 
     text += "\n<i>Tap address to copy. Send funds to deposit.</i>"
 
@@ -3507,21 +3513,27 @@ You haven't created your wallets yet.
     if solana_wallet:
         text += f"<b>🟣 Solana</b> (Kalshi)\n"
         text += f"<code>{solana_wallet.public_key}</code>\n"
-        for bal in balances.get(ChainFamily.SOLANA, []):
+        sol_bals = [bal for bal in balances.get(ChainFamily.SOLANA, []) if bal.amount > 0]
+        for bal in sol_bals:
             text += f"  • {bal.formatted}\n"
+        if not sol_bals:
+            text += "  • <i>No balance</i>\n"
         text += "\n"
 
     if evm_wallet:
         text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
 
-        # Show USDC balances
-        text += "<b>USDC:</b>\n"
-        for bal in balances.get(ChainFamily.EVM, []):
-            text += f"  • {bal.formatted} ({bal.chain.value})\n"
+        # Show USDC balances (only chains with balance)
+        evm_bals = [bal for bal in balances.get(ChainFamily.EVM, []) if bal.amount > 0]
+        if evm_bals:
+            text += "<b>USDC:</b>\n"
+            for bal in evm_bals:
+                text += f"  • {bal.formatted} ({bal.chain.value})\n"
 
-        # Show native token balances (for gas)
-        if native_balances:
+        # Show native token balances (for gas) - only non-zero
+        gas_with_balance = {c: b for c, b in native_balances.items() if b > 0}
+        if gas_with_balance:
             text += "\n<b>Gas Tokens:</b>\n"
             chain_emoji = {
                 BridgeChain.ETHEREUM: "⚪",
@@ -3532,10 +3544,13 @@ You haven't created your wallets yet.
                 BridgeChain.ARBITRUM: "🔷",
                 BridgeChain.OPTIMISM: "🔴",
             }
-            for chain, bal in native_balances.items():
+            for chain, bal in gas_with_balance.items():
                 symbol = NATIVE_TOKEN_SYMBOLS.get(chain, "ETH")
                 emoji = chain_emoji.get(chain, "🔹")
                 text += f"  {emoji} {float(bal):.6f} {symbol} ({chain.value})\n"
+
+        if not evm_bals and not gas_with_balance:
+            text += "  • <i>No balance</i>\n"
 
     text += "\n<i>Tap address to copy. Send funds to deposit.</i>"
 

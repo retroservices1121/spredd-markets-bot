@@ -465,27 +465,23 @@ class WalletService(LoggerMixin):
         """Get USDC balance on Solana."""
         if not self._solana_client:
             raise RuntimeError("Solana client not initialized")
-        
-        from solana.rpc.types import TokenAccountOpts
-        
+
+        from spl.token.instructions import get_associated_token_address
+
         pubkey = Pubkey.from_string(public_key)
         usdc_mint = Pubkey.from_string(USDC_ADDRESSES[Chain.SOLANA])
-        
-        response = await self._solana_client.get_token_accounts_by_owner(
-            pubkey,
-            TokenAccountOpts(mint=usdc_mint),
-            commitment=Confirmed,
-        )
-        
+        ata = get_associated_token_address(pubkey, usdc_mint)
+
         total = Decimal(0)
-        for account in response.value:
-            # Parse token account data
-            data = account.account.data
-            # Token account balance is at offset 64, 8 bytes little endian
-            if len(data) >= 72:
-                amount = int.from_bytes(data[64:72], "little")
-                total += Decimal(amount) / Decimal(10**USDC_DECIMALS)
-        
+        try:
+            response = await self._solana_client.get_token_account_balance(
+                ata, commitment=Confirmed,
+            )
+            if response.value:
+                total = Decimal(response.value.amount) / Decimal(10**USDC_DECIMALS)
+        except Exception:
+            pass  # No USDC account yet
+
         return Balance(
             token=USDC_ADDRESSES[Chain.SOLANA],
             symbol="USDC",
