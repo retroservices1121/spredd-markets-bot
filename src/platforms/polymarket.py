@@ -1546,13 +1546,15 @@ class PolymarketPlatform(BasePlatform):
             amount: Amount to trade
             token_id: Optional token ID to use (required for sells to use position's stored token)
         """
-        # Use include_closed=True so sells work on near-expiry markets
+        # Use include_closed=True so sells work on near-expiry/resolved markets
         market = await self.get_market(market_id, include_closed=True)
-        if not market:
+        if not market and side == "buy":
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.POLYMARKET)
 
         # Use provided token_id for sells (from stored position), otherwise get from market
         if not token_id:
+            if not market:
+                raise MarketNotFoundError(f"Market {market_id} not found", Platform.POLYMARKET)
             token_id = market.yes_token if outcome == Outcome.YES else market.no_token
         if not token_id:
             raise PlatformError(f"Token not found for {outcome.value}", Platform.POLYMARKET)
@@ -1563,17 +1565,22 @@ class PolymarketPlatform(BasePlatform):
         # Get current price from orderbook (pass token_id for sells)
         orderbook = await self.get_orderbook(market_id, outcome, token_id=token_id)
 
+        # Get fallback price from market data (if available)
+        fallback_price = Decimal("0.5")
+        if market:
+            fallback_price = (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+
         if side == "buy":
             # Buying - use ask price (prefer live WebSocket price if available)
             price = live_price.get("best_ask") if live_price else None
-            price = price or orderbook.best_ask or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+            price = price or orderbook.best_ask or fallback_price
             expected_output = amount / price
             input_token = POLYMARKET_CONTRACTS["collateral"]
             output_token = token_id
         else:
             # Selling - use bid price (prefer live WebSocket price if available)
             price = live_price.get("best_bid") if live_price else None
-            price = price or orderbook.best_bid or (market.yes_price if outcome == Outcome.YES else market.no_price) or Decimal("0.5")
+            price = price or orderbook.best_bid or fallback_price
             expected_output = amount * price
             input_token = token_id
             output_token = POLYMARKET_CONTRACTS["collateral"]
@@ -1597,7 +1604,7 @@ class PolymarketPlatform(BasePlatform):
                 "token_id": token_id,
                 "condition_id": market_id,
                 "price": str(price),
-                "market": market.raw_data,
+                "market": market.raw_data if market else None,
             },
         )
 
