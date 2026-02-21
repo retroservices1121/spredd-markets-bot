@@ -2065,7 +2065,9 @@ class PolymarketPlatform(BasePlatform):
                 )
 
             # Get the full condition ID from market data
-            condition_id = market.raw_data.get("conditionId")
+            # raw_data is {"event": ..., "market": ...}, conditionId is in the market dict
+            market_raw = market.raw_data.get("market", {}) if isinstance(market.raw_data, dict) else {}
+            condition_id = market_raw.get("conditionId") or market.market_id
             if not condition_id:
                 return MarketResolution(
                     is_resolved=False,
@@ -2074,8 +2076,8 @@ class PolymarketPlatform(BasePlatform):
                 )
 
             # Check if market is closed/resolved from API data
-            closed = market.raw_data.get("closed", False)
-            resolved = market.raw_data.get("resolved", False)
+            closed = market_raw.get("closed", False)
+            resolved = market_raw.get("resolved", False)
 
             if not closed and not resolved:
                 return MarketResolution(
@@ -2085,13 +2087,13 @@ class PolymarketPlatform(BasePlatform):
                 )
 
             # Get resolution from raw_data if available
-            resolution_data = market.raw_data.get("resolution")
+            resolution_data = market_raw.get("resolution")
             if resolution_data:
                 winning = "yes" if resolution_data == "Yes" else "no" if resolution_data == "No" else None
                 return MarketResolution(
                     is_resolved=True,
                     winning_outcome=winning,
-                    resolution_time=market.raw_data.get("resolutionTime"),
+                    resolution_time=market_raw.get("resolutionTime"),
                 )
 
             # Otherwise check CTF contract for payout numerators
@@ -2170,8 +2172,8 @@ class PolymarketPlatform(BasePlatform):
                     explorer_url=None,
                 )
 
-            # Get market to find condition ID
-            market = await self.get_market(market_id)
+            # Get market to find condition ID (include_closed since market is resolved)
+            market = await self.get_market(market_id, include_closed=True)
             if not market or not market.raw_data:
                 return RedemptionResult(
                     success=False,
@@ -2181,7 +2183,9 @@ class PolymarketPlatform(BasePlatform):
                     explorer_url=None,
                 )
 
-            condition_id = market.raw_data.get("conditionId")
+            # raw_data is {"event": ..., "market": ...}, conditionId is in the market dict
+            market_raw = market.raw_data.get("market", {}) if isinstance(market.raw_data, dict) else {}
+            condition_id = market_raw.get("conditionId") or market.market_id
             if not condition_id:
                 return RedemptionResult(
                     success=False,
