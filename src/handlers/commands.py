@@ -7964,30 +7964,35 @@ async def handle_chain_toggle(query, chain: str, context) -> None:
     try:
         # Jupiter uses different market IDs than Polymarket — look up by title
         if new_platform == "jupiter":
-            market_title = pending.get("market_title", "")
-            if not market_title:
-                await query.edit_message_text("❌ Cannot switch chain — market title missing.")
-                return
-
-            # Search Jupiter for the matching market
-            from src.platforms.jupiter import jupiter_platform
-            results = await jupiter_platform.search_markets(market_title, limit=5)
-            market = None
-            title_lower = market_title.lower().strip()
-            for m in results:
-                if m.title.lower().strip() == title_lower:
-                    market = m
-                    break
-            # Fallback: use first result if close enough
-            if not market and results:
-                market = results[0]
-
-            if market:
-                pending["jupiter_market_id"] = market.market_id
-                pending["market_id"] = market.market_id
+            # Reuse cached Jupiter market_id if we already resolved it
+            cached_jup_id = pending.get("jupiter_market_id")
+            if cached_jup_id:
+                pending["market_id"] = cached_jup_id
+                market = await platform.get_market(cached_jup_id)
             else:
-                await query.edit_message_text("❌ This market is not available on Solana (Jupiter).")
-                return
+                market_title = pending.get("market_title", "")
+                if not market_title:
+                    await query.edit_message_text("❌ Cannot switch chain — market title missing.")
+                    return
+
+                # Search Jupiter for the matching market
+                from src.platforms.jupiter import jupiter_platform
+                results = await jupiter_platform.search_markets(market_title, limit=5)
+                market = None
+                title_lower = market_title.lower().strip()
+                for m in results:
+                    if m.title.lower().strip() == title_lower:
+                        market = m
+                        break
+                if not market and results:
+                    market = results[0]
+
+                if market:
+                    pending["jupiter_market_id"] = market.market_id
+                    pending["market_id"] = market.market_id
+                else:
+                    await query.edit_message_text("❌ This market is not available on Solana (Jupiter).")
+                    return
         else:
             # Switching back to Polygon — restore original Polymarket market_id
             pending["market_id"] = pending["polymarket_market_id"]
