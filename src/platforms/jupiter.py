@@ -13,6 +13,8 @@ from typing import Any, Optional
 
 import httpx
 from solders.keypair import Keypair
+from solders.presigner import Presigner
+from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from solana.rpc.async_api import AsyncClient as SolanaClient
 from solana.rpc.commitment import Confirmed
@@ -531,8 +533,21 @@ class JupiterPlatform(BasePlatform):
             tx_data = base64.b64decode(tx_b64)
             tx = VersionedTransaction.from_bytes(tx_data)
 
-            # Sign the transaction
-            signed_tx = VersionedTransaction(tx.message, [private_key])
+            # The transaction may be partially signed by Jupiter's co-signer.
+            # Preserve existing signatures and add the user's.
+            signers = [private_key]
+            num_required = tx.message.header.num_required_signatures
+            account_keys = tx.message.account_keys
+
+            for i in range(num_required):
+                pubkey = account_keys[i]
+                if pubkey == private_key.pubkey():
+                    continue  # We'll sign this ourselves
+                existing_sig = tx.signatures[i]
+                if existing_sig != Signature.default():
+                    signers.append(Presigner(pubkey, existing_sig))
+
+            signed_tx = VersionedTransaction(tx.message, signers)
 
             # Submit to Solana
             if not self._solana_client:
@@ -584,11 +599,25 @@ class JupiterPlatform(BasePlatform):
     async def _sign_and_submit(self, tx_b64: str, private_key: Keypair) -> str:
         """Decode a base64 transaction, sign it, and submit to Solana.
 
-        Returns the transaction hash.
+        Preserves any existing signatures (e.g. Jupiter co-signer) and adds
+        the user's signature.  Returns the transaction hash.
         """
         tx_data = base64.b64decode(tx_b64)
         tx = VersionedTransaction.from_bytes(tx_data)
-        signed_tx = VersionedTransaction(tx.message, [private_key])
+
+        signers = [private_key]
+        num_required = tx.message.header.num_required_signatures
+        account_keys = tx.message.account_keys
+
+        for i in range(num_required):
+            pubkey = account_keys[i]
+            if pubkey == private_key.pubkey():
+                continue
+            existing_sig = tx.signatures[i]
+            if existing_sig != Signature.default():
+                signers.append(Presigner(pubkey, existing_sig))
+
+        signed_tx = VersionedTransaction(tx.message, signers)
 
         if not self._solana_client:
             raise RuntimeError("Solana client not initialized")
