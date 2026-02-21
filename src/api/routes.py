@@ -628,7 +628,7 @@ def _evict_cache(cache: dict, ttl: float) -> None:
 _WARM_INTERVAL = 60  # seconds between background refreshes
 _cache_warmer_task: asyncio.Task | None = None
 
-_ALL_PLATFORMS = ["kalshi", "polymarket", "opinion", "limitless", "myriad", "jupiter"]
+_ALL_PLATFORMS = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
 
 
 _RAPID_PREFIXES = (
