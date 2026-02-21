@@ -138,16 +138,32 @@ class JupiterPlatform(BasePlatform):
     # Market parsing
     # ===================
 
-    def _parse_market(self, data: dict, parent_event_id: Optional[str] = None) -> Market:
+    def _parse_market(
+        self,
+        data: dict,
+        parent_event_id: Optional[str] = None,
+        event_title: Optional[str] = None,
+    ) -> Market:
         """Parse Jupiter market data into Market object.
 
         Jupiter prices are in micro-USD (divide by 1_000_000).
+        When event_title is provided and differs from the market-level title,
+        the event title becomes the market title and the market-level title
+        becomes the outcome_name (e.g. "Gavin Newsom" under "Democratic Nominee 2028").
         """
         market_id = data.get("marketId", "")
         event_id = data.get("event") or data.get("eventId") or parent_event_id
 
         metadata = data.get("metadata", {})
-        title = metadata.get("title") or data.get("title", "")
+        market_title = metadata.get("title") or data.get("title", "")
+
+        # Use event title as the main title for multi-outcome sub-markets
+        outcome_name = None
+        if event_title and market_title and event_title != market_title:
+            title = event_title
+            outcome_name = market_title
+        else:
+            title = market_title
 
         pricing = data.get("pricing", {})
         yes_price_raw = pricing.get("buyYesPriceUsd", 0)
@@ -176,6 +192,7 @@ class JupiterPlatform(BasePlatform):
             market_id=market_id,
             event_id=event_id,
             title=title,
+            outcome_name=outcome_name,
             description=metadata.get("description"),
             category=metadata.get("category"),
             yes_price=yes_price,
@@ -223,11 +240,17 @@ class JupiterPlatform(BasePlatform):
 
             for event in events:
                 event_id = event.get("eventId") or event.get("id", "")
+                event_meta = event.get("metadata", {})
+                event_title = event_meta.get("title") or ""
                 markets_data = event.get("markets", [])
 
                 for market_data in markets_data:
                     try:
-                        m = self._parse_market(market_data, parent_event_id=event_id)
+                        m = self._parse_market(
+                            market_data,
+                            parent_event_id=event_id,
+                            event_title=event_title,
+                        )
                         all_markets.append(m)
                     except Exception as e:
                         logger.warning("Failed to parse Jupiter market", error=str(e))
@@ -264,11 +287,25 @@ class JupiterPlatform(BasePlatform):
         offset: int = 0,
         active_only: bool = True,
     ) -> list[Market]:
-        """Get list of markets."""
+        """Get list of markets, deduplicated by event.
+
+        For multi-outcome events, returns the highest-volume sub-market
+        as the representative so the browse page shows one entry per event.
+        """
         all_markets = await self._fetch_all_markets()
         if active_only:
             all_markets = [m for m in all_markets if m.is_active]
-        return all_markets[offset:offset + limit]
+
+        # Deduplicate: keep highest-volume market per event
+        seen_events: dict[str, Market] = {}
+        for m in all_markets:
+            key = m.event_id or m.market_id
+            existing = seen_events.get(key)
+            if not existing or (m.volume_24h or 0) > (existing.volume_24h or 0):
+                seen_events[key] = m
+
+        unique = list(seen_events.values())
+        return unique[offset:offset + limit]
 
     async def search_markets(
         self,
@@ -283,13 +320,19 @@ class JupiterPlatform(BasePlatform):
                 params={"query": query, "limit": limit},
             )
 
-            events = data if isinstance(data, list) else data.get("events", data.get("data", []))
+            events = data if isinstance(data, list) else data.get("data", data.get("events", []))
             results: list[Market] = []
             for event in events:
                 event_id = event.get("eventId") or event.get("id", "")
+                event_meta = event.get("metadata", {})
+                event_title = event_meta.get("title") or ""
                 for market_data in event.get("markets", []):
                     try:
-                        results.append(self._parse_market(market_data, parent_event_id=event_id))
+                        results.append(self._parse_market(
+                            market_data,
+                            parent_event_id=event_id,
+                            event_title=event_title,
+                        ))
                     except Exception:
                         pass
             return results[:limit]
