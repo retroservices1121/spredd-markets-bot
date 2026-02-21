@@ -1017,8 +1017,46 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
 
             if not market:
                 # Market not found from API - but tokens may still exist on-chain
-                # Keep position visible so user can attempt manual redemption
-                logger.info(f"Position {pos.id} - market {pos.market_id} not found in API (keeping visible)")
+                # Still check resolution on-chain (works without API for Polymarket)
+                logger.info(f"Position {pos.id} - market {pos.market_id} not found in API, checking on-chain")
+                try:
+                    resolution = await platform.get_market_resolution(pos.market_id)
+                    if resolution.is_resolved:
+                        outcome_str = pos.outcome.upper() if isinstance(pos.outcome, str) else pos.outcome.value.upper()
+                        winning_str = resolution.winning_outcome.upper() if resolution.winning_outcome else None
+                        if winning_str and winning_str == outcome_str:
+                            # Won - try auto-redeem
+                            try:
+                                chain_family = get_chain_family_for_platform(pos.platform)
+                                private_key = await wallet_service.get_private_key(user.id, telegram_id, chain_family)
+                                if private_key:
+                                    from src.db.models import Outcome as OutcomeEnum
+                                    redeem_outcome = OutcomeEnum.YES if outcome_str == "YES" else OutcomeEnum.NO
+                                    token_amount = Decimal(pos.token_amount) / Decimal(10**6)
+                                    result = await platform.redeem_position(
+                                        market_id=pos.market_id,
+                                        outcome=redeem_outcome,
+                                        token_amount=token_amount,
+                                        private_key=private_key,
+                                    )
+                                    if result.success:
+                                        await update_position(pos.id, status=PositionStatus.REDEEMED, token_amount="0")
+                                        logger.info(f"Auto-redeemed winning position {pos.id} (market not in API)")
+                                        continue
+                                    else:
+                                        logger.warning(f"Auto-redeem failed for {pos.id}: {result.error_message}")
+                            except Exception as redeem_err:
+                                logger.warning(f"Auto-redeem error for {pos.id}: {redeem_err}")
+                            active_positions.append(pos)
+                        elif winning_str and winning_str != outcome_str:
+                            # Lost - auto-close
+                            await update_position(pos.id, status=PositionStatus.CLOSED, token_amount="0")
+                            logger.info(f"Auto-closed losing position {pos.id} (market not in API)")
+                        else:
+                            active_positions.append(pos)
+                        continue
+                except Exception as res_err:
+                    logger.warning(f"On-chain resolution check failed for {pos.id}: {res_err}")
                 active_positions.append(pos)
                 continue
 
@@ -1177,6 +1215,19 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                     current_price = market.yes_price if outcome_str == "YES" else market.no_price
         except Exception:
             pass
+
+        # If market not in API, check on-chain resolution for price
+        if current_price is None and not market:
+            try:
+                resolution = await platform.get_market_resolution(pos.market_id)
+                if resolution.is_resolved:
+                    winning_str = resolution.winning_outcome.upper() if resolution.winning_outcome else None
+                    if winning_str and winning_str == outcome_str:
+                        current_price = Decimal("1.00")  # Winning tokens worth $1
+                    elif winning_str:
+                        current_price = Decimal("0.00")  # Losing tokens worth $0
+            except Exception:
+                pass
 
         # Get display name for outcome (use custom name if available)
         display_outcome = get_display_outcome(outcome_str, market)
