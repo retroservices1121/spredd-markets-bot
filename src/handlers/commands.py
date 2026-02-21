@@ -882,7 +882,7 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             buttons.append([InlineKeyboardButton("Next »", callback_data="markets:page:1")])
 
         buttons.append([
-            InlineKeyboardButton("📂 Categories", callback_data="categories"),
+            InlineKeyboardButton("📂 Categories", callback_data="markets:refresh"),
             InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh"),
         ])
 
@@ -2179,10 +2179,13 @@ Select which prediction market you want to trade on:
 
         elif action == "markets":
             if parts[1] == "refresh":
-                await handle_markets_refresh(query, update.effective_user.id, page=0)
+                await handle_markets_refresh(query, update.effective_user.id)
+            elif parts[1] == "trending":
+                page = int(parts[2]) if len(parts) > 2 else 0
+                await handle_trending_markets(query, update.effective_user.id, page=page)
             elif parts[1] == "page":
                 page = int(parts[2]) if len(parts) > 2 else 0
-                await handle_markets_refresh(query, update.effective_user.id, page=page)
+                await handle_trending_markets(query, update.effective_user.id, page=page)
             elif parts[1] == "15m":
                 await handle_15m_markets(query, update.effective_user.id, page=0)
             elif parts[1] == "hourly":
@@ -6165,8 +6168,13 @@ Type /cancel to cancel.
             await query.edit_message_text(f"❌ Export failed: {friendly_error(str(e))}")
 
 
-async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None:
-    """Refresh markets list with pagination."""
+async def handle_markets_refresh(query, telegram_id: int) -> None:
+    """Show categories menu as the main Browse Markets screen."""
+    await handle_categories_menu(query, telegram_id)
+
+
+async def handle_trending_markets(query, telegram_id: int, page: int = 0) -> None:
+    """Show trending markets list with pagination."""
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
@@ -6244,17 +6252,13 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
         # Pagination buttons
         nav_buttons = []
         if page > 0:
-            nav_buttons.append(InlineKeyboardButton("« Previous", callback_data=f"markets:page:{page - 1}"))
+            nav_buttons.append(InlineKeyboardButton("« Previous", callback_data=f"markets:trending:{page - 1}"))
         if has_next:
-            nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"markets:page:{page + 1}"))
+            nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"markets:trending:{page + 1}"))
         if nav_buttons:
             buttons.append(nav_buttons)
 
-        buttons.append([
-            InlineKeyboardButton("📂 Categories", callback_data="categories"),
-            InlineKeyboardButton("🔄 Refresh", callback_data="markets:refresh"),
-        ])
-        buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
+        buttons.append([InlineKeyboardButton("« Back to Categories", callback_data="markets:refresh")])
 
         await query.edit_message_text(
             text,
@@ -6277,26 +6281,17 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
         await query.edit_message_text("Please /start first!")
         return
 
-    # Only Polymarket, Limitless, Kalshi, Opinion, Myriad, and Jupiter support categories
-    if user.active_platform not in (Platform.POLYMARKET, Platform.LIMITLESS, Platform.KALSHI, Platform.OPINION, Platform.MYRIAD, Platform.JUPITER):
-        await query.edit_message_text(
-            "📂 <b>Categories</b>\n\n"
-            "Categories are not available for this platform.\n\n"
-            "Switch to a different platform to browse by category.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("« Back", callback_data="markets:refresh")],
-            ]),
-        )
-        return
-
     platform = get_platform(user.active_platform)
     categories = platform.get_available_categories()
 
-    text = "📂 <b>Browse by Category</b>\n\n"
+    platform_info = PLATFORM_INFO[user.active_platform]
+    text = f"{platform_info['emoji']} <b>Browse {platform_info['name']} Markets</b>\n\n"
     text += "Select a category to see related markets:\n"
 
     buttons = []
+    # Trending button at the top
+    buttons.append([InlineKeyboardButton("🔥 Trending", callback_data="markets:trending")])
+
     # Create 2-column layout for categories
     for i in range(0, len(categories), 2):
         row = []
@@ -6319,7 +6314,7 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
         buttons.append([
             InlineKeyboardButton("🕐 5m Candles", callback_data="markets:5m"),
         ])
-    buttons.append([InlineKeyboardButton("« Back to Markets", callback_data="markets:refresh")])
+    buttons.append([InlineKeyboardButton("« Back", callback_data="menu:main")])
 
     await query.edit_message_text(
         text,
@@ -6355,7 +6350,7 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
                 "No active markets found in this category.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("« Back to Categories", callback_data="categories")],
+                    [InlineKeyboardButton("« Back to Categories", callback_data="markets:refresh")],
                 ]),
             )
             return
@@ -6406,7 +6401,7 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
                 nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"category:{category_id}:{page + 1}"))
             buttons.append(nav_buttons)
 
-        buttons.append([InlineKeyboardButton("« Back to Categories", callback_data="categories")])
+        buttons.append([InlineKeyboardButton("« Back to Categories", callback_data="markets:refresh")])
 
         await query.edit_message_text(
             text,
@@ -6420,7 +6415,7 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
             f"❌ Failed to load {category_label} markets: {friendly_error(str(e))}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("« Back to Categories", callback_data="categories")],
+                [InlineKeyboardButton("« Back to Categories", callback_data="markets:refresh")],
             ]),
         )
 
