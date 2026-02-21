@@ -176,12 +176,56 @@ function normalizeMyriad(m: RawMarket): BotApiMarket {
   };
 }
 
+function normalizeJupiter(m: RawMarket): BotApiMarket {
+  const metadata = m.metadata as Record<string, unknown> | undefined;
+  const pricing = m.pricing as Record<string, unknown> | undefined;
+
+  const title = String(metadata?.title ?? m.title ?? "");
+  const marketId = String(m.marketId ?? m.market_id ?? m.id ?? "");
+  const eventId = String(m.event ?? m.eventId ?? "");
+
+  // Jupiter prices are in micro-USD (divide by 1,000,000)
+  const yesRaw = Number(pricing?.buyYesPriceUsd ?? 0);
+  const noRaw = Number(pricing?.buyNoPriceUsd ?? 0);
+  const volumeRaw = Number(pricing?.volumeUsd ?? 0);
+
+  const yesPrice = yesRaw > 0 ? yesRaw / 1_000_000 : 0.5;
+  const noPrice = noRaw > 0 ? noRaw / 1_000_000 : 1 - yesPrice;
+  const volume = volumeRaw / 1_000_000;
+
+  let endDate = "";
+  if (m.closeTime) {
+    try {
+      endDate = new Date(Number(m.closeTime) * 1000).toISOString();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return {
+    id: marketId,
+    platform: "jupiter",
+    question: title,
+    description: String(metadata?.description ?? ""),
+    yes_price: yesPrice,
+    no_price: noPrice,
+    volume,
+    liquidity: 0,
+    endDate,
+    event_id: eventId,
+    is_multi_outcome: false,
+    outcome_name: "",
+    category: classifyCategory(title),
+  };
+}
+
 function normalizeRawMarkets(platform: Platform, raw: RawMarket[]): BotApiMarket[] {
   const normalizers: Partial<Record<Platform, (m: RawMarket) => BotApiMarket>> = {
     kalshi: normalizeKalshi,
     opinion: normalizeOpinion,
     limitless: normalizeLimitless,
     myriad: normalizeMyriad,
+    jupiter: normalizeJupiter,
   };
   const normalizer = normalizers[platform];
   if (!normalizer) return [];
@@ -285,6 +329,9 @@ export async function fetchPlatformMarkets(
       // rapid markets) instead of direct DFlow pagination which is slow and
       // may miss 15-min/5-min/hourly markets buried deep in the list.
       return fetchViaBotApi(platform, Math.max(limit, 200));
+    case "jupiter":
+      // Jupiter markets are cache-warmed by backend, fetch via Bot API
+      return fetchViaBotApi(platform, limit);
     case "opinion":
     case "limitless":
     case "myriad":
@@ -302,6 +349,9 @@ export async function searchPlatformMarkets(
   switch (platform) {
     case "kalshi":
       // Use backend API search for Kalshi (has full market cache)
+      return searchViaBotApi(platform, query, limit);
+    case "jupiter":
+      // Jupiter search via backend API
       return searchViaBotApi(platform, query, limit);
     case "opinion":
     case "limitless":

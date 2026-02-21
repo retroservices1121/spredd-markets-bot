@@ -12,6 +12,7 @@ from src.platforms.polymarket import polymarket_platform, PolymarketPlatform
 from src.platforms.opinion import opinion_platform, OpinionPlatform
 from src.platforms.limitless import limitless_platform, LimitlessPlatform
 from src.platforms.myriad import myriad_platform, MyriadPlatform
+from src.platforms.jupiter import jupiter_platform, JupiterPlatform
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -64,6 +65,16 @@ PLATFORM_INFO = {
         "collateral": "USDC.e",
         "features": ["Multi-chain", "Abstract", "Linea", "BNB Chain", "Sports", "Crypto"],
     },
+    Platform.JUPITER: {
+        "name": "Jupiter",
+        "emoji": "🪐",
+        "chain": "Solana",
+        "chain_family": ChainFamily.SOLANA,
+        "description": "Polymarket on Solana via Jupiter",
+        "collateral": "USDC",
+        "features": ["Solana", "Polymarket Mirror", "Low Fees"],
+        "hidden": True,  # Not shown as its own platform in user-facing lists
+    },
 }
 
 
@@ -89,6 +100,7 @@ class PlatformRegistry:
             Platform.OPINION: opinion_platform,
             Platform.LIMITLESS: limitless_platform,
             Platform.MYRIAD: myriad_platform,
+            Platform.JUPITER: jupiter_platform,
         }
         self._initialized = False
     
@@ -138,17 +150,21 @@ class PlatformRegistry:
         lines = []
         for platform_id in self.all_platforms:
             info = PLATFORM_INFO[platform_id]
+            if info.get("hidden"):
+                continue
             lines.append(
                 f"{info['emoji']} <b>{info['name']}</b> ({info['chain']})\n"
                 f"   └ {info['description']}"
             )
         return "\n\n".join(lines)
-    
+
     def format_platform_selector(self) -> list[tuple[str, str]]:
         """Format platforms for inline keyboard."""
         buttons = []
         for platform_id in self.all_platforms:
             info = PLATFORM_INFO[platform_id]
+            if info.get("hidden"):
+                continue
             label = f"{info['emoji']} {info['name']} ({info['chain']})"
             callback = f"platform:{platform_id.value}"
             buttons.append((label, callback))

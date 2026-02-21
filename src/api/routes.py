@@ -292,6 +292,12 @@ async def get_platform_keys(user: User = Depends(get_current_user)):
             "header": "x-api-key",
             "key": settings.myriad_api_key,
         }
+    if settings.jupiter_api_key:
+        keys["jupiter"] = {
+            "base_url": settings.jupiter_api_url,
+            "header": "x-api-key",
+            "key": settings.jupiter_api_key,
+        }
     return {"keys": keys}
 
 
@@ -622,7 +628,7 @@ def _evict_cache(cache: dict, ttl: float) -> None:
 _WARM_INTERVAL = 60  # seconds between background refreshes
 _cache_warmer_task: asyncio.Task | None = None
 
-_ALL_PLATFORMS = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
+_ALL_PLATFORMS = ["kalshi", "polymarket", "opinion", "limitless", "myriad", "jupiter"]
 
 
 _RAPID_PREFIXES = (
@@ -1088,7 +1094,7 @@ async def execute_order(
             raise HTTPException(status_code=400, detail=f"Platform not initialized: {platform}")
 
         # Determine chain family based on platform
-        if platform == "kalshi":
+        if platform in ("kalshi", "jupiter"):
             chain_family = ChainFamily.SOLANA
         elif platform in ("polymarket", "opinion", "limitless", "myriad"):
             chain_family = ChainFamily.EVM
@@ -1126,7 +1132,7 @@ async def execute_order(
 
         # Convert private key to appropriate type based on platform
         # decrypt() returns raw bytes
-        if platform == "kalshi":
+        if platform in ("kalshi", "jupiter"):
             from solders.keypair import Keypair
             # Solana private key is raw bytes (64 bytes)
             signing_key = Keypair.from_bytes(private_key)
@@ -1157,6 +1163,7 @@ async def execute_order(
             "opinion": Chain.BSC,
             "limitless": Chain.BASE,
             "myriad": Chain.ABSTRACT,
+            "jupiter": Chain.SOLANA,
         }
         chain_enum = chain_map.get(platform, Chain.POLYGON)
 

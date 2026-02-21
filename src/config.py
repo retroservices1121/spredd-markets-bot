@@ -249,6 +249,15 @@ class Settings(BaseSettings):
     )
 
     # ===================
+    # Jupiter Prediction Markets Configuration
+    # ===================
+    jupiter_api_key: Optional[str] = Field(default=None, description="Jupiter Prediction API key")
+    jupiter_api_url: str = Field(
+        default="https://api.jup.ag/prediction/v1",
+        description="Jupiter Prediction Markets API base URL"
+    )
+
+    # ===================
     # LI.FI Bridge Configuration
     # ===================
     lifi_api_key: Optional[str] = Field(default=None, description="LI.FI API key for cross-chain bridging")
@@ -403,6 +412,8 @@ class Settings(BaseSettings):
             return bool(self.limitless_api_key)  # API key required
         elif platform == "myriad":
             return bool(self.myriad_api_key)
+        elif platform == "jupiter":
+            return bool(self.jupiter_api_key)
         return False
 
 

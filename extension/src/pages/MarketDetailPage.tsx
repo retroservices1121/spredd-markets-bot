@@ -7,7 +7,7 @@ import { TradeConfirm } from "@/components/markets/TradeConfirm";
 import { TradeResult as TradeResultView } from "@/components/markets/TradeResult";
 import { useMarketDetail } from "@/hooks/useMarketDetail";
 import { useTrade } from "@/hooks/useTrade";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { formatUSD } from "@/lib/utils";
 import type { Platform } from "@/core/markets";
 import { PLATFORMS } from "@/core/markets";
@@ -22,7 +22,7 @@ function parsePlatformSlug(slug: string): { platform: Platform; slug: string } {
   const parts = slug.split("/");
   if (parts.length >= 2) {
     const maybePlatform = parts[0] as Platform;
-    const knownPlatforms: Platform[] = ["polymarket", "kalshi", "opinion", "limitless", "myriad"];
+    const knownPlatforms: Platform[] = ["polymarket", "kalshi", "opinion", "limitless", "myriad", "jupiter"];
     if (knownPlatforms.includes(maybePlatform)) {
       return { platform: maybePlatform, slug: parts.slice(1).join("/") };
     }
@@ -32,11 +32,15 @@ function parsePlatformSlug(slug: string): { platform: Platform; slug: string } {
 
 /** Get collateral notice text for a platform */
 function getCollateralNotice(platform: Platform): string {
+  if (platform === "jupiter") return "Polymarket via Jupiter — USDC on Solana";
   const meta = PLATFORMS.find((p) => p.id === platform);
   if (!meta) return "";
   if (platform === "kalshi") return "Kalshi uses USDC on Solana (via DFlow)";
   return `${meta.label} uses ${meta.currency} on ${meta.chain}`;
 }
+
+/** Chain options for the Polygon/Solana toggle on Polymarket markets */
+type SettlementChain = "polygon" | "solana";
 
 export function MarketDetailPage({ slug, onBack }: MarketDetailPageProps) {
   const { platform } = parsePlatformSlug(slug);
@@ -45,11 +49,42 @@ export function MarketDetailPage({ slug, onBack }: MarketDetailPageProps) {
   const [showConfirm, setShowConfirm] = useState(false);
   const [marketIndex, setMarketIndex] = useState(0);
 
+  // Chain toggle state for Polymarket markets (Polygon vs Solana/Jupiter)
+  const [settlementChain, setSettlementChain] = useState<SettlementChain>("polygon");
+
+  // Load persisted chain preference
+  useEffect(() => {
+    if (platform !== "polymarket") return;
+    try {
+      chrome.storage.local.get("polymarket_chain", (result) => {
+        if (result.polymarket_chain === "solana") {
+          setSettlementChain("solana");
+        }
+      });
+    } catch {
+      /* extension storage not available */
+    }
+  }, [platform]);
+
+  // Persist chain preference
+  const handleChainChange = (chain: SettlementChain) => {
+    setSettlementChain(chain);
+    try {
+      chrome.storage.local.set({ polymarket_chain: chain });
+    } catch {
+      /* extension storage not available */
+    }
+  };
+
+  // Effective platform: when Solana is selected on a Polymarket market, use "jupiter"
+  const effectivePlatform: Platform =
+    platform === "polymarket" && settlementChain === "solana" ? "jupiter" : platform;
+
   // Get the active market (first or selected)
   const market = event?.markets[marketIndex] ?? null;
 
-  // Pass outcomes and conditionId to trade hook
-  const trade = useTrade(market?.outcomes ?? null, market?.conditionId ?? null, platform);
+  // Pass outcomes and conditionId to trade hook — use effectivePlatform
+  const trade = useTrade(market?.outcomes ?? null, market?.conditionId ?? null, effectivePlatform);
 
   const yesPrice = market?.outcomes[0]?.price ?? 0.5;
   const noPrice = market?.outcomes[1]?.price ?? 0.5;
@@ -185,6 +220,32 @@ export function MarketDetailPage({ slug, onBack }: MarketDetailPageProps) {
         </div>
       )}
 
+      {/* Polygon / Solana chain toggle (Polymarket only) */}
+      {platform === "polymarket" && trade.outcome && (
+        <div className="flex items-center justify-center gap-1 p-1 rounded-lg bg-secondary/50">
+          <button
+            onClick={() => handleChainChange("polygon")}
+            className={`flex-1 text-xs font-medium py-1.5 px-3 rounded-md transition-colors ${
+              settlementChain === "polygon"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Polygon
+          </button>
+          <button
+            onClick={() => handleChainChange("solana")}
+            className={`flex-1 text-xs font-medium py-1.5 px-3 rounded-md transition-colors ${
+              settlementChain === "solana"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Solana
+          </button>
+        </div>
+      )}
+
       {/* Wallet not linked warning */}
       {trade.outcome && trade.walletLinked === false && (
         <div className="flex items-start gap-2 p-3 rounded-lg bg-spredd-orange/10 border border-spredd-orange/20">
@@ -223,7 +284,7 @@ export function MarketDetailPage({ slug, onBack }: MarketDetailPageProps) {
       {/* Collateral notice */}
       {trade.outcome && (
         <p className="text-xs text-muted-foreground text-center">
-          {getCollateralNotice(platform)}
+          {getCollateralNotice(effectivePlatform)}
         </p>
       )}
 
@@ -248,7 +309,7 @@ export function MarketDetailPage({ slug, onBack }: MarketDetailPageProps) {
         <TradeResultView
           result={trade.result}
           error={trade.error}
-          platform={platform}
+          platform={effectivePlatform}
           onDone={() => {
             trade.reset();
           }}

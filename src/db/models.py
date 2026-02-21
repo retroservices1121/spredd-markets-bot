@@ -48,6 +48,7 @@ class Platform(str, Enum):
     OPINION = "opinion"
     LIMITLESS = "limitless"
     MYRIAD = "myriad"
+    JUPITER = "jupiter"
 
 
 class Chain(str, Enum):

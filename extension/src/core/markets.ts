@@ -1,7 +1,7 @@
 /** Market and trade types */
 
 /** Supported prediction market platforms */
-export type Platform = "polymarket" | "kalshi" | "opinion" | "limitless" | "myriad";
+export type Platform = "polymarket" | "kalshi" | "opinion" | "limitless" | "myriad" | "jupiter";
 
 /** Platform display metadata */
 export interface PlatformMeta {
