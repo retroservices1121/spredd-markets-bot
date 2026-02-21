@@ -6173,16 +6173,8 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
     platform_info = PLATFORM_INFO[user.active_platform]
     platform = get_platform(user.active_platform)
 
-    # Display name: "Polymarket via Solana" for Jupiter, otherwise platform name
-    if user.active_platform == Platform.JUPITER:
-        display_name = "Polymarket via Solana"
-        display_emoji = "🔮"
-    else:
-        display_name = platform_info['name']
-        display_emoji = platform_info['emoji']
-
     await query.edit_message_text(
-        f"🔄 Loading {display_name} markets...",
+        f"🔄 Loading {platform_info['name']} markets...",
         parse_mode=ParseMode.HTML,
     )
 
@@ -6215,13 +6207,13 @@ async def handle_markets_refresh(query, telegram_id: int, page: int = 0) -> None
 
         if not markets:
             await query.edit_message_text(
-                f"No markets found on {display_name}.",
+                f"No markets found on {platform_info['name']}.",
                 parse_mode=ParseMode.HTML,
             )
             return
 
         page_display = page + 1
-        text = f"{display_emoji} <b>Trending on {display_name}</b>\n"
+        text = f"{platform_info['emoji']} <b>Trending on {platform_info['name']}</b>\n"
         text += f"<i>Page {page_display}</i>\n\n"
 
         buttons = []
@@ -8016,13 +8008,8 @@ Before you can trade, you need to set up your wallet.
             break
     wallet_addr = wallet.public_key if wallet else "Not created"
 
-    if chain == "solana":
-        header = "🔮 <b>Polymarket via Solana</b>"
-    else:
-        header = f"{info['emoji']} <b>{info['name']} Selected!</b>"
-
     text = f"""
-{header}
+{info['emoji']} <b>{info['name']} Selected!</b>
 
 Chain: {info['chain']}
 Collateral: {info['collateral']}

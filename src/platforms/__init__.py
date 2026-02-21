@@ -66,8 +66,8 @@ PLATFORM_INFO = {
         "features": ["Multi-chain", "Abstract", "Linea", "BNB Chain", "Sports", "Crypto"],
     },
     Platform.JUPITER: {
-        "name": "Jupiter",
-        "emoji": "🪐",
+        "name": "Polymarket on Solana",
+        "emoji": "🔮",
         "chain": "Solana",
         "chain_family": ChainFamily.SOLANA,
         "description": "Polymarket on Solana via Jupiter",
