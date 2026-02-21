@@ -109,7 +109,7 @@ def friendly_error(error: str) -> str:
         return "This market is no longer available."
     if "connection" in error_lower or "network" in error_lower:
         return "Connection issue. Please check your internet and try again."
-    if "signature" in error_lower or "sign" in error_lower:
+    if "failed to sign" in error_lower or "signing failed" in error_lower:
         return "Failed to sign the transaction. Please try again."
     if "rejected" in error_lower or "reverted" in error_lower:
         return "Transaction was rejected. The market price may have changed."
