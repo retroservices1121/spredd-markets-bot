@@ -396,6 +396,87 @@ class JupiterPlatform(BasePlatform):
             return []
 
     # ===================
+    # Categories
+    # ===================
+
+    def get_available_categories(self) -> list[dict]:
+        """Get list of available market categories."""
+        return [
+            {"id": "sports", "label": "Sports", "emoji": "🏆"},
+            {"id": "politics", "label": "Politics", "emoji": "🏛️"},
+            {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
+            {"id": "economics", "label": "Economics", "emoji": "📊"},
+            {"id": "culture", "label": "Culture", "emoji": "🎭"},
+            {"id": "tech", "label": "Tech", "emoji": "💻"},
+        ]
+
+    async def get_markets_by_category(
+        self,
+        category: str,
+        limit: int = 25,
+    ) -> list[Market]:
+        """Get markets filtered by category via Jupiter events API."""
+        try:
+            data = await self._api_request(
+                "GET",
+                "/events",
+                params={
+                    "provider": "polymarket",
+                    "includeMarkets": "true",
+                    "sortBy": "volume",
+                    "sortDirection": "desc",
+                    "category": category.lower(),
+                    "start": "0",
+                    "end": "20",
+                },
+            )
+
+            events = data if isinstance(data, list) else data.get("data", data.get("events", []))
+
+            all_markets: list[Market] = []
+            for event in events:
+                event_id = event.get("eventId") or event.get("id", "")
+                event_meta = event.get("metadata", {})
+                event_title = event_meta.get("title") or ""
+                for market_data in event.get("markets", []):
+                    try:
+                        m = self._parse_market(
+                            market_data,
+                            parent_event_id=event_id,
+                            event_title=event_title,
+                        )
+                        all_markets.append(m)
+                    except Exception:
+                        pass
+
+            # Detect multi-outcome
+            event_groups: dict[str, list[Market]] = defaultdict(list)
+            for m in all_markets:
+                if m.event_id:
+                    event_groups[m.event_id].append(m)
+            for eid, group in event_groups.items():
+                if len(group) > 1:
+                    for m in group:
+                        m.is_multi_outcome = True
+                        m.related_market_count = len(group)
+
+            # Deduplicate by event — keep highest-volume representative
+            seen: dict[str, Market] = {}
+            for m in all_markets:
+                if m.is_active:
+                    key = m.event_id or m.market_id
+                    existing = seen.get(key)
+                    if not existing or (m.volume_24h or 0) > (existing.volume_24h or 0):
+                        seen[key] = m
+
+            return list(seen.values())[:limit]
+
+        except Exception as e:
+            logger.error("Failed to fetch Jupiter category markets",
+                         category=category, error=str(e))
+            raise
+
+    # ===================
     # Order Book
     # ===================
 
