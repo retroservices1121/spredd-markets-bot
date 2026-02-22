@@ -1247,18 +1247,18 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
         except Exception:
             pass
 
-        # If market not in API, check on-chain resolution for price
-        if current_price is None and not market:
-            try:
-                resolution = await platform.get_market_resolution(pos.market_id)
-                if resolution.is_resolved:
-                    winning_str = resolution.winning_outcome.upper() if resolution.winning_outcome else None
-                    if winning_str and winning_str == outcome_str:
-                        current_price = Decimal("1.00")  # Winning tokens worth $1
-                    elif winning_str:
-                        current_price = Decimal("0.00")  # Losing tokens worth $0
-            except Exception:
-                pass
+        # Check resolution status — if resolved, override with definitive price
+        # ($1.00 for winners, $0.00 for losers) instead of stale orderbook prices
+        try:
+            resolution = await platform.get_market_resolution(pos.market_id)
+            if resolution.is_resolved and resolution.winning_outcome:
+                winning_str = resolution.winning_outcome.upper()
+                if winning_str == outcome_str:
+                    current_price = Decimal("1.00")  # Winning tokens worth $1
+                else:
+                    current_price = Decimal("0.00")  # Losing tokens worth $0
+        except Exception:
+            pass
 
         # Get display name for outcome (use custom name if available)
         display_outcome = get_display_outcome(outcome_str, market)
