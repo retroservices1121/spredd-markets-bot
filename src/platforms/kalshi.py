@@ -626,6 +626,11 @@ class KalshiPlatform(BasePlatform):
             "KXOSCAR", "KXGRAM", "KXMEDIA", "KXEMMY", "KXGOLDEN",
             "KXTV", "KXMOVIE", "KXMUSIC", "KXAWARD", "KXCELEB",
         ],
+        "mentions": [
+            "KXMENTION", "KXNBAMENTION", "KXNCAABMENTION", "KXNFLMENTION",
+            "KXNHLMENTION", "KXMLBMENTION", "KXEARNINGSMENTIO",
+            "KXFEDMENTION", "KXTRUMPMENTION", "KXSOTUMENTION",
+        ],
     }
 
     def get_available_categories(self) -> list[dict]:
@@ -640,6 +645,7 @@ class KalshiPlatform(BasePlatform):
             {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
             {"id": "world", "label": "World", "emoji": "🌍"},
             {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
+            {"id": "mentions", "label": "Mentions", "emoji": "🗣️"},
         ]
 
     async def get_markets_by_category(
@@ -669,6 +675,7 @@ class KalshiPlatform(BasePlatform):
             "economics": ["inflation", "interest rate", "gdp", "recession", "federal reserve"],
             "world": ["ukraine", "russia", "international", "global conflict"],
             "entertainment": ["oscar", "grammy", "emmy", "academy award"],
+            "mentions": ["will say", "will mention", "mentioned", "broadcast mention", "say the word"],
         }
         keywords = CATEGORY_KEYWORDS.get(category.lower(), [])
 

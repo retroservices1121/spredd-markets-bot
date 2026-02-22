@@ -1384,6 +1384,7 @@ class PolymarketPlatform(BasePlatform):
                 "crypto": ["crypto", "cryptocurrency", "bitcoin", "btc", "ethereum", "eth", "defi", "nft", "web3", "blockchain"],
                 "business": ["business", "economy", "economics", "finance", "financial", "markets", "stock", "stocks", "fed", "federal reserve", "inflation"],
                 "science": ["science", "tech", "technology", "ai", "artificial intelligence", "space", "nasa", "climate", "health", "medical"],
+                "mentions": ["mentions", "mention", "will say", "will mention", "broadcast"],
             }
 
             # Get all terms to match for this category
@@ -1465,6 +1466,7 @@ class PolymarketPlatform(BasePlatform):
             {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
             {"id": "business", "label": "Business", "emoji": "💼"},
             {"id": "science", "label": "Science", "emoji": "🔬"},
+            {"id": "mentions", "label": "Mentions", "emoji": "🗣️"},
         ]
 
     # ===================
