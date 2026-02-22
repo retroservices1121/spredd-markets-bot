@@ -14,23 +14,15 @@ const TAB_LABELS: Record<string, string> = {
 
 export function CategoryTabs({ categories, selected, onChange }: CategoryTabsProps) {
   const tabs = ["all", ...categories];
-  const useGrid = tabs.length >= 8;
 
   return (
-    <div
-      className={
-        useGrid
-          ? "grid grid-cols-2 gap-1.5 pb-1"
-          : "flex gap-1.5 overflow-x-auto no-scrollbar pb-1"
-      }
-    >
+    <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-1">
       {tabs.map((cat) => (
         <button
           key={cat}
           onClick={() => onChange(cat)}
           className={cn(
-            "px-3 py-1.5 text-xs rounded-lg border whitespace-nowrap transition-colors",
-            useGrid ? "text-center" : "flex-shrink-0",
+            "px-3 py-1.5 text-xs rounded-lg border whitespace-nowrap transition-colors flex-shrink-0",
             selected === cat
               ? "border-spredd-orange text-spredd-orange bg-spredd-orange/10"
               : cat === "Rapid"

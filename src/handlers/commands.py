@@ -865,27 +865,48 @@ async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     text += "Select a category to see related markets:\n"
 
     buttons = []
-    # Trending button at the top
-    buttons.append([InlineKeyboardButton("🔥 Trending", callback_data="markets:trending")])
 
-    # Create 2-column layout for categories
-    for i in range(0, len(categories), 2):
-        row = []
-        for j in range(2):
-            if i + j < len(categories):
-                cat = categories[i + j]
-                row.append(InlineKeyboardButton(
-                    f"{cat['emoji']} {cat['label']}",
-                    callback_data=f"category:{cat['id']}"
-                ))
-        buttons.append(row)
-
-    # Add fast crypto markets buttons
     if user.active_platform == Platform.KALSHI:
+        mentions_cat = next((c for c in categories if c["id"] == "mentions"), None)
+        other_cats = [c for c in categories if c["id"] != "mentions"]
+
+        buttons.append([
+            InlineKeyboardButton("🔥 Trending", callback_data="markets:trending"),
+            InlineKeyboardButton(
+                f"{mentions_cat['emoji']} {mentions_cat['label']}",
+                callback_data=f"category:{mentions_cat['id']}"
+            ) if mentions_cat else InlineKeyboardButton("🗣️ Mentions", callback_data="category:mentions"),
+        ])
+
+        for i in range(0, len(other_cats), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(other_cats):
+                    cat = other_cats[i + j]
+                    row.append(InlineKeyboardButton(
+                        f"{cat['emoji']} {cat['label']}",
+                        callback_data=f"category:{cat['id']}"
+                    ))
+            buttons.append(row)
+
         buttons.append([
             InlineKeyboardButton("⏱️ 15m Markets", callback_data="markets:15m"),
             InlineKeyboardButton("🕐 Hourly Markets", callback_data="markets:hourly"),
         ])
+    else:
+        buttons.append([InlineKeyboardButton("🔥 Trending", callback_data="markets:trending")])
+
+        for i in range(0, len(categories), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(categories):
+                    cat = categories[i + j]
+                    row.append(InlineKeyboardButton(
+                        f"{cat['emoji']} {cat['label']}",
+                        callback_data=f"category:{cat['id']}"
+                    ))
+            buttons.append(row)
+
     if user.active_platform == Platform.MYRIAD:
         buttons.append([
             InlineKeyboardButton("🕐 5m Candles", callback_data="markets:5m"),
@@ -6396,27 +6417,51 @@ async def handle_categories_menu(query, telegram_id: int) -> None:
     text += "Select a category to see related markets:\n"
 
     buttons = []
-    # Trending button at the top
-    buttons.append([InlineKeyboardButton("🔥 Trending", callback_data="markets:trending")])
 
-    # Create 2-column layout for categories
-    for i in range(0, len(categories), 2):
-        row = []
-        for j in range(2):
-            if i + j < len(categories):
-                cat = categories[i + j]
-                row.append(InlineKeyboardButton(
-                    f"{cat['emoji']} {cat['label']}",
-                    callback_data=f"category:{cat['id']}"
-                ))
-        buttons.append(row)
-
-    # Add fast crypto markets buttons
     if user.active_platform == Platform.KALSHI:
+        # Kalshi: pair Trending with Mentions, then remaining categories + rapid rows
+        # to form a clean 2-column × 5-row grid
+        mentions_cat = next((c for c in categories if c["id"] == "mentions"), None)
+        other_cats = [c for c in categories if c["id"] != "mentions"]
+
+        buttons.append([
+            InlineKeyboardButton("🔥 Trending", callback_data="markets:trending"),
+            InlineKeyboardButton(
+                f"{mentions_cat['emoji']} {mentions_cat['label']}",
+                callback_data=f"category:{mentions_cat['id']}"
+            ) if mentions_cat else InlineKeyboardButton("🗣️ Mentions", callback_data="category:mentions"),
+        ])
+
+        for i in range(0, len(other_cats), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(other_cats):
+                    cat = other_cats[i + j]
+                    row.append(InlineKeyboardButton(
+                        f"{cat['emoji']} {cat['label']}",
+                        callback_data=f"category:{cat['id']}"
+                    ))
+            buttons.append(row)
+
         buttons.append([
             InlineKeyboardButton("⏱️ 15m Markets", callback_data="markets:15m"),
             InlineKeyboardButton("🕐 Hourly Markets", callback_data="markets:hourly"),
         ])
+    else:
+        # Other platforms: Trending on top, then 2-column categories
+        buttons.append([InlineKeyboardButton("🔥 Trending", callback_data="markets:trending")])
+
+        for i in range(0, len(categories), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(categories):
+                    cat = categories[i + j]
+                    row.append(InlineKeyboardButton(
+                        f"{cat['emoji']} {cat['label']}",
+                        callback_data=f"category:{cat['id']}"
+                    ))
+            buttons.append(row)
+
     if user.active_platform == Platform.MYRIAD:
         buttons.append([
             InlineKeyboardButton("🕐 5m Candles", callback_data="markets:5m"),
