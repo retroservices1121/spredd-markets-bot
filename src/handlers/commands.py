@@ -94,8 +94,8 @@ def friendly_error(error: str) -> str:
         return "You don't have the tokens needed to sell. The position may not have been purchased successfully."
     if "insufficient" in error_lower and ("balance" in error_lower or "fund" in error_lower):
         return "You don't have enough funds in your wallet. Please deposit more and try again."
-    if "allowance" in error_lower:
-        return "Wallet approval is pending. Please wait a moment and try again."
+    if "allowance" in error_lower and "exceeds" in error_lower:
+        return "Token allowance insufficient. Please try again — approvals will be retried automatically."
     # Only show gas error for actual insufficient gas, not any error mentioning "gas"
     if ("insufficient" in error_lower and "gas" in error_lower) or "intrinsic gas too low" in error_lower:
         return "Not enough funds to cover network fees. Please add some ETH/MATIC/BNB to your wallet."
@@ -139,8 +139,10 @@ def friendly_error(error: str) -> str:
         return "Amount exceeds the maximum. Please reduce your trade amount."
     if "closed" in error_lower or "not active" in error_lower:
         return "This market is closed and no longer accepting trades."
+    if "not resolved" in error_lower or "has not resolved" in error_lower:
+        return "This market hasn't resolved yet. Please wait for the outcome to be determined."
     if "resolved" in error_lower:
-        return "This market has already been resolved."
+        return "This market has already been resolved. Try redeeming instead of selling."
 
     # If no pattern matches, return a cleaned up version
     # Remove technical prefixes and make it more readable

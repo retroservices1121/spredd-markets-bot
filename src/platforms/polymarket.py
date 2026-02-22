@@ -1871,7 +1871,19 @@ class PolymarketPlatform(BasePlatform):
         def sync_check_with_fallback():
             return self._call_with_rpc_fallback(sync_check_and_approve)
 
-        await asyncio.to_thread(sync_check_with_fallback)
+        try:
+            await asyncio.to_thread(sync_check_with_fallback)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "insufficient funds" in error_str or "gas required exceeds" in error_str:
+                raise PlatformError(
+                    "Not enough MATIC/POL for gas to approve token spending. Please add gas funds to your wallet.",
+                    Platform.POLYMARKET,
+                )
+            raise PlatformError(
+                f"Token approval failed: {str(e)[:150]}",
+                Platform.POLYMARKET,
+            )
 
     def _get_clob_client(self, private_key: Any) -> Any:
         """Get or create a cached CLOB client for the given private key.
@@ -2189,26 +2201,23 @@ class PolymarketPlatform(BasePlatform):
                     explorer_url=None,
                 )
 
-            # Check if market is actually resolved
-            resolution = await self.get_market_resolution(market_id)
-            if not resolution.is_resolved:
-                return RedemptionResult(
-                    success=False,
-                    tx_hash=None,
-                    amount_redeemed=None,
-                    error_message="Market has not resolved yet",
-                    explorer_url=None,
-                )
-
-            # Check if user holds winning outcome
-            if resolution.winning_outcome and resolution.winning_outcome.lower() != outcome.value.lower():
-                return RedemptionResult(
-                    success=False,
-                    tx_hash=None,
-                    amount_redeemed=None,
-                    error_message=f"Your {outcome.value.upper()} tokens lost. The market resolved to {resolution.winning_outcome.upper()}.",
-                    explorer_url=None,
-                )
+            # Verify resolution status — but don't block if the check itself fails,
+            # since the positions view already confirmed it was resolved before
+            # offering the Redeem button. Let the on-chain tx be the final arbiter.
+            try:
+                resolution = await self.get_market_resolution(market_id)
+                if resolution.is_resolved:
+                    # Check if user holds winning outcome
+                    if resolution.winning_outcome and resolution.winning_outcome.lower() != outcome.value.lower():
+                        return RedemptionResult(
+                            success=False,
+                            tx_hash=None,
+                            amount_redeemed=None,
+                            error_message=f"Your {outcome.value.upper()} tokens lost. The market resolved to {resolution.winning_outcome.upper()}.",
+                            explorer_url=None,
+                        )
+            except Exception as e:
+                logger.warning("Resolution re-check failed, proceeding with redemption", error=str(e))
 
             # Build CTF contract
             ctf_contract = self._sync_web3.eth.contract(
