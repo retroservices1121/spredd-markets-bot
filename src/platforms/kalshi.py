@@ -639,13 +639,13 @@ class KalshiPlatform(BasePlatform):
         Returns list of dicts with 'id', 'label', and 'emoji' keys.
         """
         return [
+            {"id": "mentions", "label": "Mentions", "emoji": "🗣️"},
             {"id": "sports", "label": "Sports", "emoji": "🏆"},
             {"id": "politics", "label": "Politics", "emoji": "🏛️"},
             {"id": "economics", "label": "Economics", "emoji": "📊"},
             {"id": "crypto", "label": "Crypto", "emoji": "🪙"},
             {"id": "world", "label": "World", "emoji": "🌍"},
             {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
-            {"id": "mentions", "label": "Mentions", "emoji": "🗣️"},
         ]
 
     async def get_markets_by_category(
