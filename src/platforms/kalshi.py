@@ -658,8 +658,8 @@ class KalshiPlatform(BasePlatform):
         Categories are inferred from ticker patterns and title/description
         since DFlow API doesn't have a categories endpoint.
         """
-        # Get all markets (uses cache if available)
-        all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
+        # Use full cache so category search covers all fetched markets
+        all_markets = await self._fetch_all_markets()
 
         # Get patterns for this category
         patterns = self.CATEGORY_PATTERNS.get(category.lower(), [])
@@ -704,7 +704,18 @@ class KalshiPlatform(BasePlatform):
                         seen_ids.add(market.market_id)
                         break
 
-        return filtered[:limit]
+        # Deduplicate multi-outcome events: keep one representative market per event
+        # so the user sees "NBA Mentions - HOU vs NYK [12 options]" once, not 12 rows.
+        seen_events = set()
+        deduped = []
+        for m in filtered:
+            if m.is_multi_outcome and m.event_id:
+                if m.event_id in seen_events:
+                    continue
+                seen_events.add(m.event_id)
+            deduped.append(m)
+
+        return deduped[:limit]
 
     async def get_15m_markets(self, limit: int = 50) -> list[Market]:
         """Get 15-minute interval Kalshi markets.
