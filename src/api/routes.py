@@ -545,13 +545,12 @@ async def get_all_markets(
 
             markets = await platform_instance.get_markets(limit=per_platform_limit, active_only=active)
             for m in markets:
-                # Extract image from raw_data if available
-                image = None
-                if m.raw_data:
-                    # Polymarket stores event image
+                # Each platform provides its own image_url; Polymarket
+                # stores images in raw_data so only check that for poly.
+                image = m.image_url
+                if not image and plat == "polymarket" and m.raw_data:
                     if "event" in m.raw_data:
                         image = m.raw_data["event"].get("image")
-                    # Direct image field
                     elif "image" in m.raw_data:
                         image = m.raw_data["image"]
 
@@ -658,8 +657,8 @@ async def _warm_markets_cache() -> None:
             markets = await platform_instance.get_markets(limit=1000, active_only=True)
             results = []
             for m in markets:
-                image = None
-                if m.raw_data:
+                image = m.image_url
+                if not image and plat == "polymarket" and m.raw_data:
                     if "event" in m.raw_data:
                         image = m.raw_data["event"].get("image")
                     elif "image" in m.raw_data:
@@ -790,6 +789,55 @@ def stop_cache_warmer() -> None:
         print("[CacheWarmer] Background cache warmer stopped")
 
 
+@router.get("/markets/kalshi/event/{event_id}")
+async def get_kalshi_event(event_id: str):
+    """Get Kalshi event with nested markets and image."""
+    from ..platforms import platform_registry
+
+    kalshi = platform_registry.get(Platform.KALSHI)
+    if not kalshi:
+        raise HTTPException(status_code=503, detail="Kalshi platform not available")
+
+    data = await kalshi.get_event(event_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return data
+
+
+@router.get("/markets/kalshi/{market_id}/candlesticks")
+async def get_kalshi_candlesticks(
+    market_id: str,
+    start_ts: int = Query(..., description="Start timestamp (unix seconds)"),
+    end_ts: int = Query(..., description="End timestamp (unix seconds)"),
+    interval: int = Query(default=60, description="1, 60, or 1440 minutes"),
+):
+    """Get price candlestick data for a Kalshi market."""
+    from ..platforms import platform_registry
+
+    kalshi = platform_registry.get(Platform.KALSHI)
+    if not kalshi:
+        raise HTTPException(status_code=503, detail="Kalshi platform not available")
+
+    data = await kalshi.get_market_candlesticks(market_id, start_ts, end_ts, interval)
+    return data
+
+
+@router.get("/markets/kalshi/{market_id}/trades")
+async def get_kalshi_trades(
+    market_id: str,
+    limit: int = Query(default=100, le=1000),
+):
+    """Get recent trades for a Kalshi market."""
+    from ..platforms import platform_registry
+
+    kalshi = platform_registry.get(Platform.KALSHI)
+    if not kalshi:
+        raise HTTPException(status_code=503, detail="Kalshi platform not available")
+
+    trades = await kalshi.get_trades(market_id=market_id, limit=limit)
+    return {"trades": trades}
+
+
 @router.get("/markets/search")
 async def search_markets(
     q: str = Query(..., min_length=1),
@@ -826,14 +874,22 @@ async def search_markets(
 
             markets = await platform_instance.search_markets(q, limit=per_platform_limit)
             for m in markets:
+                image = m.image_url
+                if not image and plat == "polymarket" and m.raw_data:
+                    if "event" in m.raw_data:
+                        image = m.raw_data["event"].get("image")
+                    elif "image" in m.raw_data:
+                        image = m.raw_data["image"]
                 results.append({
                     "platform": plat,
                     "id": m.market_id,
                     "title": m.title,
+                    "image": image,
                     "yes_price": float(m.yes_price) if m.yes_price else None,
                     "no_price": float(m.no_price) if m.no_price else None,
                     "volume": str(m.volume_24h) if m.volume_24h else None,
                     "is_active": m.is_active,
+                    "event_id": m.event_id,
                 })
         except Exception as e:
             print(f"Error searching {plat}: {e}")
@@ -872,6 +928,7 @@ async def get_trending_markets(
                         "platform": "kalshi",
                         "id": m.market_id,
                         "title": m.title,
+                        "image": m.image_url,
                         "yes_price": float(m.yes_price) if m.yes_price else None,
                         "no_price": float(m.no_price) if m.no_price else None,
                         "volume": str(m.volume_24h) if m.volume_24h else None,
@@ -886,10 +943,17 @@ async def get_trending_markets(
             if poly:
                 markets = await poly.get_trending_markets(limit=limit)
                 for m in markets:
+                    image = m.image_url
+                    if not image and m.raw_data:
+                        if "event" in m.raw_data:
+                            image = m.raw_data["event"].get("image")
+                        elif "image" in m.raw_data:
+                            image = m.raw_data["image"]
                     results.append({
                         "platform": "polymarket",
                         "id": m.market_id,
                         "title": m.title,
+                        "image": image,
                         "yes_price": float(m.yes_price) if m.yes_price else None,
                         "no_price": float(m.no_price) if m.no_price else None,
                         "volume": str(m.volume_24h) if m.volume_24h else None,
@@ -909,6 +973,7 @@ async def get_trending_markets(
                             "platform": plat_name,
                             "id": m.market_id,
                             "title": m.title,
+                            "image": m.image_url,
                             "yes_price": float(m.yes_price) if m.yes_price else None,
                             "no_price": float(m.no_price) if m.no_price else None,
                             "volume": str(m.volume_24h) if m.volume_24h else None,

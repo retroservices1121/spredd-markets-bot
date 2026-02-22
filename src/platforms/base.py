@@ -52,6 +52,9 @@ class Market:
     # Platform-specific data
     raw_data: Optional[dict] = None
 
+    # Market/event image URL
+    image_url: Optional[str] = None
+
     # Multi-outcome support
     outcome_name: Optional[str] = None  # Short name for this outcome (e.g., "Trump", "Biden")
     is_multi_outcome: bool = False  # True if part of a multi-outcome event

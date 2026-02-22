@@ -54,7 +54,6 @@ class KalshiPlatform(BasePlatform):
     
     def __init__(self):
         self._http_client: Optional[httpx.AsyncClient] = None
-        self._kalshi_public_client: Optional[httpx.AsyncClient] = None
         self._solana_client: Optional[SolanaClient] = None
         self._api_key = settings.dflow_api_key
         self._fee_account = settings.kalshi_fee_account
@@ -73,9 +72,6 @@ class KalshiPlatform(BasePlatform):
             headers=headers,
         )
 
-        # Separate client for Kalshi public API (no DFlow API key)
-        self._kalshi_public_client = httpx.AsyncClient(timeout=10.0)
-
         self._solana_client = SolanaClient(settings.solana_rpc_url)
 
         fee_enabled = bool(self._fee_account and len(self._fee_account) >= 32)
@@ -92,8 +88,6 @@ class KalshiPlatform(BasePlatform):
         """Close connections."""
         if self._http_client:
             await self._http_client.aclose()
-        if self._kalshi_public_client:
-            await self._kalshi_public_client.aclose()
         if self._solana_client:
             await self._solana_client.close()
     
@@ -184,35 +178,41 @@ class KalshiPlatform(BasePlatform):
     # USDC mint address on Solana
     USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
-    # Kalshi public API for market metadata (names, etc.)
-    KALSHI_PUBLIC_API = "https://api.elections.kalshi.com/trade-api/v2"
+    async def _fetch_event(self, event_id: str) -> Optional[dict]:
+        """Fetch event details from DFlow metadata API.
 
-    async def _fetch_kalshi_event_names(self, event_id: str) -> dict[str, str]:
-        """Fetch market names from Kalshi's public API.
+        Returns the full event dict including imageUrl, title, and nested markets
+        with yesSubTitle/noSubTitle (outcome names).
+        """
+        try:
+            data = await self._metadata_request(
+                "GET",
+                f"/api/v1/event/{event_id}",
+                params={"withNestedMarkets": True},
+            )
+            return data
+        except Exception as e:
+            logger.warning("Failed to fetch DFlow event", event_id=event_id, error=str(e))
+            return None
 
-        Returns a dict mapping ticker -> outcome name (e.g., "KXNFLMVP-26-PMAH" -> "Patrick Mahomes")
+    async def _fetch_event_names_and_image(self, event_id: str) -> tuple[dict[str, str], Optional[str]]:
+        """Fetch market outcome names and image URL from DFlow event endpoint.
+
+        Returns (names_dict, image_url) where names_dict maps ticker -> outcome name.
         """
         names: dict[str, str] = {}
-        try:
-            resp = await self._kalshi_public_client.get(
-                f"{self.KALSHI_PUBLIC_API}/events/{event_id}",
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                for market in data.get("markets", []):
-                    ticker = market.get("ticker")
-                    # yes_sub_title contains the outcome name (e.g., "Patrick Mahomes")
-                    name = market.get("yes_sub_title") or market.get("subtitle")
-                    if ticker and name:
-                        names[ticker] = name
-                logger.debug(
-                    "Fetched Kalshi event names",
-                    event_id=event_id,
-                    count=len(names),
-                )
-        except Exception as e:
-            logger.warning("Failed to fetch Kalshi event names", event_id=event_id, error=str(e))
-        return names
+        image_url: Optional[str] = None
+        event_data = await self._fetch_event(event_id)
+        if not event_data:
+            return names, image_url
+
+        image_url = event_data.get("imageUrl")
+        for market in event_data.get("markets", []):
+            ticker = market.get("ticker")
+            name = market.get("yesSubTitle") or market.get("subtitle")
+            if ticker and name:
+                names[ticker] = name
+        return names, image_url
 
     def _parse_market(self, data: dict) -> Market:
         """Parse DFlow market data into Market object."""
@@ -257,6 +257,10 @@ class KalshiPlatform(BasePlatform):
             data.get("resolutionRules")
         )
 
+        # Capture binary outcome names (e.g., "Magic" vs "Cavaliers")
+        yes_outcome_name = data.get("yesSubTitle") or data.get("yes_sub_title")
+        no_outcome_name = data.get("noSubTitle") or data.get("no_sub_title")
+
         return Market(
             platform=Platform.KALSHI,
             chain=Chain.SOLANA,
@@ -275,6 +279,8 @@ class KalshiPlatform(BasePlatform):
             no_token=no_token,
             raw_data=data,
             resolution_criteria=resolution_criteria,
+            yes_outcome_name=yes_outcome_name,
+            no_outcome_name=no_outcome_name,
         )
     
     # ===================
@@ -410,28 +416,45 @@ class KalshiPlatform(BasePlatform):
             if m.event_id:
                 event_groups[m.event_id].append(m)
 
-        # Mark multi-outcome markets and fetch names from Kalshi public API
-        # Fetch all event names in parallel for speed
+        # Mark multi-outcome markets and fetch names + images from DFlow events API
+        # Fetch all events in parallel for speed
         multi_event_ids = [eid for eid, grp in event_groups.items() if len(grp) > 1]
-        name_results = await asyncio.gather(
-            *(self._fetch_kalshi_event_names(eid) for eid in multi_event_ids)
+        single_event_ids = [eid for eid, grp in event_groups.items() if len(grp) == 1]
+
+        # Fetch multi-outcome events (need names + images)
+        multi_results = await asyncio.gather(
+            *(self._fetch_event_names_and_image(eid) for eid in multi_event_ids)
         )
-        event_names_map = dict(zip(multi_event_ids, name_results))
+        event_data_map = dict(zip(multi_event_ids, multi_results))
+
+        # Fetch single-market events for images only (batched)
+        if single_event_ids:
+            single_results = await asyncio.gather(
+                *(self._fetch_event(eid) for eid in single_event_ids)
+            )
+            for eid, event_data in zip(single_event_ids, single_results):
+                if event_data:
+                    image_url = event_data.get("imageUrl")
+                    if image_url:
+                        for m in event_groups[eid]:
+                            m.image_url = image_url
 
         for event_id in multi_event_ids:
             group = event_groups[event_id]
-            kalshi_names = event_names_map[event_id]
+            kalshi_names, image_url = event_data_map[event_id]
 
             for m in group:
                 m.is_multi_outcome = True
                 m.related_market_count = len(group)
+                if image_url:
+                    m.image_url = image_url
 
                 outcome_name = kalshi_names.get(m.market_id)
 
                 if not outcome_name:
                     raw = m.raw_data or {}
-                    if raw.get("yesSubtitle"):
-                        outcome_name = raw["yesSubtitle"]
+                    if raw.get("yesSubTitle") or raw.get("yesSubtitle"):
+                        outcome_name = raw.get("yesSubTitle") or raw.get("yesSubtitle")
                     elif m.description and m.description != m.title:
                         outcome_name = m.description
 
@@ -462,16 +485,34 @@ class KalshiPlatform(BasePlatform):
         query: str,
         limit: int = 10,
     ) -> list[Market]:
-        """Search markets by query with client-side filtering."""
-        all_markets = await self._fetch_all_markets()
+        """Search markets via DFlow server-side search, with client-side fallback."""
+        try:
+            data = await self._metadata_request("GET", "/api/v1/search", params={
+                "q": query,
+                "limit": limit,
+                "sort": "volume",
+                "order": "desc",
+                "withNestedMarkets": True,
+            })
+            markets = []
+            for event in data.get("events", []):
+                image_url = event.get("imageUrl")
+                for m_data in event.get("markets", []):
+                    market = self._parse_market(m_data)
+                    market.image_url = image_url
+                    markets.append(market)
+            return markets[:limit]
+        except Exception as e:
+            logger.warning("DFlow search failed, falling back to client-side", error=str(e))
 
-        # Filter by query (case-insensitive search in title and question)
+        # Fallback: client-side filtering
+        all_markets = await self._fetch_all_markets()
         query_lower = query.lower()
         filtered = [
             m for m in all_markets
-            if query_lower in m.title.lower() or query_lower in m.question.lower()
+            if query_lower in m.title.lower()
+            or query_lower in (m.description or "").lower()
         ]
-
         return filtered[:limit]
     
     async def get_market(self, market_id: str, search_title: Optional[str] = None, include_closed: bool = False) -> Optional[Market]:
@@ -1220,6 +1261,52 @@ class KalshiPlatform(BasePlatform):
                 error_message=str(e),
                 explorer_url=None,
             )
+
+    # ===================
+    # DFlow Metadata Endpoints
+    # ===================
+
+    async def get_market_candlesticks(
+        self, market_id: str, start_ts: int, end_ts: int, interval: int = 60
+    ) -> list[dict]:
+        """Get candlestick data for a market.
+
+        Args:
+            interval: 1 (1min), 60 (1hr), or 1440 (1day)
+        """
+        data = await self._metadata_request(
+            "GET",
+            f"/api/v1/market/{market_id}/candlesticks",
+            params={"startTs": start_ts, "endTs": end_ts, "periodInterval": interval},
+        )
+        return data
+
+    async def get_event_candlesticks(
+        self, event_id: str, start_ts: int, end_ts: int, interval: int = 60
+    ) -> list[dict]:
+        """Get candlestick data for an event."""
+        data = await self._metadata_request(
+            "GET",
+            f"/api/v1/event/{event_id}/candlesticks",
+            params={"startTs": start_ts, "endTs": end_ts, "periodInterval": interval},
+        )
+        return data
+
+    async def get_event(self, event_id: str) -> Optional[dict]:
+        """Get full event details with nested markets and image."""
+        return await self._fetch_event(event_id)
+
+    async def get_trades(
+        self, market_id: str = None, limit: int = 100, min_ts: int = None
+    ) -> list[dict]:
+        """Get recent trades for a market."""
+        params: dict[str, Any] = {"limit": limit}
+        if market_id:
+            params["ticker"] = market_id
+        if min_ts:
+            params["minTs"] = min_ts
+        data = await self._metadata_request("GET", "/api/v1/trades", params=params)
+        return data.get("trades", [])
 
     async def get_token_balance(
         self,
