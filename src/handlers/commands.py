@@ -7052,14 +7052,14 @@ Polymarket requires <b>USDC.e</b> (bridged USDC), not native USDC. The bot autom
 <b>How it works:</b>
 When you start a trade on Polymarket, the bot checks your balances:
 
-✅ <b>If USDC.e is $5 or more:</b>
+✅ <b>If you have USDC.e:</b>
 Trade proceeds normally
 
-🔄 <b>If USDC.e is under $5 but native USDC is $5+:</b>
+🔄 <b>If USDC.e is low but you have native USDC:</b>
 Bot automatically swaps your native USDC to USDC.e via Uniswap, then proceeds with trade
 
-❌ <b>If both are under $5:</b>
-You'll be asked to deposit more USDC
+❌ <b>If both are empty:</b>
+You'll be asked to deposit USDC
 
 <b>Why this matters:</b>
 • On Polygon, there are TWO types of USDC

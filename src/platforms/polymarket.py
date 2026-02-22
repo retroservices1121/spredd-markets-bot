@@ -69,7 +69,7 @@ USDC_BRIDGED = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e (bridged)
 UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
 
 # Minimum balance threshold for auto-swap (in USDC)
-MIN_USDC_BALANCE = Decimal("5")
+MIN_USDC_BALANCE = Decimal("0.10")
 
 # Uniswap V3 SwapRouter ABI (exactInputSingle)
 UNISWAP_SWAP_ABI = [
