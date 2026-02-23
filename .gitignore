@@ -78,3 +78,7 @@ webapp/.vite/
 # Extension
 extension/node_modules/
 extension/dist/
+
+# PWA
+pwa/node_modules/
+pwa/dist/

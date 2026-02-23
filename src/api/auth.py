@@ -108,6 +108,56 @@ def validate_init_data(init_data: str, bot_token: str, max_age_seconds: int = 86
         return None
 
 
+def validate_telegram_login(data: dict, bot_token: str, max_age_seconds: int = 86400) -> Optional[TelegramUser]:
+    """
+    Validate Telegram Login Widget callback data.
+
+    Different from Mini App initData — Login Widget uses SHA256(bot_token) as HMAC key
+    instead of HMAC("WebAppData", bot_token).
+
+    Args:
+        data: The callback data dict from Telegram Login Widget
+        bot_token: The bot token for validation
+        max_age_seconds: Maximum age of auth data (default 24 hours)
+
+    Returns:
+        TelegramUser if valid, None otherwise
+    """
+    try:
+        # Work on a copy so we don't mutate the caller's dict
+        data = dict(data)
+        received_hash = data.pop("hash", None)
+        if not received_hash:
+            return None
+
+        # Build check string: sorted key=value pairs joined by \n
+        check_string = "\n".join(f"{k}={v}" for k, v in sorted(data.items()))
+
+        # Login Widget uses SHA256(bot_token) as secret key
+        secret_key = hashlib.sha256(bot_token.encode()).digest()
+        calculated_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(calculated_hash, received_hash):
+            return None
+
+        # Check auth_date freshness
+        auth_date = int(data.get("auth_date", 0))
+        if time.time() - auth_date > max_age_seconds:
+            return None
+
+        return TelegramUser(
+            id=int(data["id"]),
+            first_name=data.get("first_name", ""),
+            last_name=data.get("last_name"),
+            username=data.get("username"),
+            photo_url=data.get("photo_url"),
+        )
+
+    except Exception as e:
+        print(f"Error validating Telegram login: {e}")
+        return None
+
+
 def get_user_from_init_data(init_data: str, bot_token: str) -> Optional[TelegramUser]:
     """
     Extract and validate user from initData.

@@ -4,10 +4,14 @@ Exposes bot functionality via REST API.
 """
 
 import asyncio
+import hashlib
+import random
 import time
 import uuid
 from decimal import Decimal
 from typing import Any, Optional
+
+import jwt
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,7 +33,7 @@ from ..db.models import (
     User,
     Wallet,
 )
-from .auth import TelegramUser, get_user_from_init_data, validate_wallet_signature
+from .auth import TelegramUser, get_user_from_init_data, validate_telegram_login, validate_wallet_signature
 
 router = APIRouter(prefix="/api/v1", tags=["Mini App API"])
 settings = get_settings()
@@ -147,12 +151,13 @@ async def get_current_user(
     session: AsyncSession = Depends(get_session)
 ) -> User:
     """
-    Authenticate via Telegram initData OR wallet signature.
+    Authenticate via Telegram initData, wallet signature, or JWT Bearer token.
     Also automatically captures user's country from IP for geo-blocking.
 
     Auth methods (checked in order):
     1. Telegram initData (X-Telegram-Init-Data header)
     2. Wallet signature (X-Wallet-Address + X-Wallet-Signature + X-Wallet-Timestamp)
+    3. JWT Bearer token (Authorization header, for PWA)
     """
     user: Optional[User] = None
 
@@ -190,6 +195,21 @@ async def get_current_user(
                 )
             )
             user = result.scalar_one_or_none()
+
+    # Method 3: JWT Bearer token (for PWA)
+    if not user:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            try:
+                payload = jwt.decode(token, settings.telegram_bot_token, algorithms=["HS256"])
+                telegram_id = int(payload["sub"])
+                result = await session.execute(
+                    select(User).where(User.telegram_id == telegram_id)
+                )
+                user = result.scalar_one_or_none()
+            except Exception:
+                pass
 
     if not user:
         raise HTTPException(status_code=401, detail="Invalid authentication")
@@ -239,6 +259,130 @@ async def get_current_user(
                 pass  # Silently ignore geo lookup failures
 
     return user
+
+
+# ===================
+# Auth Endpoints (PWA)
+# ===================
+
+@router.post("/auth/telegram-login")
+async def telegram_login(payload: dict, session: AsyncSession = Depends(get_session)):
+    """Exchange Telegram Login Widget data for a JWT token.
+
+    The PWA uses Telegram Login Widget (different from Mini App initData).
+    Returns a long-lived JWT for subsequent API calls.
+    """
+    user_data = validate_telegram_login(payload, settings.telegram_bot_token)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Invalid Telegram login")
+
+    # Find or create user (same as existing initData flow)
+    result = await session.execute(
+        select(User).where(User.telegram_id == user_data.id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        user = User(
+            id=str(uuid.uuid4()),
+            telegram_id=user_data.id,
+            username=user_data.username,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+    # Issue JWT (30-day expiry)
+    token = jwt.encode(
+        {"sub": str(user.telegram_id), "exp": int(time.time()) + 86400 * 30},
+        settings.telegram_bot_token,
+        algorithm="HS256",
+    )
+    return {
+        "token": token,
+        "user": {
+            "id": user.id,
+            "telegram_id": user.telegram_id,
+            "username": user.username,
+            "first_name": user.first_name,
+        },
+    }
+
+
+# ===================
+# Feed Endpoint (PWA)
+# ===================
+
+@router.get("/markets/feed")
+async def get_market_feed(
+    cursor: Optional[int] = Query(default=None),
+    limit: int = Query(default=20, le=50),
+):
+    """Get shuffled markets for the TikTok-style feed.
+
+    Returns markets with images, randomized but deterministic per cursor position.
+    Pulls from the cached trending markets across all platforms.
+    """
+    from ..platforms import platform_registry
+
+    all_markets: list[dict] = []
+
+    # Gather markets from trending cache (all platforms)
+    cache_key = "all"
+    now = time.time()
+    cached = _trending_cache.get(cache_key)
+    if cached and (now - cached[0]) < _TRENDING_CACHE_TTL:
+        all_markets = list(cached[1])
+    else:
+        # Fall back to fetching fresh
+        for plat_name in ["polymarket", "kalshi", "limitless"]:
+            try:
+                plat_instance = platform_registry.get(Platform(plat_name))
+                if plat_instance:
+                    markets = await plat_instance.get_trending_markets(limit=50)
+                    for m in markets:
+                        image = m.image_url
+                        if not image and m.raw_data:
+                            if "event" in m.raw_data:
+                                image = m.raw_data["event"].get("image")
+                            elif "image" in m.raw_data:
+                                image = m.raw_data["image"]
+                        all_markets.append({
+                            "id": m.market_id,
+                            "platform": plat_name,
+                            "title": m.title,
+                            "image": image,
+                            "yes_price": float(m.yes_price) if m.yes_price else 0.5,
+                            "no_price": float(m.no_price) if m.no_price else 0.5,
+                            "volume": float(m.volume_24h) if m.volume_24h else 0,
+                            "category": getattr(m, "category", None),
+                            "end_date": getattr(m, "end_date", None),
+                        })
+            except Exception as e:
+                print(f"[Feed] Error fetching {plat_name}: {e}")
+
+    # Filter to markets with images for the visual feed
+    feed_markets = [m for m in all_markets if m.get("image")]
+    # Fall back to all markets if not enough have images
+    if len(feed_markets) < 5:
+        feed_markets = all_markets
+
+    # Shuffle deterministically by day so feed changes daily but is stable per session
+    day_seed = int(time.time() // 86400)
+    rng = random.Random(day_seed)
+    rng.shuffle(feed_markets)
+
+    # Pagination
+    start = cursor or 0
+    end = start + limit
+    page = feed_markets[start:end]
+    next_cursor = end if end < len(feed_markets) else None
+
+    return {
+        "markets": page,
+        "next_cursor": next_cursor,
+    }
 
 
 # ===================
@@ -2415,19 +2559,38 @@ def create_api_app() -> FastAPI:
         # Serve static assets
         app.mount("/assets", StaticFiles(directory=webapp_dist / "assets"), name="assets")
 
-        # Serve index.html for all non-API routes (SPA fallback)
-        @app.get("/{full_path:path}")
-        async def serve_spa(full_path: str):
-            # Don't serve SPA for API routes
-            if full_path.startswith("api/") or full_path == "health":
-                return {"detail": "Not found"}
+    # Serve PWA static files if they exist
+    pwa_dist = Path(__file__).parent.parent.parent / "pwa" / "dist"
+    print(f"[API] PWA dist path: {pwa_dist}")
+    print(f"[API] PWA dist exists: {pwa_dist.exists()}")
+    if pwa_dist.exists() and (pwa_dist / "assets").exists():
+        app.mount("/pwa/assets", StaticFiles(directory=pwa_dist / "assets"), name="pwa-assets")
 
-            # Serve static files if they exist
+    # SPA fallback for all non-API routes
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # Don't serve SPA for API routes
+        if full_path.startswith("api/") or full_path == "health":
+            return {"detail": "Not found"}
+
+        # PWA routes: /pwa, /pwa/portfolio, /pwa/profile, etc.
+        if full_path.startswith("pwa") and pwa_dist.exists():
+            # Serve static files (sw.js, manifest, etc.)
+            sub_path = full_path[4:].lstrip("/")  # strip "pwa/" prefix
+            if sub_path:
+                file_path = pwa_dist / sub_path
+                if file_path.exists() and file_path.is_file():
+                    return FileResponse(file_path)
+            # SPA fallback
+            return FileResponse(pwa_dist / "index.html")
+
+        # Existing webapp serving
+        if webapp_dist.exists():
             file_path = webapp_dist / full_path
             if file_path.exists() and file_path.is_file():
                 return FileResponse(file_path)
-
-            # Fallback to index.html for SPA routing
             return FileResponse(webapp_dist / "index.html")
+
+        return {"detail": "Not found"}
 
     return app
