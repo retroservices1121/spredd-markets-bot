@@ -56,8 +56,28 @@ async def run_api():
     await server.serve()
 
 
+def build_pwa_if_needed():
+    """Build PWA frontend if dist/ doesn't exist."""
+    import subprocess
+    pwa_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pwa")
+    pwa_dist = os.path.join(pwa_dir, "dist")
+    if os.path.isdir(pwa_dir) and not os.path.isdir(pwa_dist):
+        print("[Startup] PWA dist not found, building...")
+        try:
+            subprocess.run(["npm", "install"], cwd=pwa_dir, check=True, timeout=120)
+            subprocess.run(["npm", "run", "build:ci"], cwd=pwa_dir, check=True, timeout=120)
+            print(f"[Startup] PWA built: {os.listdir(pwa_dist)}")
+        except Exception as e:
+            print(f"[Startup] PWA build failed: {e}")
+    else:
+        if os.path.isdir(pwa_dist):
+            print(f"[Startup] PWA dist already exists: {os.listdir(pwa_dist)}")
+
+
 async def main():
     """Run both bot and API concurrently."""
+    build_pwa_if_needed()
+
     print("=" * 50)
     print("Starting Spredd Markets")
     print("  - Telegram Bot")
