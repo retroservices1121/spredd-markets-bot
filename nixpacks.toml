@@ -7,11 +7,7 @@
 nixPkgs = ["python311", "gcc", "libffi", "openssl", "nodejs_20"]
 
 [phases.install]
-cmds = [
-    "pip install -r requirements.txt",
-    "cd webapp && npm install && npm run build && ls -la dist/",
-    "echo '=== Building PWA ===' && cd pwa && ls -la && npm install 2>&1 && npm run build:ci 2>&1 && echo '=== PWA dist ===' && ls -la dist/",
-]
+cmds = ["bash build.sh"]
 
 [start]
 cmd = "python run_all.py"
