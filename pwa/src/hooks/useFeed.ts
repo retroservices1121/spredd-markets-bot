@@ -119,11 +119,28 @@ export function useFeed(): UseFeedReturn {
     try {
       const cursor = reset ? undefined : cursorRef.current ?? undefined;
       const res = await getFeed(cursor);
-      const newMarkets = res.markets || [];
+      const raw = res.markets || [];
 
-      setMarkets((prev) => (reset ? newMarkets : [...prev, ...newMarkets]));
+      // Normalize API response: volume can be string, prices can be missing
+      const newMarkets: FeedMarket[] = raw.map((m: Record<string, unknown>) => ({
+        id: String(m.id || ""),
+        platform: String(m.platform || ""),
+        title: String(m.title || m.question || ""),
+        image: m.image ? String(m.image) : undefined,
+        yes_price: Number(m.yes_price ?? 0.5),
+        no_price: Number(m.no_price ?? 0.5),
+        volume: Number(m.volume ?? 0) || 0,
+        category: m.category ? String(m.category) : undefined,
+        end_date: m.end_date ? String(m.end_date) : m.endDate ? String(m.endDate) : undefined,
+      }));
+
+      // If API returned markets, use them; mix in mocks if too few have images
+      const withImages = newMarkets.filter((m) => m.image);
+      const finalMarkets = withImages.length >= 3 ? newMarkets : [...newMarkets, ...MOCK_MARKETS];
+
+      setMarkets((prev) => (reset ? finalMarkets : [...prev, ...finalMarkets]));
       cursorRef.current = res.next_cursor;
-      setHasMore(res.next_cursor != null);
+      setHasMore(res.next_cursor != null && raw.length > 0);
     } catch {
       // Backend not available — fall back to mock data
       if (reset || markets.length === 0) {
