@@ -1069,6 +1069,7 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                                         outcome=redeem_outcome,
                                         token_amount=token_amount,
                                         private_key=private_key,
+                                        token_id=pos.token_id,
                                     )
                                     if result.success:
                                         await update_position(pos.id, status=PositionStatus.REDEEMED, token_amount="0")
@@ -1127,6 +1128,7 @@ async def show_positions(target, telegram_id: int, page: int = 0, is_callback: b
                                     outcome=redeem_outcome,
                                     token_amount=token_amount,
                                     private_key=private_key,
+                                    token_id=pos.token_id,
                                 )
                                 if result.success:
                                     await update_position(pos.id, status=PositionStatus.REDEEMED, token_amount="0")
@@ -7829,6 +7831,17 @@ async def handle_sell_confirm(query, position_id: str, percent_str: str, telegra
                         actual=str(actual_balance),
                         market_id=position.market_id,
                     )
+        elif position.platform == Platform.POLYMARKET:
+            # Check on-chain CTF token balance for Polymarket
+            if hasattr(private_key, 'address') and position.token_id:
+                actual_balance = await platform.get_token_balance(private_key.address, position.token_id)
+                logger.info(
+                    "Checked actual token balance (Polymarket)",
+                    stored=str(Decimal(position.token_amount) / Decimal(10**6)),
+                    actual=str(actual_balance),
+                    market_id=position.market_id,
+                    token_id=position.token_id[:20] if position.token_id else "N/A",
+                )
         elif position.platform == Platform.LIMITLESS:
             # Check on-chain CTF token balance for Limitless
             # private_key is an EVM LocalAccount with .address attribute
@@ -8064,6 +8077,7 @@ async def handle_redeem(query, position_id: str, telegram_id: int) -> None:
             outcome=outcome_enum,
             token_amount=token_amount,
             private_key=private_key,
+            token_id=position.token_id,
         )
 
         if result.success:

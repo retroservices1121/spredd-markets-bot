@@ -347,6 +347,41 @@ class PolymarketPlatform(BasePlatform):
 
         return native_balance, bridged_balance
 
+    async def get_token_balance(self, wallet_address: str, token_id: str) -> Decimal:
+        """Get on-chain CTF token balance for a specific token_id (ERC-1155).
+
+        Args:
+            wallet_address: The wallet address
+            token_id: The CTF token ID (yes or no token)
+
+        Returns:
+            Token balance in human-readable units (6 decimals)
+        """
+        import asyncio
+
+        if not self._sync_web3:
+            return Decimal("0")
+
+        wallet = Web3.to_checksum_address(wallet_address)
+
+        def fetch_balance():
+            ctf_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"]),
+                abi=CTF_ABI,
+            )
+            # CTF is ERC-1155: balanceOf(account, id) -> uint256
+            balance_raw = ctf_contract.functions.balanceOf(wallet, int(token_id)).call()
+            return balance_raw
+
+        try:
+            balance_raw = await asyncio.to_thread(
+                lambda: self._call_with_rpc_fallback(fetch_balance)
+            )
+            return Decimal(balance_raw) / Decimal(10 ** 6)
+        except Exception as e:
+            logger.warning("Failed to get CTF token balance", error=str(e), wallet=wallet_address[:10])
+            return Decimal("0")
+
     def swap_native_to_bridged_usdc(
         self,
         private_key: Any,
@@ -1991,13 +2026,34 @@ class PolymarketPlatform(BasePlatform):
             logger.info("execute_trade: Approvals confirmed")
 
             # Import order types
-            from py_clob_client.clob_types import MarketOrderArgs, OrderType
+            from py_clob_client.clob_types import (
+                MarketOrderArgs, OrderType,
+                BalanceAllowanceParams, AssetType,
+            )
             from py_clob_client.order_builder.constants import BUY, SELL
 
             # Get cached CLOB client (creates if first time)
             client = self._get_clob_client(private_key)
 
             token_id = quote.quote_data["token_id"]
+
+            # Refresh CLOB server's cached view of on-chain allowances/balances
+            # (required after on-chain approvals so CLOB API sees them)
+            try:
+                if quote.side == "sell":
+                    client.update_balance_allowance(
+                        BalanceAllowanceParams(
+                            asset_type=AssetType.CONDITIONAL,
+                            token_id=token_id,
+                        )
+                    )
+                else:
+                    client.update_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                    )
+                logger.info("Updated CLOB balance/allowance cache", side=quote.side)
+            except Exception as e:
+                logger.warning("Failed to update CLOB balance/allowance cache", error=str(e))
 
             # Create market order
             side = BUY if quote.side == "buy" else SELL
@@ -2009,7 +2065,33 @@ class PolymarketPlatform(BasePlatform):
             )
 
             signed_order = client.create_market_order(order_args)
-            result = client.post_order(signed_order, OrderType.FOK)
+
+            # Post order with retry on balance/allowance errors
+            # (CLOB cache may be stale even after update_balance_allowance)
+            try:
+                result = client.post_order(signed_order, OrderType.FOK)
+            except Exception as post_err:
+                err_str = str(post_err).lower()
+                if "not enough balance" in err_str or "allowance" in err_str:
+                    logger.warning("CLOB rejected order (balance/allowance), retrying after cache refresh")
+                    # Force-refresh both allowance types and retry
+                    try:
+                        client.update_balance_allowance(
+                            BalanceAllowanceParams(
+                                asset_type=AssetType.CONDITIONAL,
+                                token_id=token_id,
+                            )
+                        )
+                        client.update_balance_allowance(
+                            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                        )
+                    except Exception:
+                        pass
+                    # Re-sign and retry
+                    signed_order = client.create_market_order(order_args)
+                    result = client.post_order(signed_order, OrderType.FOK)
+                else:
+                    raise
 
             tx_hash = result.get("transactionHash") or result.get("orderID", "")
 
@@ -2159,11 +2241,15 @@ class PolymarketPlatform(BasePlatform):
         outcome: Outcome,
         token_amount: Decimal,
         private_key: Any,
+        token_id: str = None,
     ) -> RedemptionResult:
         """
         Redeem winning tokens from a resolved Polymarket market.
 
-        Calls redeemPositions on the CTF contract.
+        Per Polymarket docs:
+        - Standard markets: call CTF.redeemPositions(USDC.e, bytes32(0), conditionId, [1, 2])
+        - Neg risk markets: call NegRiskAdapter.redeemPositions(conditionId, [yesAmt, noAmt])
+          which internally calls CTF and unwraps wrapped collateral back to USDC.e.
         """
         if not isinstance(private_key, LocalAccount):
             return RedemptionResult(
@@ -2219,11 +2305,15 @@ class PolymarketPlatform(BasePlatform):
             except Exception as e:
                 logger.warning("Resolution re-check failed, proceeding with redemption", error=str(e))
 
-            # Build CTF contract
-            ctf_contract = self._sync_web3.eth.contract(
-                address=Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"]),
-                abi=CTF_ABI,
-            )
+            # Detect neg risk market via CLOB API
+            is_neg_risk = False
+            if token_id:
+                try:
+                    client = self._get_clob_client(private_key)
+                    is_neg_risk = client.get_neg_risk(token_id)
+                    logger.info("Neg risk check", token_id=token_id[:20], is_neg_risk=is_neg_risk)
+                except Exception as e:
+                    logger.warning("Failed to check neg risk, assuming standard", error=str(e))
 
             # Convert condition ID to bytes32
             if condition_id.startswith("0x"):
@@ -2231,77 +2321,198 @@ class PolymarketPlatform(BasePlatform):
             else:
                 condition_bytes = bytes.fromhex(condition_id)
 
-            # Index sets: 1 for YES (binary 01), 2 for NO (binary 10)
-            index_set = 1 if outcome == Outcome.YES else 2
-
-            # Parent collection ID is null bytes32 for Polymarket
-            parent_collection_id = bytes(32)
-
-            # Build transaction
             wallet_address = private_key.address
 
-            tx = ctf_contract.functions.redeemPositions(
-                Web3.to_checksum_address(POLYMARKET_CONTRACTS["collateral"]),
-                parent_collection_id,
-                condition_bytes,
-                [index_set],
-            ).build_transaction({
-                "from": wallet_address,
-                "nonce": self._sync_web3.eth.get_transaction_count(wallet_address),
-                "gas": 200000,
-                "gasPrice": self._sync_web3.eth.gas_price,
-                "chainId": 137,  # Polygon
-            })
+            # Ensure CTF approvals are in place (needed for NegRiskAdapter safeBatchTransferFrom)
+            await self._ensure_exchange_approval(private_key)
 
-            # Sign and send transaction
-            signed_tx = self._sync_web3.eth.account.sign_transaction(tx, private_key.key)
-            tx_hash = self._sync_web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            if is_neg_risk:
+                # Neg risk: call NegRiskAdapter.redeemPositions(conditionId, [yesAmt, noAmt])
+                tx_hash_hex = await self._redeem_neg_risk(
+                    private_key, condition_bytes, outcome, token_id, token_amount, wallet_address,
+                )
+            else:
+                # Standard: call CTF.redeemPositions per Polymarket docs
+                tx_hash_hex = await self._redeem_standard(
+                    private_key, condition_bytes, wallet_address,
+                )
+
+            if not tx_hash_hex:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="Failed to build redemption transaction",
+                    explorer_url=None,
+                )
 
             logger.info(
                 "Redemption transaction sent",
-                tx_hash=tx_hash.hex(),
+                tx_hash=tx_hash_hex,
                 market_id=market_id,
                 outcome=outcome.value,
+                is_neg_risk=is_neg_risk,
             )
 
             # Wait for confirmation
-            receipt = self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            receipt = self._sync_web3.eth.wait_for_transaction_receipt(
+                bytes.fromhex(tx_hash_hex if not tx_hash_hex.startswith("0x") else tx_hash_hex[2:]),
+                timeout=60,
+            )
 
             if receipt.status == 1:
-                # Calculate redeemed amount (winning tokens are worth $1 each)
                 amount_redeemed = token_amount
 
                 logger.info(
                     "Redemption confirmed",
-                    tx_hash=tx_hash.hex(),
+                    tx_hash=tx_hash_hex,
                     amount_redeemed=str(amount_redeemed),
                 )
 
                 return RedemptionResult(
                     success=True,
-                    tx_hash=tx_hash.hex(),
+                    tx_hash=tx_hash_hex,
                     amount_redeemed=amount_redeemed,
                     error_message=None,
-                    explorer_url=self.get_explorer_url(tx_hash.hex()),
+                    explorer_url=self.get_explorer_url(tx_hash_hex),
                 )
             else:
                 return RedemptionResult(
                     success=False,
-                    tx_hash=tx_hash.hex(),
+                    tx_hash=tx_hash_hex,
                     amount_redeemed=None,
-                    error_message="Transaction failed",
-                    explorer_url=self.get_explorer_url(tx_hash.hex()),
+                    error_message="Redemption transaction reverted on-chain. The market may not be fully resolved yet.",
+                    explorer_url=self.get_explorer_url(tx_hash_hex),
                 )
 
         except Exception as e:
-            logger.error("Redemption failed", error=str(e), market_id=market_id)
+            error_msg = str(e)
+            logger.error("Redemption failed", error=error_msg, market_id=market_id)
+
+            # Provide descriptive error instead of letting friendly_error mask it
+            if "execution reverted" in error_msg.lower():
+                error_msg = "Redemption reverted on-chain. The market may not be resolved yet, or tokens may have already been redeemed."
+            elif "insufficient funds" in error_msg.lower() or "gas required" in error_msg.lower():
+                error_msg = "Not enough MATIC/POL for gas fees. Please add gas funds to your wallet."
+
             return RedemptionResult(
                 success=False,
                 tx_hash=None,
                 amount_redeemed=None,
-                error_message=str(e),
+                error_message=error_msg,
                 explorer_url=None,
             )
+
+    async def _redeem_standard(
+        self,
+        private_key: LocalAccount,
+        condition_bytes: bytes,
+        wallet_address: str,
+    ) -> Optional[str]:
+        """Redeem standard (non-neg-risk) market positions via CTF contract.
+
+        Per Polymarket docs: redeemPositions(USDC.e, bytes32(0), conditionId, [1, 2])
+        Burns entire token balance for the condition — no amount parameter.
+        """
+        def _build_and_send():
+            ctf_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"]),
+                abi=CTF_ABI,
+            )
+
+            parent_collection_id = bytes(32)
+
+            # Per Polymarket docs: pass [1, 2] to redeem both outcome slots
+            tx = ctf_contract.functions.redeemPositions(
+                Web3.to_checksum_address(POLYMARKET_CONTRACTS["collateral"]),
+                parent_collection_id,
+                condition_bytes,
+                [1, 2],
+            ).build_transaction({
+                "from": wallet_address,
+                "nonce": self._sync_web3.eth.get_transaction_count(wallet_address),
+                "gas": 300000,
+                "gasPrice": int(self._sync_web3.eth.gas_price * 1.5),
+                "chainId": 137,
+            })
+
+            signed_tx = self._sync_web3.eth.account.sign_transaction(tx, private_key.key)
+            tx_hash = self._sync_web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            return tx_hash.hex()
+
+        return await asyncio.to_thread(lambda: self._call_with_rpc_fallback(_build_and_send))
+
+    async def _redeem_neg_risk(
+        self,
+        private_key: LocalAccount,
+        condition_bytes: bytes,
+        outcome: Outcome,
+        token_id: str,
+        token_amount: Decimal,
+        wallet_address: str,
+    ) -> Optional[str]:
+        """Redeem neg risk market positions via NegRiskAdapter contract.
+
+        NegRiskAdapter.redeemPositions(conditionId, [yesAmount, noAmount]):
+        1. Transfers conditional tokens from user to adapter via safeBatchTransferFrom
+        2. Calls CTF.redeemPositions with wrapped collateral
+        3. Unwraps wrapped collateral back to USDC.e and returns to user
+        """
+        # NegRiskAdapter ABI for redeemPositions
+        NEG_RISK_REDEEM_ABI = [
+            {
+                "inputs": [
+                    {"name": "_conditionId", "type": "bytes32"},
+                    {"name": "_amounts", "type": "uint256[]"},
+                ],
+                "name": "redeemPositions",
+                "outputs": [],
+                "type": "function",
+            }
+        ]
+
+        def _build_and_send():
+            # Get on-chain token balance (raw units)
+            ctf_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"]),
+                abi=CTF_ABI,
+            )
+            wallet = Web3.to_checksum_address(wallet_address)
+            balance_raw = ctf_contract.functions.balanceOf(wallet, int(token_id)).call()
+
+            if balance_raw == 0:
+                # Fallback to stored amount
+                balance_raw = int(token_amount * Decimal(10 ** 6))
+
+            logger.info("Neg risk redeem balance", balance_raw=balance_raw, outcome=outcome.value)
+
+            # Build amounts array: [yesAmount, noAmount]
+            if outcome == Outcome.YES:
+                amounts = [balance_raw, 0]
+            else:
+                amounts = [0, balance_raw]
+
+            adapter_contract = self._sync_web3.eth.contract(
+                address=Web3.to_checksum_address(POLYMARKET_CONTRACTS["neg_risk_adapter"]),
+                abi=NEG_RISK_REDEEM_ABI,
+            )
+
+            tx = adapter_contract.functions.redeemPositions(
+                condition_bytes,
+                amounts,
+            ).build_transaction({
+                "from": wallet_address,
+                "nonce": self._sync_web3.eth.get_transaction_count(wallet_address),
+                "gas": 400000,  # Neg risk needs more gas (multiple contract calls)
+                "gasPrice": int(self._sync_web3.eth.gas_price * 1.5),
+                "chainId": 137,
+            })
+
+            signed_tx = self._sync_web3.eth.account.sign_transaction(tx, private_key.key)
+            tx_hash = self._sync_web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            return tx_hash.hex()
+
+        return await asyncio.to_thread(lambda: self._call_with_rpc_fallback(_build_and_send))
 
 
 # Singleton instance

@@ -1405,6 +1405,7 @@ class MyriadPlatform(BasePlatform):
         outcome: Outcome,
         token_amount: Decimal,
         private_key: Any,
+        token_id: str = None,
     ) -> RedemptionResult:
         """Redeem winning tokens from a resolved market."""
         if not isinstance(private_key, LocalAccount):

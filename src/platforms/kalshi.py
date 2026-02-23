@@ -1122,6 +1122,7 @@ class KalshiPlatform(BasePlatform):
         outcome: Outcome,
         token_amount: Decimal,
         private_key: Any,
+        token_id: str = None,
     ) -> RedemptionResult:
         """
         Redeem winning tokens from a resolved Kalshi market via DFlow.

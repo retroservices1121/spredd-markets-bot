@@ -380,6 +380,7 @@ class BasePlatform(ABC):
         outcome: Outcome,
         token_amount: Decimal,
         private_key: Any,
+        token_id: str = None,
     ) -> RedemptionResult:
         """
         Redeem winning tokens from a resolved market.
@@ -389,6 +390,7 @@ class BasePlatform(ABC):
             outcome: The outcome tokens to redeem (YES or NO)
             token_amount: Amount of tokens to redeem
             private_key: User's private key for signing
+            token_id: Optional token ID (used to detect neg risk on Polymarket)
 
         Returns:
             RedemptionResult with transaction hash and amount redeemed

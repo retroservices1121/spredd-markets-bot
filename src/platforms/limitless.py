@@ -2002,6 +2002,7 @@ class LimitlessPlatform(BasePlatform):
         outcome: Outcome,
         token_amount: Decimal,
         private_key: Any,
+        token_id: str = None,
     ) -> RedemptionResult:
         """Redeem winning tokens from resolved Limitless market.
 

@@ -715,6 +715,7 @@ class JupiterPlatform(BasePlatform):
         outcome: Outcome,
         token_amount: Decimal,
         private_key: Any,
+        token_id: str = None,
     ) -> RedemptionResult:
         """Claim winnings from a resolved Jupiter market.
 
