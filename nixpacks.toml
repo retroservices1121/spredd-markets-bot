@@ -1,7 +1,7 @@
 # ===========================================
 # Nixpacks Build Configuration
 # ===========================================
-# Builds Python backend + Node.js webapp
+# Builds Python backend + Node.js webapp + PWA
 
 [phases.setup]
 nixPkgs = ["python311", "gcc", "libffi", "openssl", "nodejs_20"]
@@ -10,7 +10,11 @@ nixPkgs = ["python311", "gcc", "libffi", "openssl", "nodejs_20"]
 cmds = [
     "pip install -r requirements.txt",
     "cd webapp && npm install && npm run build && ls -la dist/",
-    "cd pwa && npm install && npm run build:ci && ls -la dist/"
+]
+
+[phases.build]
+cmds = [
+    "cd pwa && npm install && npm run build:ci && ls -la dist/",
 ]
 
 [start]
