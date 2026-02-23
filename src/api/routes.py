@@ -2561,10 +2561,35 @@ def create_api_app() -> FastAPI:
 
     # Serve PWA static files if they exist
     pwa_dist = Path(__file__).parent.parent.parent / "pwa" / "dist"
-    print(f"[API] PWA dist path: {pwa_dist}")
+    print(f"[API] PWA dist path: {pwa_dist} (resolved: {pwa_dist.resolve()})")
     print(f"[API] PWA dist exists: {pwa_dist.exists()}")
+    # Fallback: check /app/pwa/dist (Railway's working directory)
+    if not pwa_dist.exists():
+        pwa_alt = Path("/app/pwa/dist")
+        print(f"[API] Trying alt PWA path: {pwa_alt}, exists: {pwa_alt.exists()}")
+        if pwa_alt.exists():
+            pwa_dist = pwa_alt
     if pwa_dist.exists() and (pwa_dist / "assets").exists():
+        print(f"[API] Mounting PWA assets from: {pwa_dist}")
         app.mount("/pwa/assets", StaticFiles(directory=pwa_dist / "assets"), name="pwa-assets")
+    else:
+        print(f"[API] PWA dist NOT found — /pwa/ routes will not work")
+
+    # Debug endpoint to check PWA dist status
+    @app.get("/debug/pwa-status")
+    async def debug_pwa_status():
+        import os
+        return {
+            "pwa_dist": str(pwa_dist),
+            "pwa_dist_resolved": str(pwa_dist.resolve()),
+            "pwa_dist_exists": pwa_dist.exists(),
+            "webapp_dist": str(webapp_dist),
+            "webapp_dist_exists": webapp_dist.exists(),
+            "cwd": os.getcwd(),
+            "__file__": __file__,
+            "pwa_contents": os.listdir(str(pwa_dist)) if pwa_dist.exists() else [],
+            "pwa_parent_contents": os.listdir(str(pwa_dist.parent)) if pwa_dist.parent.exists() else [],
+        }
 
     # SPA fallback for all non-API routes
     @app.get("/{full_path:path}")
