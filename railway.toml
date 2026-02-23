@@ -4,6 +4,7 @@
 
 [build]
 builder = "nixpacks"
+buildCommand = "pip install -r requirements.txt && cd webapp && npm install && npm run build && cd ../pwa && npm install && npm run build:ci"
 
 [deploy]
 startCommand = "python -m src.main"
