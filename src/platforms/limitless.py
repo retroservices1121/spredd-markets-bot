@@ -11,7 +11,7 @@ import time
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 
-from src.services.signer import EVMSigner, LegacyEVMSigner
+from src.services.signer import EVMSigner, LegacyEVMSigner, PrivyEVMSigner
 
 from limitless_sdk.api import HttpClient as LimitlessHttpClient
 from limitless_sdk.markets import MarketFetcher
@@ -1413,17 +1413,51 @@ class LimitlessPlatform(BasePlatform):
 
         Accepts either a LocalAccount (legacy) or EVMSigner (Privy).
         """
+        # Check if AMM before unwrapping signer (needed for Privy routing)
+        is_amm = quote.quote_data.get("is_amm", False) if quote.quote_data else False
+        outcome_index = quote.quote_data.get("outcome_index", 0) if quote.quote_data else 0
+
         # Unwrap EVMSigner — extract LocalAccount if legacy
         if isinstance(private_key, EVMSigner):
             if isinstance(private_key, LegacyEVMSigner):
                 private_key = private_key.local_account
+            elif isinstance(private_key, PrivyEVMSigner):
+                if is_amm:
+                    # AMM markets can use Privy signer (direct contract interaction)
+                    if not quote.quote_data:
+                        raise PlatformError("Quote data missing", Platform.LIMITLESS)
+                    market_slug = quote.quote_data.get("market_slug", quote.market_id)
+                    venue = await self._get_venue(market_slug)
+                    exchange = venue.get("exchange", venue.get("address"))
+                    if not exchange:
+                        return TradeResult(
+                            success=False, tx_hash=None,
+                            input_amount=quote.input_amount, output_amount=None,
+                            error_message="Exchange address not found for market",
+                            explorer_url=None,
+                        )
+                    return await self._execute_amm_trade_with_signer(
+                        quote=quote,
+                        signer=private_key,
+                        amm_address=exchange,
+                        outcome_index=outcome_index,
+                    )
+                else:
+                    return TradeResult(
+                        success=False,
+                        tx_hash=None,
+                        input_amount=quote.input_amount,
+                        output_amount=None,
+                        error_message="Limitless CLOB trading with Privy wallets coming soon. AMM markets are supported — try an AMM market instead.",
+                        explorer_url=None,
+                    )
             else:
                 return TradeResult(
                     success=False,
                     tx_hash=None,
                     input_amount=quote.input_amount,
                     output_amount=None,
-                    error_message="Limitless trading with Privy wallets coming soon. Use legacy wallet for now.",
+                    error_message="Unsupported EVM signer type for Limitless.",
                     explorer_url=None,
                 )
 
@@ -1463,10 +1497,6 @@ class LimitlessPlatform(BasePlatform):
                 logger.debug("Got user info", owner_id=owner_id, fee_rate_bps=fee_rate_bps)
             except Exception as e:
                 logger.warning("Failed to get user info, using defaults", error=str(e))
-
-            # Check if this is an AMM market
-            is_amm = quote.quote_data.get("is_amm", False)
-            outcome_index = quote.quote_data.get("outcome_index", 0)
 
             if is_amm:
                 # AMM trading - direct contract interaction
@@ -1928,6 +1958,280 @@ class LimitlessPlatform(BasePlatform):
             logger.error("AMM trade failed", error=error_str)
 
             # Provide user-friendly error messages
+            if "insufficient" in error_str.lower():
+                error_msg = "Insufficient balance for this trade"
+            elif "slippage" in error_str.lower() or "min" in error_str.lower():
+                error_msg = "Trade failed due to price movement (slippage). Try again or use a smaller amount."
+            else:
+                error_msg = f"AMM trade failed: {error_str[:100]}"
+
+            return TradeResult(
+                success=False,
+                tx_hash=None,
+                input_amount=quote.input_amount,
+                output_amount=None,
+                error_message=error_msg,
+                explorer_url=None,
+            )
+
+    # ===================
+    # Privy Signer AMM Trading
+    # ===================
+
+    async def _ensure_approval_with_signer(
+        self,
+        signer: PrivyEVMSigner,
+        spender: str,
+    ) -> None:
+        """Ensure USDC approval on Base using Privy signer."""
+        if not self._web3:
+            raise PlatformError("Web3 not initialized", Platform.LIMITLESS)
+
+        wallet = Web3.to_checksum_address(signer.address)
+        spender_addr = Web3.to_checksum_address(spender)
+
+        # Check cache
+        cached = self._approval_cache.get(wallet, set())
+        if spender in cached:
+            return
+
+        # Check current allowance (read-only)
+        usdc = self._web3.eth.contract(
+            address=Web3.to_checksum_address(USDC_BASE),
+            abi=ERC20_ABI,
+        )
+
+        current_allowance = await usdc.functions.allowance(wallet, spender_addr).call()
+        if current_allowance >= 10 ** 12:
+            self._approval_cache.setdefault(wallet, set()).add(spender)
+            return
+
+        logger.info("Approving USDC for Limitless (signer)", spender=spender[:10])
+
+        # Encode approve calldata
+        sync_usdc = Web3().eth.contract(
+            address=Web3.to_checksum_address(USDC_BASE),
+            abi=ERC20_ABI,
+        )
+        approve_data = sync_usdc.encode_abi(
+            "approve",
+            [spender_addr, 2**256 - 1]
+        )
+
+        nonce = await self._web3.eth.get_transaction_count(wallet)
+        gas_price = await self._web3.eth.gas_price
+
+        tx_params = {
+            "to": Web3.to_checksum_address(USDC_BASE),
+            "data": approve_data,
+            "nonce": nonce,
+            "gasPrice": int(gas_price * 1.2),
+            "gas": 100000,
+            "chainId": 8453,
+            "value": 0,
+        }
+
+        tx_hash = await signer.sign_and_send_transaction(tx_params, self._web3)
+        await self._web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+
+        self._approval_cache.setdefault(wallet, set()).add(spender)
+        logger.info("USDC approval confirmed (signer)", tx_hash=tx_hash)
+
+    async def _ensure_ctf_approval_with_signer(
+        self,
+        signer: PrivyEVMSigner,
+        ctf_address: str,
+        exchange: str,
+    ) -> None:
+        """Ensure CTF (ERC-1155) approval for exchange using Privy signer."""
+        if not self._web3:
+            raise PlatformError("Web3 not initialized", Platform.LIMITLESS)
+
+        wallet = Web3.to_checksum_address(signer.address)
+        cache_key = f"ctf:{ctf_address}:{exchange}"
+        cached = self._approval_cache.get(wallet, set())
+
+        if cache_key in cached:
+            return
+
+        ERC1155_ABI_LOCAL = [
+            {
+                "inputs": [
+                    {"name": "operator", "type": "address"},
+                    {"name": "approved", "type": "bool"}
+                ],
+                "name": "setApprovalForAll",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {"name": "account", "type": "address"},
+                    {"name": "operator", "type": "address"}
+                ],
+                "name": "isApprovedForAll",
+                "outputs": [{"name": "", "type": "bool"}],
+                "stateMutability": "view",
+                "type": "function"
+            }
+        ]
+
+        ctf = self._web3.eth.contract(
+            address=Web3.to_checksum_address(ctf_address),
+            abi=ERC1155_ABI_LOCAL,
+        )
+        spender_addr = Web3.to_checksum_address(exchange)
+
+        is_approved = await ctf.functions.isApprovedForAll(wallet, spender_addr).call()
+        if is_approved:
+            self._approval_cache.setdefault(wallet, set()).add(cache_key)
+            return
+
+        logger.info("Approving CTF tokens for Limitless (signer)", ctf=ctf_address[:10], exchange=exchange[:10])
+
+        sync_ctf = Web3().eth.contract(
+            address=Web3.to_checksum_address(ctf_address),
+            abi=ERC1155_ABI_LOCAL,
+        )
+        approve_data = sync_ctf.encode_abi(
+            "setApprovalForAll",
+            [spender_addr, True]
+        )
+
+        nonce = await self._web3.eth.get_transaction_count(wallet)
+        gas_price = await self._web3.eth.gas_price
+
+        tx_params = {
+            "to": Web3.to_checksum_address(ctf_address),
+            "data": approve_data,
+            "nonce": nonce,
+            "gasPrice": int(gas_price * 1.2),
+            "gas": 100000,
+            "chainId": 8453,
+            "value": 0,
+        }
+
+        tx_hash = await signer.sign_and_send_transaction(tx_params, self._web3)
+        await self._web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+
+        self._approval_cache.setdefault(wallet, set()).add(cache_key)
+        logger.info("CTF approval confirmed (signer)", tx_hash=tx_hash)
+
+    async def _execute_amm_trade_with_signer(
+        self,
+        quote: Quote,
+        signer: PrivyEVMSigner,
+        amm_address: str,
+        outcome_index: int,
+    ) -> TradeResult:
+        """Execute an AMM trade using Privy signer."""
+        if not self._web3:
+            raise PlatformError("Web3 not initialized", Platform.LIMITLESS)
+
+        try:
+            wallet = Web3.to_checksum_address(signer.address)
+            amm_checksum = Web3.to_checksum_address(amm_address)
+            amount_raw = int(quote.input_amount * Decimal(10 ** 6))
+
+            if quote.side == "buy":
+                # Ensure USDC approval for AMM
+                await self._ensure_approval_with_signer(signer, amm_address)
+
+                # Calculate minimum output using sync web3 in thread (read-only)
+                def calc_buy():
+                    if not self._sync_web3:
+                        return 1
+                    amm = self._sync_web3.eth.contract(address=amm_checksum, abi=FPMM_ABI)
+                    try:
+                        expected = amm.functions.calcBuyAmount(amount_raw, outcome_index).call()
+                        return int(expected * 0.98)  # 2% slippage
+                    except Exception:
+                        return 1
+
+                min_tokens = await asyncio.to_thread(calc_buy)
+
+                # Build buy tx
+                sync_amm = Web3().eth.contract(address=amm_checksum, abi=FPMM_ABI)
+                buy_data = sync_amm.encode_abi("buy", [amount_raw, outcome_index, min_tokens])
+
+                nonce = await self._web3.eth.get_transaction_count(wallet)
+                gas_price = await self._web3.eth.gas_price
+
+                tx_params = {
+                    "to": amm_checksum,
+                    "data": buy_data,
+                    "nonce": nonce,
+                    "gasPrice": int(gas_price * 1.2),
+                    "gas": 300000,
+                    "chainId": 8453,
+                    "value": 0,
+                }
+
+                tx_hash = await signer.sign_and_send_transaction(tx_params, self._web3)
+
+            else:
+                # Sell: calculate tokens to sell
+                def calc_sell():
+                    if not self._sync_web3:
+                        return int(quote.input_amount * Decimal(10 ** 18))
+                    amm = self._sync_web3.eth.contract(address=amm_checksum, abi=FPMM_ABI)
+                    try:
+                        tokens = amm.functions.calcSellAmount(amount_raw, outcome_index).call()
+                        return int(tokens * 1.02)  # 2% slippage
+                    except Exception:
+                        return int(quote.input_amount * Decimal(10 ** 18) * Decimal("1.02"))
+
+                max_tokens = await asyncio.to_thread(calc_sell)
+
+                sync_amm = Web3().eth.contract(address=amm_checksum, abi=FPMM_ABI)
+                sell_data = sync_amm.encode_abi("sell", [amount_raw, outcome_index, max_tokens])
+
+                nonce = await self._web3.eth.get_transaction_count(wallet)
+                gas_price = await self._web3.eth.gas_price
+
+                tx_params = {
+                    "to": amm_checksum,
+                    "data": sell_data,
+                    "nonce": nonce,
+                    "gasPrice": int(gas_price * 1.2),
+                    "gas": 300000,
+                    "chainId": 8453,
+                    "value": 0,
+                }
+
+                tx_hash = await signer.sign_and_send_transaction(tx_params, self._web3)
+
+            # Wait for confirmation
+            receipt = await self._web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            status = receipt.get("status") if isinstance(receipt, dict) else receipt["status"]
+            tx_hash_str = tx_hash if isinstance(tx_hash, str) else tx_hash.hex()
+
+            if status != 1:
+                return TradeResult(
+                    success=False,
+                    tx_hash=tx_hash_str,
+                    input_amount=quote.input_amount,
+                    output_amount=None,
+                    error_message="AMM transaction failed",
+                    explorer_url=f"https://basescan.org/tx/{tx_hash_str}",
+                )
+
+            return TradeResult(
+                success=True,
+                tx_hash=tx_hash_str,
+                input_amount=quote.input_amount,
+                output_amount=quote.expected_output,
+                error_message=None,
+                explorer_url=f"https://basescan.org/tx/{tx_hash_str}",
+            )
+
+        except PlatformError:
+            raise
+        except Exception as e:
+            error_str = str(e)
+            logger.error("AMM trade failed (signer)", error=error_str)
+
             if "insufficient" in error_str.lower():
                 error_msg = "Insufficient balance for this trade"
             elif "slippage" in error_str.lower() or "min" in error_str.lower():

@@ -10,8 +10,10 @@ from datetime import datetime
 
 import httpx
 from eth_account.signers.local import LocalAccount
-from web3 import AsyncWeb3
+from web3 import AsyncWeb3, Web3
 from web3.middleware import ExtraDataToPOAMiddleware
+
+from src.services.signer import EVMSigner, LegacyEVMSigner, PrivyEVMSigner
 
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
@@ -305,11 +307,153 @@ class OpinionPlatform(BasePlatform):
                 Platform.OPINION,
             )
 
+    async def _enable_trading_eoa_with_signer(self, signer: PrivyEVMSigner) -> bool:
+        """Enable trading for a Privy wallet by approving USDT and CT on BSC.
+
+        Same approvals as _enable_trading_eoa but uses Privy signer for signing.
+        """
+        wallet_address = signer.address
+        wallet_lower = wallet_address.lower()
+
+        if wallet_lower in self._trading_enabled_wallets:
+            logger.debug("Trading already enabled for Privy wallet", wallet=wallet_address[:10])
+            return True
+
+        try:
+            # Use sync web3 in thread for read-only calls, Privy signer for signing
+            from web3.middleware import ExtraDataToPOAMiddleware as POA
+
+            w3 = Web3(Web3.HTTPProvider(settings.bsc_rpc_url))
+            w3.middleware_onion.inject(POA, layer=0)
+
+            erc20_abi = [
+                {
+                    "inputs": [
+                        {"name": "spender", "type": "address"},
+                        {"name": "amount", "type": "uint256"}
+                    ],
+                    "name": "approve",
+                    "outputs": [{"name": "", "type": "bool"}],
+                    "stateMutability": "nonpayable",
+                    "type": "function"
+                },
+                {
+                    "inputs": [
+                        {"name": "owner", "type": "address"},
+                        {"name": "spender", "type": "address"}
+                    ],
+                    "name": "allowance",
+                    "outputs": [{"name": "", "type": "uint256"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                }
+            ]
+
+            ct_abi = [
+                {
+                    "inputs": [
+                        {"name": "operator", "type": "address"},
+                        {"name": "approved", "type": "bool"}
+                    ],
+                    "name": "setApprovalForAll",
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                    "type": "function"
+                },
+                {
+                    "inputs": [
+                        {"name": "owner", "type": "address"},
+                        {"name": "operator", "type": "address"}
+                    ],
+                    "name": "isApprovedForAll",
+                    "outputs": [{"name": "", "type": "bool"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                }
+            ]
+
+            ctf_exchange = await self._get_ctf_exchange_address()
+            ctf_exchange = Web3.to_checksum_address(ctf_exchange)
+            usdt_address = Web3.to_checksum_address(self.USDT_ADDRESS)
+            conditional_tokens = Web3.to_checksum_address(self.CONDITIONAL_TOKENS)
+            wallet_checksum = Web3.to_checksum_address(wallet_address)
+
+            usdt_contract = w3.eth.contract(address=usdt_address, abi=erc20_abi)
+            ct_contract = w3.eth.contract(address=conditional_tokens, abi=ct_abi)
+
+            max_uint256 = 2**256 - 1
+            min_threshold = 1_000_000_000 * 10**18
+
+            sync_usdt = Web3().eth.contract(address=usdt_address, abi=erc20_abi)
+            sync_ct = Web3().eth.contract(address=conditional_tokens, abi=ct_abi)
+
+            # Helper to sign, send, and wait
+            async def send_approval_tx(to_addr, data_hex):
+                nonce = await asyncio.to_thread(lambda: w3.eth.get_transaction_count(wallet_checksum))
+                gas_price = await asyncio.to_thread(lambda: w3.eth.gas_price)
+                tx_params = {
+                    "to": to_addr,
+                    "data": data_hex,
+                    "nonce": nonce,
+                    "gas": 100000,
+                    "gasPrice": gas_price,
+                    "chainId": 56,
+                    "value": 0,
+                }
+                signed_raw = await signer.sign_transaction(tx_params)
+
+                def send_and_wait(raw_tx):
+                    tx_hash = w3.eth.send_raw_transaction(raw_tx)
+                    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                    if receipt["status"] != 1:
+                        raise Exception(f"Approval failed: {tx_hash.hex()}")
+                    return tx_hash.hex()
+
+                return await asyncio.to_thread(send_and_wait, signed_raw)
+
+            # 1. Approve USDT for CTF exchange
+            allowance_ctf = await asyncio.to_thread(
+                lambda: usdt_contract.functions.allowance(wallet_checksum, ctf_exchange).call()
+            )
+            if allowance_ctf < min_threshold:
+                logger.info("Approving USDT for CTF exchange (signer)", wallet=wallet_address[:10])
+                data = sync_usdt.encode_abi("approve", [ctf_exchange, max_uint256])
+                await send_approval_tx(usdt_address, data)
+
+            # 2. Approve USDT for Conditional Tokens contract
+            allowance_ct = await asyncio.to_thread(
+                lambda: usdt_contract.functions.allowance(wallet_checksum, conditional_tokens).call()
+            )
+            if allowance_ct < min_threshold:
+                logger.info("Approving USDT for Conditional Tokens (signer)", wallet=wallet_address[:10])
+                data = sync_usdt.encode_abi("approve", [conditional_tokens, max_uint256])
+                await send_approval_tx(usdt_address, data)
+
+            # 3. SetApprovalForAll on Conditional Tokens for CTF exchange
+            is_approved = await asyncio.to_thread(
+                lambda: ct_contract.functions.isApprovedForAll(wallet_checksum, ctf_exchange).call()
+            )
+            if not is_approved:
+                logger.info("Setting approval for all on Conditional Tokens (signer)", wallet=wallet_address[:10])
+                data = sync_ct.encode_abi("setApprovalForAll", [ctf_exchange, True])
+                await send_approval_tx(conditional_tokens, data)
+
+            self._trading_enabled_wallets.add(wallet_lower)
+            logger.info("Trading enabled for Privy wallet", wallet=wallet_address[:10])
+            return True
+
+        except Exception as e:
+            logger.error("Failed to enable trading for Privy wallet", error=str(e), wallet=wallet_address[:10])
+            raise PlatformError(
+                f"Failed to approve tokens on Opinion. Ensure wallet has BNB for gas. Error: {str(e)[:100]}",
+                Platform.OPINION,
+            )
+
     async def close(self) -> None:
         """Close connections."""
         if self._http_client:
             await self._http_client.aclose()
-    
+
     def _init_sdk_client(self, private_key: str) -> Any:
         """Initialize the Opinion CLOB SDK client."""
         try:
@@ -999,9 +1143,38 @@ class OpinionPlatform(BasePlatform):
             order_type: "market" for market order, "limit" for limit order
             limit_price: Price for limit orders (required if order_type="limit")
         """
+        # Handle EVMSigner types
+        if isinstance(private_key, EVMSigner):
+            if isinstance(private_key, LegacyEVMSigner):
+                private_key = private_key.local_account
+            elif isinstance(private_key, PrivyEVMSigner):
+                # Privy signer — set up on-chain approvals proactively
+                try:
+                    await self._enable_trading_eoa_with_signer(private_key)
+                    logger.info("Opinion approvals completed for Privy wallet", wallet=private_key.address[:10])
+                except Exception as e:
+                    logger.warning("Opinion Privy approval failed (non-blocking)", error=str(e))
+                return TradeResult(
+                    success=False,
+                    tx_hash=None,
+                    input_amount=quote.input_amount,
+                    output_amount=None,
+                    error_message="Opinion CLOB trading with Privy wallets coming soon. On-chain approvals have been set up. Use legacy wallet for now.",
+                    explorer_url=None,
+                )
+            else:
+                return TradeResult(
+                    success=False,
+                    tx_hash=None,
+                    input_amount=quote.input_amount,
+                    output_amount=None,
+                    error_message="Unsupported EVM signer type for Opinion.",
+                    explorer_url=None,
+                )
+
         if not isinstance(private_key, LocalAccount):
             raise PlatformError(
-                "Invalid private key type, expected EVM LocalAccount",
+                "Invalid private key type, expected EVM LocalAccount or EVMSigner",
                 Platform.OPINION,
             )
 

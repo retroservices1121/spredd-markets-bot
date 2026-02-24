@@ -18,7 +18,7 @@ import httpx
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 
-from src.services.signer import EVMSigner, LegacyEVMSigner
+from src.services.signer import EVMSigner, LegacyEVMSigner, PrivyEVMSigner
 
 # ZKsync SDK for Abstract chain
 try:
@@ -1177,13 +1177,16 @@ class MyriadPlatform(BasePlatform):
         if isinstance(private_key, EVMSigner):
             if isinstance(private_key, LegacyEVMSigner):
                 private_key = private_key.local_account
+            elif isinstance(private_key, PrivyEVMSigner):
+                # Privy signer — use async signing path
+                return await self._execute_trade_with_signer(quote, private_key)
             else:
                 return TradeResult(
                     success=False,
                     tx_hash=None,
                     input_amount=quote.input_amount,
                     output_amount=None,
-                    error_message="Myriad trading with Privy wallets coming soon. Use legacy wallet for now.",
+                    error_message="Unsupported EVM signer type for Myriad.",
                     explorer_url=None,
                 )
 
@@ -1384,6 +1387,386 @@ class MyriadPlatform(BasePlatform):
             )
 
     # ===================
+    # Privy Signer Trading
+    # ===================
+
+    async def _ensure_approval_with_signer(
+        self,
+        signer: PrivyEVMSigner,
+        network_id: int,
+        token_address: str,
+        spender_address: str,
+        amount: int,
+    ) -> Optional[str]:
+        """Ensure ERC-20 token approval using Privy signer. Returns tx hash if approval was needed."""
+        web3 = await self._ensure_web3(network_id)
+
+        token = web3.eth.contract(
+            address=Web3.to_checksum_address(token_address),
+            abi=ERC20_ABI,
+        )
+
+        user_address = signer.address
+
+        # Check current allowance (read-only, no signing needed)
+        current_allowance = await token.functions.allowance(
+            Web3.to_checksum_address(user_address),
+            Web3.to_checksum_address(spender_address),
+        ).call()
+
+        if current_allowance >= amount:
+            logger.debug("Sufficient allowance (signer)", allowance=current_allowance, needed=amount)
+            return None
+
+        # Build approval calldata
+        max_approval = 2**256 - 1
+        logger.info("Approving token spend (signer)", token=token_address[:10], spender=spender_address[:10])
+
+        # Encode approve calldata using sync Web3
+        sync_token = Web3().eth.contract(
+            address=Web3.to_checksum_address(token_address),
+            abi=ERC20_ABI,
+        )
+        approve_data = sync_token.encode_abi(
+            "approve",
+            [Web3.to_checksum_address(spender_address), max_approval]
+        )
+
+        if self._is_zksync_network(network_id):
+            tx_hash = await self._send_zksync_transaction_with_signer(
+                network_id=network_id,
+                signer=signer,
+                to=token_address,
+                data=approve_data,
+            )
+        else:
+            # Standard EVM
+            nonce = await web3.eth.get_transaction_count(user_address)
+            gas_price = await web3.eth.gas_price
+            chain_id = await web3.eth.chain_id
+
+            tx_params = {
+                "to": Web3.to_checksum_address(token_address),
+                "data": approve_data,
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "gas": 100000,
+                "chainId": chain_id,
+                "value": 0,
+            }
+
+            tx_hash = await signer.sign_and_send_transaction(tx_params, web3)
+
+        # Wait for confirmation
+        receipt = await web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        status = receipt.get("status") if isinstance(receipt, dict) else receipt["status"]
+        if status != 1:
+            raise PlatformError("Approval transaction failed (signer)", Platform.MYRIAD)
+
+        logger.info("Approval confirmed (signer)", tx_hash=tx_hash)
+        return tx_hash if isinstance(tx_hash, str) else tx_hash.hex()
+
+    async def _ensure_erc1155_approval_with_signer(
+        self,
+        signer: PrivyEVMSigner,
+        network_id: int,
+        token_contract: str,
+        operator_address: str,
+    ) -> Optional[str]:
+        """Ensure ERC-1155 approval for operator using Privy signer."""
+        web3 = await self._ensure_web3(network_id)
+        user_address = signer.address
+
+        token = web3.eth.contract(
+            address=Web3.to_checksum_address(token_contract),
+            abi=ERC1155_ABI,
+        )
+
+        is_approved = await token.functions.isApprovedForAll(
+            Web3.to_checksum_address(user_address),
+            Web3.to_checksum_address(operator_address),
+        ).call()
+
+        if is_approved:
+            logger.debug("ERC-1155 already approved (signer)", operator=operator_address[:10])
+            return None
+
+        logger.info("Setting ERC-1155 approval (signer)", token=token_contract[:10], operator=operator_address[:10])
+
+        # Encode setApprovalForAll calldata
+        sync_token = Web3().eth.contract(
+            address=Web3.to_checksum_address(token_contract),
+            abi=ERC1155_ABI,
+        )
+        approve_data = sync_token.encode_abi(
+            "setApprovalForAll",
+            [Web3.to_checksum_address(operator_address), True]
+        )
+
+        if self._is_zksync_network(network_id):
+            tx_hash = await self._send_zksync_transaction_with_signer(
+                network_id=network_id,
+                signer=signer,
+                to=token_contract,
+                data=approve_data,
+            )
+        else:
+            nonce = await web3.eth.get_transaction_count(user_address)
+            gas_price = await web3.eth.gas_price
+            chain_id = await web3.eth.chain_id
+
+            tx_params = {
+                "to": Web3.to_checksum_address(token_contract),
+                "data": approve_data,
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "gas": 100000,
+                "chainId": chain_id,
+                "value": 0,
+            }
+
+            tx_hash = await signer.sign_and_send_transaction(tx_params, web3)
+
+        receipt = await web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        status = receipt.get("status") if isinstance(receipt, dict) else receipt["status"]
+        if status != 1:
+            raise PlatformError("ERC-1155 approval transaction failed (signer)", Platform.MYRIAD)
+
+        logger.info("ERC-1155 approval confirmed (signer)", tx_hash=tx_hash)
+        return tx_hash if isinstance(tx_hash, str) else tx_hash.hex()
+
+    async def _send_zksync_transaction_with_signer(
+        self,
+        network_id: int,
+        signer: PrivyEVMSigner,
+        to: str,
+        data: str,
+        value: int = 0,
+    ) -> str:
+        """Send a transaction on Abstract (ZKsync) chain using Privy signer. Returns tx hash."""
+        config = MYRIAD_NETWORKS.get(network_id)
+        if not config:
+            raise PlatformError(f"Unknown network ID: {network_id}", Platform.MYRIAD)
+
+        rpc_url = config["rpc"]
+        if settings.abstract_rpc_url:
+            rpc_url = settings.abstract_rpc_url
+
+        # Build tx params using sync Web3 for gas estimation (read-only)
+        def build_tx():
+            from web3 import Web3 as SyncWeb3
+
+            w3 = SyncWeb3(SyncWeb3.HTTPProvider(rpc_url))
+            user_address = signer.address
+            chain_id = w3.eth.chain_id
+            nonce = w3.eth.get_transaction_count(user_address)
+
+            try:
+                latest_block = w3.eth.get_block('latest')
+                base_fee = latest_block.get('baseFeePerGas', w3.eth.gas_price)
+                max_priority_fee = w3.to_wei(0.1, 'gwei')
+                max_fee = base_fee * 2 + max_priority_fee
+
+                tx = {
+                    "to": Web3.to_checksum_address(to),
+                    "data": data if data.startswith("0x") else f"0x{data}",
+                    "value": value,
+                    "chainId": chain_id,
+                    "nonce": nonce,
+                    "maxFeePerGas": max_fee,
+                    "maxPriorityFeePerGas": max_priority_fee,
+                    "gas": 500000,
+                    "type": 2,
+                }
+            except Exception as e:
+                logger.warning(f"EIP-1559 failed, using legacy (signer): {e}")
+                gas_price = w3.eth.gas_price
+                tx = {
+                    "to": Web3.to_checksum_address(to),
+                    "data": data if data.startswith("0x") else f"0x{data}",
+                    "value": value,
+                    "chainId": chain_id,
+                    "nonce": nonce,
+                    "gasPrice": gas_price,
+                    "gas": 500000,
+                }
+
+            # Estimate gas
+            try:
+                estimate_tx = {**tx, "from": user_address}
+                gas_estimate = w3.eth.estimate_gas(estimate_tx)
+                tx["gas"] = int(gas_estimate * 1.3)
+            except Exception as e:
+                logger.warning(f"Gas estimation failed (signer): {e}, using default 500000")
+                tx["gas"] = 500000
+
+            return tx, w3
+
+        tx_params, sync_w3 = await asyncio.to_thread(build_tx)
+
+        # Sign and send via Privy signer
+        signed_raw = await signer.sign_transaction(tx_params)
+
+        def send_raw(raw_tx):
+            tx_hash = sync_w3.eth.send_raw_transaction(raw_tx)
+            return tx_hash.hex()
+
+        tx_hash = await asyncio.to_thread(send_raw, signed_raw)
+        return tx_hash
+
+    async def _execute_trade_with_signer(
+        self,
+        quote: Quote,
+        signer: PrivyEVMSigner,
+    ) -> TradeResult:
+        """Execute a trade using Privy signer with calldata from the quote."""
+        if not quote.quote_data:
+            raise PlatformError("Quote data missing", Platform.MYRIAD)
+
+        calldata = quote.quote_data.get("calldata")
+        if not calldata:
+            raise PlatformError("Calldata missing from quote", Platform.MYRIAD)
+
+        network_id = quote.quote_data.get("network_id", self._network_id)
+        network_config = MYRIAD_NETWORKS.get(network_id, self._network_config)
+        prediction_market = quote.quote_data.get("prediction_market_contract")
+        collateral_token = quote.quote_data.get("collateral_token")
+        collateral_decimals = quote.quote_data.get("collateral_decimals", 6)
+        tx_target = quote.quote_data.get("tx_target") or prediction_market
+
+        try:
+            # Handle approvals
+            if quote.side == "buy":
+                amount_units = int(quote.input_amount * (10 ** collateral_decimals))
+                await self._ensure_approval_with_signer(
+                    signer=signer,
+                    network_id=network_id,
+                    token_address=collateral_token,
+                    spender_address=tx_target,
+                    amount=amount_units,
+                )
+            elif quote.side == "sell":
+                await self._ensure_erc1155_approval_with_signer(
+                    signer=signer,
+                    network_id=network_id,
+                    token_contract=prediction_market,
+                    operator_address=tx_target,
+                )
+
+            # Execute trade transaction
+            logger.info(
+                "Executing trade (signer)",
+                market_id=quote.market_id,
+                side=quote.side,
+                outcome=quote.outcome.value,
+                amount=str(quote.input_amount),
+                tx_target=tx_target,
+                network_id=network_id,
+            )
+
+            if self._is_zksync_network(network_id):
+                tx_hash_hex = await self._send_zksync_transaction_with_signer(
+                    network_id=network_id,
+                    signer=signer,
+                    to=tx_target,
+                    data=calldata,
+                )
+
+                receipt = await self._wait_for_zksync_receipt(network_id, tx_hash_hex, timeout=120)
+
+                if receipt.get("status") != 1:
+                    return TradeResult(
+                        success=False,
+                        tx_hash=tx_hash_hex,
+                        input_amount=quote.input_amount,
+                        output_amount=None,
+                        error_message="Transaction reverted",
+                        explorer_url=f"{network_config['explorer']}/tx/{tx_hash_hex}",
+                    )
+
+                return TradeResult(
+                    success=True,
+                    tx_hash=tx_hash_hex,
+                    input_amount=quote.input_amount,
+                    output_amount=quote.expected_output,
+                    error_message=None,
+                    explorer_url=f"{network_config['explorer']}/tx/{tx_hash_hex}",
+                )
+
+            # Standard EVM chain
+            web3 = await self._ensure_web3(network_id)
+            user_address = signer.address
+            nonce = await web3.eth.get_transaction_count(user_address)
+            gas_price = await web3.eth.gas_price
+
+            tx_params = {
+                "to": Web3.to_checksum_address(tx_target),
+                "data": calldata,
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "value": 0,
+            }
+
+            # Estimate gas
+            try:
+                estimate_tx = {**tx_params, "from": user_address}
+                gas_estimate = await web3.eth.estimate_gas(estimate_tx)
+                tx_params["gas"] = int(gas_estimate * 1.2)
+            except Exception as e:
+                error_str = str(e)
+                logger.warning("Gas estimation failed (signer)", error=error_str)
+                if "execution reverted" in error_str.lower():
+                    if "insufficient" in error_str.lower():
+                        msg = (
+                            f"Insufficient shares to sell." if quote.side == "sell"
+                            else f"Insufficient balance for this trade."
+                        )
+                        raise PlatformError(msg, Platform.MYRIAD)
+                    raise PlatformError(f"Transaction would fail: {error_str[:200]}", Platform.MYRIAD)
+                tx_params["gas"] = 500000
+
+            chain_id = await web3.eth.chain_id
+            tx_params["chainId"] = chain_id
+
+            tx_hash_hex = await signer.sign_and_send_transaction(tx_params, web3)
+
+            receipt = await web3.eth.wait_for_transaction_receipt(tx_hash_hex, timeout=120)
+            status = receipt.get("status") if isinstance(receipt, dict) else receipt["status"]
+
+            if status != 1:
+                return TradeResult(
+                    success=False,
+                    tx_hash=tx_hash_hex if isinstance(tx_hash_hex, str) else tx_hash_hex.hex(),
+                    input_amount=quote.input_amount,
+                    output_amount=None,
+                    error_message="Transaction reverted",
+                    explorer_url=f"{network_config['explorer']}/tx/{tx_hash_hex}",
+                )
+
+            tx_hash_str = tx_hash_hex if isinstance(tx_hash_hex, str) else tx_hash_hex.hex()
+            return TradeResult(
+                success=True,
+                tx_hash=tx_hash_str,
+                input_amount=quote.input_amount,
+                output_amount=quote.expected_output,
+                error_message=None,
+                explorer_url=f"{network_config['explorer']}/tx/{tx_hash_str}",
+            )
+
+        except PlatformError:
+            raise
+        except Exception as e:
+            logger.error("Trade execution failed (signer)", error=str(e))
+            return TradeResult(
+                success=False,
+                tx_hash=None,
+                input_amount=quote.input_amount,
+                output_amount=None,
+                error_message=str(e),
+                explorer_url=None,
+            )
+
+    # ===================
     # Redemption
     # ===================
 
@@ -1427,9 +1810,13 @@ class MyriadPlatform(BasePlatform):
         token_id: str = None,
     ) -> RedemptionResult:
         """Redeem winning tokens from a resolved market."""
-        # Unwrap LegacyEVMSigner
+        # Unwrap EVMSigner
         if isinstance(private_key, LegacyEVMSigner):
             private_key = private_key.local_account
+        elif isinstance(private_key, PrivyEVMSigner):
+            return await self._redeem_position_with_signer(
+                market_id, outcome, token_amount, private_key,
+            )
 
         if not isinstance(private_key, LocalAccount):
             raise PlatformError(
@@ -1508,6 +1895,110 @@ class MyriadPlatform(BasePlatform):
 
         except Exception as e:
             logger.error("Redemption failed", market_id=market_id, error=str(e))
+            return RedemptionResult(
+                success=False,
+                tx_hash=None,
+                amount_redeemed=None,
+                error_message=str(e),
+                explorer_url=None,
+            )
+
+    async def _redeem_position_with_signer(
+        self,
+        market_id: str,
+        outcome: Outcome,
+        token_amount: Decimal,
+        signer: PrivyEVMSigner,
+    ) -> RedemptionResult:
+        """Redeem winning tokens from a resolved market using Privy signer."""
+        try:
+            market = await self.get_market(market_id)
+            if not market:
+                raise MarketNotFoundError(f"Market {market_id} not found", Platform.MYRIAD)
+
+            network_id = market.raw_data.get("networkId", self._network_id)
+            network_config = MYRIAD_NETWORKS.get(network_id, self._network_config)
+
+            outcome_id = 0 if outcome == Outcome.YES else 1
+
+            claim_request = {
+                "market_id": int(market_id),
+                "network_id": network_id,
+                "outcome_id": outcome_id,
+            }
+
+            data = await self._api_request("POST", "/markets/claim", json_data=claim_request)
+
+            calldata = data.get("calldata")
+            if not calldata:
+                return RedemptionResult(
+                    success=False,
+                    tx_hash=None,
+                    amount_redeemed=None,
+                    error_message="No calldata returned for claim",
+                    explorer_url=None,
+                )
+
+            prediction_market = network_config["prediction_market"]
+
+            if self._is_zksync_network(network_id):
+                tx_hash_hex = await self._send_zksync_transaction_with_signer(
+                    network_id=network_id,
+                    signer=signer,
+                    to=prediction_market,
+                    data=calldata,
+                )
+
+                receipt = await self._wait_for_zksync_receipt(network_id, tx_hash_hex, timeout=120)
+                if receipt.get("status") != 1:
+                    return RedemptionResult(
+                        success=False,
+                        tx_hash=tx_hash_hex,
+                        amount_redeemed=None,
+                        error_message="Claim transaction reverted",
+                        explorer_url=f"{network_config['explorer']}/tx/{tx_hash_hex}",
+                    )
+            else:
+                web3 = await self._ensure_web3(network_id)
+                user_address = signer.address
+                nonce = await web3.eth.get_transaction_count(user_address)
+                gas_price = await web3.eth.gas_price
+                chain_id = await web3.eth.chain_id
+
+                tx_params = {
+                    "to": Web3.to_checksum_address(prediction_market),
+                    "data": calldata,
+                    "nonce": nonce,
+                    "gasPrice": gas_price,
+                    "gas": 300000,
+                    "chainId": chain_id,
+                    "value": 0,
+                }
+
+                tx_hash_hex = await signer.sign_and_send_transaction(tx_params, web3)
+
+                receipt = await web3.eth.wait_for_transaction_receipt(tx_hash_hex, timeout=120)
+                status = receipt.get("status") if isinstance(receipt, dict) else receipt["status"]
+                if status != 1:
+                    return RedemptionResult(
+                        success=False,
+                        tx_hash=tx_hash_hex if isinstance(tx_hash_hex, str) else tx_hash_hex.hex(),
+                        amount_redeemed=None,
+                        error_message="Claim transaction reverted",
+                        explorer_url=f"{network_config['explorer']}/tx/{tx_hash_hex}",
+                    )
+
+            tx_hash_str = tx_hash_hex if isinstance(tx_hash_hex, str) else tx_hash_hex.hex()
+            return RedemptionResult(
+                success=True,
+                tx_hash=tx_hash_str,
+                amount_redeemed=token_amount,
+                error_message=None,
+                explorer_url=f"{network_config['explorer']}/tx/{tx_hash_str}",
+            )
+
+        except Exception as e:
+            logger.error("Redemption failed (signer)", market_id=market_id, error=str(e))
             return RedemptionResult(
                 success=False,
                 tx_hash=None,

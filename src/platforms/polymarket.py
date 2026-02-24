@@ -13,7 +13,7 @@ import httpx
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 
-from src.services.signer import EVMSigner, LegacyEVMSigner
+from src.services.signer import EVMSigner, LegacyEVMSigner, PrivyEVMSigner
 
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
@@ -1934,6 +1934,151 @@ class PolymarketPlatform(BasePlatform):
                 Platform.POLYMARKET,
             )
 
+    async def _ensure_exchange_approval_with_signer(self, signer: PrivyEVMSigner) -> None:
+        """Ensure USDC.e and CTF tokens are approved for Polymarket exchange contracts using Privy signer.
+
+        Checks allowances via sync web3 (read-only) and signs approval txs via Privy.
+        """
+        if not self._sync_web3:
+            return
+
+        wallet = Web3.to_checksum_address(signer.address)
+
+        # Check cache
+        cached_usdc = self._approval_cache.get(wallet, set())
+        cached_ctf = self._ctf_approval_cache.get(wallet, set())
+
+        contracts_to_approve = [
+            ("exchange", POLYMARKET_CONTRACTS["exchange"]),
+            ("neg_risk_exchange", POLYMARKET_CONTRACTS["neg_risk_exchange"]),
+            ("neg_risk_adapter", POLYMARKET_CONTRACTS["neg_risk_adapter"]),
+        ]
+
+        all_contracts = {name for name, _ in contracts_to_approve}
+        if cached_usdc >= all_contracts and cached_ctf >= all_contracts:
+            logger.debug("All Polymarket approvals cached (signer)", wallet=wallet[:10])
+            return
+
+        usdc_address = Web3.to_checksum_address(USDC_BRIDGED)
+
+        # Helper: send signed raw tx and wait for receipt
+        def send_and_wait(raw_tx):
+            tx_hash = self._sync_web3.eth.send_raw_transaction(raw_tx)
+            self._sync_web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            return tx_hash.hex()
+
+        # USDC.e approvals
+        for contract_name, contract_addr in contracts_to_approve:
+            if contract_name in cached_usdc:
+                continue
+
+            exchange_address = Web3.to_checksum_address(contract_addr)
+
+            # Check allowance (read-only, in thread)
+            def check_allowance(w=wallet, e=exchange_address):
+                usdc = self._sync_web3.eth.contract(address=usdc_address, abi=ERC20_APPROVE_ABI)
+                return usdc.functions.allowance(w, e).call()
+
+            allowance = await asyncio.to_thread(check_allowance)
+
+            if allowance >= 10 ** 12:
+                self._approval_cache.setdefault(wallet, set()).add(contract_name)
+                continue
+
+            logger.info(f"Approving Polymarket {contract_name} for USDC.e (signer)")
+
+            # Build approve tx
+            sync_usdc = Web3().eth.contract(address=usdc_address, abi=ERC20_APPROVE_ABI)
+            approve_data = sync_usdc.encode_abi("approve", [exchange_address, 2**256 - 1])
+
+            def get_nonce_and_gas(w=wallet):
+                nonce = self._sync_web3.eth.get_transaction_count(w)
+                gas_price = int(self._sync_web3.eth.gas_price * 1.5)
+                return nonce, gas_price
+
+            nonce, gas_price = await asyncio.to_thread(get_nonce_and_gas)
+
+            tx_params = {
+                "to": usdc_address,
+                "data": approve_data,
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "gas": 100000,
+                "chainId": 137,
+                "value": 0,
+            }
+
+            signed_raw = await signer.sign_transaction(tx_params)
+
+            tx_hash = await asyncio.to_thread(send_and_wait, signed_raw)
+            logger.info(f"Polymarket {contract_name} USDC.e approval confirmed (signer)", tx_hash=tx_hash)
+            self._approval_cache.setdefault(wallet, set()).add(contract_name)
+
+        # CTF approvals
+        ctf_address = Web3.to_checksum_address(POLYMARKET_CONTRACTS["ctf"])
+
+        set_approval_abi = [{
+            "inputs": [
+                {"name": "operator", "type": "address"},
+                {"name": "approved", "type": "bool"}
+            ],
+            "name": "setApprovalForAll",
+            "outputs": [],
+            "type": "function"
+        }, {
+            "inputs": [
+                {"name": "account", "type": "address"},
+                {"name": "operator", "type": "address"}
+            ],
+            "name": "isApprovedForAll",
+            "outputs": [{"name": "", "type": "bool"}],
+            "type": "function"
+        }]
+
+        for contract_name, contract_addr in contracts_to_approve:
+            if contract_name in cached_ctf:
+                continue
+
+            exchange_address = Web3.to_checksum_address(contract_addr)
+
+            def check_ctf_approval(w=wallet, e=exchange_address):
+                ctf = self._sync_web3.eth.contract(address=ctf_address, abi=set_approval_abi)
+                return ctf.functions.isApprovedForAll(w, e).call()
+
+            is_approved = await asyncio.to_thread(check_ctf_approval)
+
+            if is_approved:
+                self._ctf_approval_cache.setdefault(wallet, set()).add(contract_name)
+                continue
+
+            logger.info(f"Approving Polymarket {contract_name} for CTF tokens (signer)")
+
+            sync_ctf = Web3().eth.contract(address=ctf_address, abi=set_approval_abi)
+            approve_data = sync_ctf.encode_abi("setApprovalForAll", [exchange_address, True])
+
+            def get_nonce_and_gas2(w=wallet):
+                nonce = self._sync_web3.eth.get_transaction_count(w)
+                gas_price = int(self._sync_web3.eth.gas_price * 1.5)
+                return nonce, gas_price
+
+            nonce, gas_price = await asyncio.to_thread(get_nonce_and_gas2)
+
+            tx_params = {
+                "to": ctf_address,
+                "data": approve_data,
+                "nonce": nonce,
+                "gasPrice": gas_price,
+                "gas": 100000,
+                "chainId": 137,
+                "value": 0,
+            }
+
+            signed_raw = await signer.sign_transaction(tx_params)
+
+            tx_hash = await asyncio.to_thread(send_and_wait, signed_raw)
+            logger.info(f"Polymarket {contract_name} CTF approval confirmed (signer)", tx_hash=tx_hash)
+            self._ctf_approval_cache.setdefault(wallet, set()).add(contract_name)
+
     def _get_clob_client(self, private_key: Any) -> Any:
         """Get or create a cached CLOB client for the given private key.
 
@@ -2006,14 +2151,29 @@ class PolymarketPlatform(BasePlatform):
         if isinstance(private_key, EVMSigner):
             if isinstance(private_key, LegacyEVMSigner):
                 private_key = private_key.local_account
-            else:
-                # Privy signer — CLOB order signing not yet supported
+            elif isinstance(private_key, PrivyEVMSigner):
+                # Privy signer — set up on-chain approvals proactively,
+                # so they're ready when CLOB signing support lands
+                try:
+                    await self._ensure_exchange_approval_with_signer(private_key)
+                    logger.info("Polymarket approvals completed for Privy wallet", wallet=private_key.address[:10])
+                except Exception as e:
+                    logger.warning("Polymarket Privy approval failed (non-blocking)", error=str(e))
                 return TradeResult(
                     success=False,
                     tx_hash=None,
                     input_amount=quote.input_amount,
                     output_amount=None,
-                    error_message="Polymarket CLOB trading with Privy wallets coming soon. Use legacy wallet for now.",
+                    error_message="Polymarket CLOB trading with Privy wallets coming soon. On-chain approvals have been set up. Use legacy wallet for now.",
+                    explorer_url=None,
+                )
+            else:
+                return TradeResult(
+                    success=False,
+                    tx_hash=None,
+                    input_amount=quote.input_amount,
+                    output_amount=None,
+                    error_message="Unsupported EVM signer type for Polymarket.",
                     explorer_url=None,
                 )
 
