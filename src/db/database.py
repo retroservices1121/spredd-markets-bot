@@ -264,16 +264,24 @@ async def create_wallet(
     user_id: str,
     chain_family: ChainFamily,
     public_key: str,
-    encrypted_private_key: str,
+    encrypted_private_key: Optional[str] = None,
     pin_protected: bool = False,
     export_pin_hash: Optional[str] = None,
+    wallet_type: str = "legacy",
+    privy_wallet_id: Optional[str] = None,
 ) -> Wallet:
-    """Create a new wallet for user."""
+    """Create a new wallet for user.
+
+    For legacy wallets, encrypted_private_key is required.
+    For Privy wallets, privy_wallet_id is required instead.
+    """
     async with get_session() as session:
         wallet = Wallet(
             id=generate_id(),
             user_id=user_id,
             chain_family=chain_family,
+            wallet_type=wallet_type,
+            privy_wallet_id=privy_wallet_id,
             public_key=public_key,
             encrypted_private_key=encrypted_private_key,
             pin_protected=pin_protected,
@@ -286,6 +294,7 @@ async def create_wallet(
             "Created wallet",
             user_id=user_id,
             chain_family=chain_family.value,
+            wallet_type=wallet_type,
             has_export_pin=bool(export_pin_hash),
         )
         return wallet

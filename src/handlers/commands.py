@@ -9131,34 +9131,60 @@ async def handle_wallet_pin_setup(update: Update, context: ContextTypes.DEFAULT_
         )
 
         try:
+            # If Privy is enabled, create a Privy user first
+            privy_user_id = getattr(user, 'privy_user_id', None)
+            if settings.privy_enabled and not privy_user_id:
+                try:
+                    from src.services.privy_client import privy_client
+                    privy_user_id = await privy_client.create_user(update.effective_user.id)
+                    # Store privy_user_id on the user
+                    from src.db.database import get_session
+                    async with get_session() as session:
+                        from sqlalchemy import update as sql_update
+                        from src.db.models import User as UserModel
+                        await session.execute(
+                            sql_update(UserModel)
+                            .where(UserModel.id == user.id)
+                            .values(privy_user_id=privy_user_id)
+                        )
+                except Exception as privy_err:
+                    logger.warning("Failed to create Privy user, falling back to legacy", error=str(privy_err))
+                    privy_user_id = None
+
             wallets = await wallet_service.get_or_create_wallets(
                 user_id=user.id,
                 telegram_id=update.effective_user.id,
                 user_pin=pin,
+                privy_user_id=privy_user_id,
             )
 
             solana_wallet = wallets.get(ChainFamily.SOLANA)
             evm_wallet = wallets.get(ChainFamily.EVM)
 
+            # Determine wallet type for display
+            is_privy = solana_wallet and getattr(solana_wallet, 'is_privy', False)
+            wallet_type_label = "Privy (server-managed)" if is_privy else "PIN-protected"
+
             text = """
 ✅ <b>Wallets Created!</b>
 
-Your wallets are protected with your PIN.
+Your wallets are {wallet_type}.
 <b>Only you can access your funds.</b>
 
 <b>🟣 Solana</b> (Kalshi)
-<code>{}</code>
+<code>{solana}</code>
 
 <b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)
-<code>{}</code>
+<code>{evm}</code>
 
 ⚠️ <b>Important:</b>
 • Your PIN is never stored
 • If you forget your PIN, your funds are lost
 • Keep your PIN safe!
 """.format(
-                solana_wallet.public_key if solana_wallet else "Error",
-                evm_wallet.public_key if evm_wallet else "Error",
+                wallet_type=wallet_type_label,
+                solana=solana_wallet.public_key if solana_wallet else "Error",
+                evm=evm_wallet.public_key if evm_wallet else "Error",
             )
 
             keyboard = InlineKeyboardMarkup([
@@ -9489,11 +9515,31 @@ async def handle_wallet_reset_with_pin(update: Update, context: ContextTypes.DEF
         from src.db.database import delete_user_wallets
         await delete_user_wallets(user.id)
 
+        # If Privy is enabled, use Privy wallets for reset too
+        privy_user_id = getattr(user, 'privy_user_id', None)
+        if settings.privy_enabled and not privy_user_id:
+            try:
+                from src.services.privy_client import privy_client
+                privy_user_id = await privy_client.create_user(update.effective_user.id)
+                from src.db.database import get_session
+                async with get_session() as session:
+                    from sqlalchemy import update as sql_update
+                    from src.db.models import User as UserModel
+                    await session.execute(
+                        sql_update(UserModel)
+                        .where(UserModel.id == user.id)
+                        .values(privy_user_id=privy_user_id)
+                    )
+            except Exception as privy_err:
+                logger.warning("Failed to create Privy user on reset, falling back to legacy", error=str(privy_err))
+                privy_user_id = None
+
         # Create new wallets with export PIN
         wallets = await wallet_service.get_or_create_wallets(
             user_id=user.id,
             telegram_id=update.effective_user.id,
             user_pin=pin,  # This will hash the PIN for export verification
+            privy_user_id=privy_user_id,
         )
 
         solana_wallet = wallets.get(ChainFamily.SOLANA)
@@ -9593,11 +9639,31 @@ async def handle_new_wallet_with_pin(update: Update, context: ContextTypes.DEFAU
     )
 
     try:
+        # If Privy is enabled, use Privy wallets
+        privy_user_id = getattr(user, 'privy_user_id', None)
+        if settings.privy_enabled and not privy_user_id:
+            try:
+                from src.services.privy_client import privy_client
+                privy_user_id = await privy_client.create_user(update.effective_user.id)
+                from src.db.database import get_session
+                async with get_session() as session:
+                    from sqlalchemy import update as sql_update
+                    from src.db.models import User as UserModel
+                    await session.execute(
+                        sql_update(UserModel)
+                        .where(UserModel.id == user.id)
+                        .values(privy_user_id=privy_user_id)
+                    )
+            except Exception as privy_err:
+                logger.warning("Failed to create Privy user, falling back to legacy", error=str(privy_err))
+                privy_user_id = None
+
         # Create new wallets with export PIN
         wallets = await wallet_service.get_or_create_wallets(
             user_id=user.id,
             telegram_id=update.effective_user.id,
             user_pin=pin,  # This will hash the PIN for export verification
+            privy_user_id=privy_user_id,
         )
 
         solana_wallet = wallets.get(ChainFamily.SOLANA)

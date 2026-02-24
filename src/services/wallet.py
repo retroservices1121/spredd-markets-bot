@@ -1,13 +1,17 @@
 """
 Wallet service for managing Solana and EVM wallets.
 Supports one wallet per chain family, shared across platforms.
+
+Supports two wallet types:
+- Legacy: Local keypairs encrypted with AES-256-GCM (existing users)
+- Privy: Server-managed wallets via Privy TEE (new users when privy_enabled=True)
 """
 
 import asyncio
 import hashlib
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 from eth_account import Account as EthAccount
 from eth_account.signers.local import LocalAccount
@@ -25,6 +29,14 @@ from src.db.database import (
     get_user_wallets,
 )
 from src.db.models import ChainFamily, Chain
+from src.services.signer import (
+    EVMSigner,
+    SolanaSigner,
+    LegacyEVMSigner,
+    LegacySolanaSigner,
+    PrivyEVMSigner,
+    PrivySolanaSigner,
+)
 from src.utils.encryption import encrypt, decrypt
 from src.utils.logging import get_logger, LoggerMixin
 
@@ -62,14 +74,19 @@ class WalletInfo:
     """Wallet information without private key."""
     chain_family: ChainFamily
     public_key: str
-    
+    wallet_type: str = "legacy"  # "legacy" or "privy"
+
     @property
     def solana_address(self) -> Optional[str]:
         return self.public_key if self.chain_family == ChainFamily.SOLANA else None
-    
+
     @property
     def evm_address(self) -> Optional[str]:
         return self.public_key if self.chain_family == ChainFamily.EVM else None
+
+    @property
+    def is_privy(self) -> bool:
+        return self.wallet_type == "privy"
 
 
 @dataclass
@@ -80,7 +97,7 @@ class Balance:
     amount: Decimal
     decimals: int
     chain: Chain
-    
+
     @property
     def formatted(self) -> str:
         return f"{self.amount:.{min(self.decimals, 6)}f} {self.symbol}"
@@ -129,23 +146,23 @@ class WalletService(LoggerMixin):
         )
 
         self.log.info("Wallet service initialized")
-    
+
     async def close(self) -> None:
         """Close blockchain connections."""
         if self._solana_client:
             await self._solana_client.close()
-    
+
     # ===================
     # Wallet Creation
     # ===================
-    
+
     def _generate_solana_keypair(self) -> Tuple[str, bytes]:
         """Generate a new Solana keypair."""
         keypair = SolanaKeypair()
         public_key = str(keypair.pubkey())
         private_key = bytes(keypair)
         return public_key, private_key
-    
+
     def _generate_evm_keypair(self) -> Tuple[str, bytes]:
         """Generate a new EVM keypair."""
         account = EthAccount.create()
@@ -173,27 +190,77 @@ class WalletService(LoggerMixin):
         computed_hash = self._hash_export_pin(pin, telegram_id)
         return computed_hash == stored_hash
 
+    async def _create_privy_wallet(
+        self,
+        user_id: str,
+        privy_user_id: str,
+        chain_family: ChainFamily,
+    ) -> WalletInfo:
+        """Create a Privy-managed wallet for a user.
+
+        Args:
+            user_id: Database user ID
+            privy_user_id: Privy user ID (did:privy:...)
+            chain_family: SOLANA or EVM
+
+        Returns:
+            WalletInfo with public key
+        """
+        from src.services.privy_client import privy_client
+
+        chain_type = "solana" if chain_family == ChainFamily.SOLANA else "ethereum"
+        wallet_data = await privy_client.create_wallet(privy_user_id, chain_type)
+
+        privy_wallet_id = wallet_data["id"]
+        public_key = wallet_data["address"]
+
+        # Store in database (no encrypted_private_key for Privy wallets)
+        await create_wallet(
+            user_id=user_id,
+            chain_family=chain_family,
+            public_key=public_key,
+            encrypted_private_key=None,
+            pin_protected=False,
+            wallet_type="privy",
+            privy_wallet_id=privy_wallet_id,
+        )
+
+        self.log.info(
+            "Created Privy wallet",
+            user_id=user_id,
+            chain_family=chain_family.value,
+            public_key=public_key[:10] + "...",
+            privy_wallet_id=privy_wallet_id,
+        )
+
+        return WalletInfo(
+            chain_family=chain_family,
+            public_key=public_key,
+            wallet_type="privy",
+        )
+
     async def create_wallet_for_user(
         self,
         user_id: str,
         telegram_id: int,
         chain_family: ChainFamily,
         user_pin: str = "",
+        privy_user_id: Optional[str] = None,
     ) -> WalletInfo:
         """Create a new wallet for a user.
+
+        If privy_user_id is provided and Privy is enabled, creates a Privy wallet.
+        Otherwise creates a legacy wallet with local keys.
 
         Args:
             user_id: Database user ID
             telegram_id: Telegram user ID
             chain_family: SOLANA or EVM
-            user_pin: PIN for export verification (required for new wallets)
+            user_pin: PIN for export verification (only for legacy wallets)
+            privy_user_id: Privy user ID for Privy wallet creation
 
         Returns:
             WalletInfo with public key
-
-        Note:
-            - Keys are encrypted WITHOUT PIN (enables PIN-less trading)
-            - PIN hash is stored separately for export verification only
         """
         # Check if wallet already exists
         existing = await get_wallet(user_id, chain_family)
@@ -201,9 +268,18 @@ class WalletService(LoggerMixin):
             return WalletInfo(
                 chain_family=chain_family,
                 public_key=existing.public_key,
+                wallet_type=getattr(existing, 'wallet_type', 'legacy'),
             )
 
-        # Generate keypair based on chain family
+        # Use Privy if enabled and privy_user_id provided
+        if privy_user_id and settings.privy_enabled:
+            return await self._create_privy_wallet(
+                user_id=user_id,
+                privy_user_id=privy_user_id,
+                chain_family=chain_family,
+            )
+
+        # Legacy wallet creation
         if chain_family == ChainFamily.SOLANA:
             public_key, private_key = self._generate_solana_keypair()
         else:
@@ -230,10 +306,11 @@ class WalletService(LoggerMixin):
             encrypted_private_key=encrypted_key,
             pin_protected=False,  # Trading never requires PIN
             export_pin_hash=export_pin_hash,
+            wallet_type="legacy",
         )
 
         self.log.info(
-            "Created wallet",
+            "Created legacy wallet",
             user_id=user_id,
             chain_family=chain_family.value,
             public_key=public_key[:8] + "...",
@@ -243,20 +320,23 @@ class WalletService(LoggerMixin):
         return WalletInfo(
             chain_family=chain_family,
             public_key=public_key,
+            wallet_type="legacy",
         )
-    
+
     async def get_or_create_wallets(
         self,
         user_id: str,
         telegram_id: int,
         user_pin: str = "",
+        privy_user_id: Optional[str] = None,
     ) -> dict[ChainFamily, WalletInfo]:
         """Get or create both Solana and EVM wallets for a user.
 
         Args:
             user_id: Database user ID
             telegram_id: Telegram user ID
-            user_pin: PIN for new wallet encryption (only used if creating)
+            user_pin: PIN for new wallet encryption (only used if creating legacy)
+            privy_user_id: Privy user ID for Privy wallet creation
 
         Returns:
             Dict mapping ChainFamily to WalletInfo
@@ -269,6 +349,7 @@ class WalletService(LoggerMixin):
                 telegram_id=telegram_id,
                 chain_family=family,
                 user_pin=user_pin,
+                privy_user_id=privy_user_id,
             )
 
         return wallets
@@ -305,7 +386,7 @@ class WalletService(LoggerMixin):
         return wallet.export_pin_hash
 
     # ===================
-    # Key Retrieval
+    # Key Retrieval (Legacy — kept for backward compatibility)
     # ===================
 
     async def get_solana_keypair(
@@ -314,21 +395,16 @@ class WalletService(LoggerMixin):
         telegram_id: int,
         user_pin: str = "",
     ) -> Optional[SolanaKeypair]:
-        """Get decrypted Solana keypair for signing.
+        """Get decrypted Solana keypair for signing (legacy wallets only).
 
-        Args:
-            user_id: Database user ID
-            telegram_id: Telegram user ID
-            user_pin: PIN if wallet is PIN-protected
-
-        Returns:
-            SolanaKeypair or None if wallet not found
-
-        Raises:
-            EncryptionError: If PIN is wrong
+        For Privy wallets, use get_solana_signer() instead.
         """
         wallet = await get_wallet(user_id, ChainFamily.SOLANA)
         if not wallet:
+            return None
+
+        # Privy wallets don't have local keys
+        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
             return None
 
         private_key = decrypt(
@@ -346,21 +422,16 @@ class WalletService(LoggerMixin):
         telegram_id: int,
         user_pin: str = "",
     ) -> Optional[LocalAccount]:
-        """Get decrypted EVM account for signing.
+        """Get decrypted EVM account for signing (legacy wallets only).
 
-        Args:
-            user_id: Database user ID
-            telegram_id: Telegram user ID
-            user_pin: PIN if wallet is PIN-protected
-
-        Returns:
-            LocalAccount or None if wallet not found
-
-        Raises:
-            EncryptionError: If PIN is wrong
+        For Privy wallets, use get_evm_signer() instead.
         """
         wallet = await get_wallet(user_id, ChainFamily.EVM)
         if not wallet:
+            return None
+
+        # Privy wallets don't have local keys
+        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
             return None
 
         private_key = decrypt(
@@ -376,27 +447,114 @@ class WalletService(LoggerMixin):
         self,
         user_id: str,
         telegram_id: int,
-        chain_family: ChainFamily,
+        chain_family: ChainFamily = None,
         user_pin: str = "",
     ):
         """Get private key/keypair for signing transactions.
 
-        Args:
-            user_id: Database user ID
-            telegram_id: Telegram user ID
-            chain_family: SOLANA or EVM
-            user_pin: PIN if wallet is PIN-protected
+        For legacy wallets, returns SolanaKeypair or LocalAccount.
+        For Privy wallets, returns the appropriate Signer instead.
 
-        Returns:
-            SolanaKeypair for Solana or LocalAccount for EVM
-
-        Raises:
-            EncryptionError: If PIN is wrong
+        This is the main entry point used by platform adapters.
         """
+        # Handle positional arg: get_private_key(user_id, telegram_id, chain_family, pin)
+        # Also handle: get_private_key(user_id, telegram_id, pin) for backward compat
+        if isinstance(chain_family, str) and chain_family not in ('solana', 'evm'):
+            # Called as get_private_key(user_id, telegram_id, pin) — old signature
+            user_pin = chain_family
+            chain_family = None
+
+        if chain_family is None:
+            # Default: return EVM for backward compat
+            chain_family = ChainFamily.EVM
+
+        wallet = await get_wallet(user_id, chain_family)
+        if not wallet:
+            return None
+
+        # Privy wallets → return signer
+        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
+            from src.services.privy_client import privy_client
+            if chain_family == ChainFamily.SOLANA:
+                return PrivySolanaSigner(
+                    wallet_id=wallet.privy_wallet_id,
+                    wallet_address=wallet.public_key,
+                    privy_client=privy_client,
+                )
+            else:
+                return PrivyEVMSigner(
+                    wallet_id=wallet.privy_wallet_id,
+                    wallet_address=wallet.public_key,
+                    privy_client=privy_client,
+                )
+
+        # Legacy wallets → return raw key objects (backward compatible)
         if chain_family == ChainFamily.SOLANA:
             return await self.get_solana_keypair(user_id, telegram_id, user_pin)
         else:
             return await self.get_evm_account(user_id, telegram_id, user_pin)
+
+    # ===================
+    # Signer Retrieval (preferred API)
+    # ===================
+
+    async def get_evm_signer(
+        self,
+        user_id: str,
+        telegram_id: int,
+        user_pin: str = "",
+    ) -> Optional[EVMSigner]:
+        """Get an EVM signer for the user's wallet.
+
+        Returns the appropriate signer type based on wallet type:
+        - LegacyEVMSigner for legacy wallets (wraps LocalAccount)
+        - PrivyEVMSigner for Privy wallets (remote signing)
+        """
+        wallet = await get_wallet(user_id, ChainFamily.EVM)
+        if not wallet:
+            return None
+
+        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
+            from src.services.privy_client import privy_client
+            return PrivyEVMSigner(
+                wallet_id=wallet.privy_wallet_id,
+                wallet_address=wallet.public_key,
+                privy_client=privy_client,
+            )
+
+        account = await self.get_evm_account(user_id, telegram_id, user_pin)
+        if not account:
+            return None
+        return LegacyEVMSigner(account)
+
+    async def get_solana_signer(
+        self,
+        user_id: str,
+        telegram_id: int,
+        user_pin: str = "",
+    ) -> Optional[SolanaSigner]:
+        """Get a Solana signer for the user's wallet.
+
+        Returns the appropriate signer type based on wallet type:
+        - LegacySolanaSigner for legacy wallets (wraps Keypair)
+        - PrivySolanaSigner for Privy wallets (remote signing)
+        """
+        wallet = await get_wallet(user_id, ChainFamily.SOLANA)
+        if not wallet:
+            return None
+
+        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
+            from src.services.privy_client import privy_client
+            return PrivySolanaSigner(
+                wallet_id=wallet.privy_wallet_id,
+                wallet_address=wallet.public_key,
+                privy_client=privy_client,
+            )
+
+        keypair = await self.get_solana_keypair(user_id, telegram_id, user_pin)
+        if not keypair:
+            return None
+        return LegacySolanaSigner(keypair)
 
     async def export_private_key(
         self,
@@ -407,20 +565,14 @@ class WalletService(LoggerMixin):
     ) -> Optional[str]:
         """Export private key for user backup.
 
-        Args:
-            user_id: Database user ID
-            telegram_id: Telegram user ID
-            chain_family: SOLANA or EVM
-            user_pin: PIN if wallet is PIN-protected
-
-        Returns:
-            Base58 string for Solana, hex string for EVM
-
-        Raises:
-            EncryptionError: If PIN is wrong
+        For Privy wallets, returns None (export is handled through Privy's SDK).
         """
         wallet = await get_wallet(user_id, chain_family)
         if not wallet:
+            return None
+
+        # Privy wallets don't expose private keys through our API
+        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
             return None
 
         private_key = decrypt(
@@ -437,22 +589,22 @@ class WalletService(LoggerMixin):
         else:
             # Return hex for EVM
             return "0x" + private_key.hex()
-    
+
     # ===================
     # Balance Queries
     # ===================
-    
+
     async def get_solana_balance(self, public_key: str) -> Balance:
         """Get SOL balance."""
         if not self._solana_client:
             raise RuntimeError("Solana client not initialized")
-        
+
         pubkey = Pubkey.from_string(public_key)
         response = await self._solana_client.get_balance(pubkey, commitment=Confirmed)
-        
+
         lamports = response.value
         sol = Decimal(lamports) / Decimal(LAMPORTS_PER_SOL)
-        
+
         return Balance(
             token="SOL",
             symbol="SOL",
@@ -460,7 +612,7 @@ class WalletService(LoggerMixin):
             decimals=9,
             chain=Chain.SOLANA,
         )
-    
+
     async def get_solana_usdc_balance(self, public_key: str) -> Balance:
         """Get USDC balance on Solana."""
         if not self._solana_client:
@@ -489,7 +641,7 @@ class WalletService(LoggerMixin):
             decimals=USDC_DECIMALS,
             chain=Chain.SOLANA,
         )
-    
+
     async def _get_evm_native_balance(
         self,
         web3: AsyncWeb3,
@@ -500,7 +652,7 @@ class WalletService(LoggerMixin):
         """Get native token balance on EVM chain."""
         balance_wei = await web3.eth.get_balance(address)
         balance = Decimal(balance_wei) / Decimal(10**18)
-        
+
         return Balance(
             token="native",
             symbol=symbol,
@@ -508,7 +660,7 @@ class WalletService(LoggerMixin):
             decimals=18,
             chain=chain,
         )
-    
+
     async def _get_erc20_balance(
         self,
         web3: AsyncWeb3,
@@ -529,15 +681,15 @@ class WalletService(LoggerMixin):
                 "type": "function",
             }
         ]
-        
+
         contract = web3.eth.contract(
             address=web3.to_checksum_address(token_address),
             abi=erc20_abi,
         )
-        
+
         balance_raw = await contract.functions.balanceOf(address).call()
         balance = Decimal(balance_raw) / Decimal(10**decimals)
-        
+
         return Balance(
             token=token_address,
             symbol=symbol,
@@ -545,7 +697,7 @@ class WalletService(LoggerMixin):
             decimals=decimals,
             chain=chain,
         )
-    
+
     async def get_polygon_balances(self, address: str) -> list[Balance]:
         """Get balances on Polygon (parallel fetching)."""
         if not self._polygon_web3:
@@ -590,7 +742,7 @@ class WalletService(LoggerMixin):
 
         results = await asyncio.gather(get_matic(), get_usdc_e(), get_usdc())
         return [b for b in results if b is not None]
-    
+
     async def get_bsc_balances(self, address: str) -> list[Balance]:
         """Get balances on BSC (parallel fetching)."""
         if not self._bsc_web3:

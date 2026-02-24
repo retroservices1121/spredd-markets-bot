@@ -358,6 +358,26 @@ class Settings(BaseSettings):
     )
 
     # ===================
+    # Privy Wallet Configuration (Server-Managed Wallets)
+    # ===================
+    privy_app_id: Optional[str] = Field(
+        default=None,
+        description="Privy App ID for server-wallet API"
+    )
+    privy_app_secret: Optional[str] = Field(
+        default=None,
+        description="Privy App Secret for server-wallet API"
+    )
+    privy_signing_key: Optional[str] = Field(
+        default=None,
+        description="P-256 ECDSA private key (PEM or hex) for Privy authorization signatures"
+    )
+    privy_enabled: bool = Field(
+        default=False,
+        description="Enable Privy wallets for new users (existing users keep legacy wallets)"
+    )
+
+    # ===================
     # Rate Limiting
     # ===================
     max_requests_per_minute: int = Field(default=30, ge=1, le=100)

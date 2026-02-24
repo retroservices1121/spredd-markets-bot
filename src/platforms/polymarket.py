@@ -13,6 +13,8 @@ import httpx
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 
+from src.services.signer import EVMSigner, LegacyEVMSigner
+
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
 from src.platforms.base import (
@@ -391,7 +393,7 @@ class PolymarketPlatform(BasePlatform):
         Swap native USDC to USDC.e using Uniswap V3.
 
         Args:
-            private_key: User's EVM account for signing
+            private_key: User's EVM account (LocalAccount) or EVMSigner for signing
             amount: Amount of native USDC to swap
 
         Returns:
@@ -399,6 +401,10 @@ class PolymarketPlatform(BasePlatform):
         """
         from eth_account.signers.local import LocalAccount
         import time
+
+        # Unwrap LegacyEVMSigner to get LocalAccount
+        if isinstance(private_key, LegacyEVMSigner):
+            private_key = private_key.local_account
 
         if not isinstance(private_key, LocalAccount):
             return False, None, "Invalid private key type"
@@ -528,6 +534,10 @@ class PolymarketPlatform(BasePlatform):
             - tx_hash: Transaction hash if swap/bridge was performed
         """
         from eth_account.signers.local import LocalAccount
+
+        # Unwrap LegacyEVMSigner
+        if isinstance(private_key, LegacyEVMSigner):
+            private_key = private_key.local_account
 
         if not isinstance(private_key, LocalAccount):
             return False, "Invalid wallet", None
@@ -1762,6 +1772,10 @@ class PolymarketPlatform(BasePlatform):
         import asyncio
         from eth_account.signers.local import LocalAccount
 
+        # Unwrap LegacyEVMSigner
+        if isinstance(private_key, LegacyEVMSigner):
+            private_key = private_key.local_account
+
         if not isinstance(private_key, LocalAccount):
             return
 
@@ -1980,12 +1994,32 @@ class PolymarketPlatform(BasePlatform):
         """
         Execute a trade on Polymarket.
 
+        Accepts either a LocalAccount (legacy) or EVMSigner (Privy).
+        For legacy wallets, uses ClobClient directly.
+        For Privy wallets, uses signer for on-chain ops and ClobClient for order building.
+
         Collects platform fee AFTER successful trade execution.
         Uses caching for approval checks and CLOB client to speed up execution.
         """
+        # Accept EVMSigner — extract LocalAccount if legacy, otherwise error for now
+        # (Privy CLOB order signing requires manual EIP-712 construction, coming in Phase 2)
+        if isinstance(private_key, EVMSigner):
+            if isinstance(private_key, LegacyEVMSigner):
+                private_key = private_key.local_account
+            else:
+                # Privy signer — CLOB order signing not yet supported
+                return TradeResult(
+                    success=False,
+                    tx_hash=None,
+                    input_amount=quote.input_amount,
+                    output_amount=None,
+                    error_message="Polymarket CLOB trading with Privy wallets coming soon. Use legacy wallet for now.",
+                    explorer_url=None,
+                )
+
         if not isinstance(private_key, LocalAccount):
             raise PlatformError(
-                "Invalid private key type, expected EVM LocalAccount",
+                "Invalid private key type, expected EVM LocalAccount or EVMSigner",
                 Platform.POLYMARKET,
             )
 
@@ -2251,12 +2285,16 @@ class PolymarketPlatform(BasePlatform):
         - Neg risk markets: call NegRiskAdapter.redeemPositions(conditionId, [yesAmt, noAmt])
           which internally calls CTF and unwraps wrapped collateral back to USDC.e.
         """
+        # Unwrap LegacyEVMSigner
+        if isinstance(private_key, LegacyEVMSigner):
+            private_key = private_key.local_account
+
         if not isinstance(private_key, LocalAccount):
             return RedemptionResult(
                 success=False,
                 tx_hash=None,
                 amount_redeemed=None,
-                error_message="Invalid private key type, expected EVM LocalAccount",
+                error_message="Invalid private key type, expected EVM LocalAccount or EVMSigner",
                 explorer_url=None,
             )
 

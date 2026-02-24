@@ -21,6 +21,8 @@ from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
+from src.services.signer import SolanaSigner, LegacySolanaSigner
+
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
 from src.platforms.base import (
@@ -571,10 +573,19 @@ class JupiterPlatform(BasePlatform):
         """Execute a trade via Jupiter Prediction API.
 
         POST /orders → returns unsigned Solana transaction → sign → submit.
+        Accepts either a Solana Keypair (legacy) or SolanaSigner (Privy).
         """
+        # Unwrap signer types
+        if isinstance(private_key, SolanaSigner):
+            if isinstance(private_key, LegacySolanaSigner):
+                private_key = private_key.keypair
+            else:
+                # Privy signer — use async signing path
+                return await self._execute_trade_with_signer(quote, private_key)
+
         if not isinstance(private_key, Keypair):
             raise PlatformError(
-                "Invalid private key type, expected Solana Keypair",
+                "Invalid private key type, expected Solana Keypair or SolanaSigner",
                 Platform.JUPITER,
             )
 
@@ -673,6 +684,68 @@ class JupiterPlatform(BasePlatform):
                 explorer_url=None,
             )
 
+    async def _execute_trade_with_signer(
+        self,
+        quote: Quote,
+        signer: SolanaSigner,
+    ) -> TradeResult:
+        """Execute a trade using a SolanaSigner (Privy wallet)."""
+        try:
+            deposit_amount = int(quote.input_amount * Decimal(10**self.collateral_decimals))
+            is_yes = quote.outcome == Outcome.YES
+            is_buy = quote.side == "buy"
+
+            order_payload = {
+                "ownerPubkey": signer.public_key,
+                "marketId": quote.market_id,
+                "isYes": is_yes,
+                "isBuy": is_buy,
+                "depositAmount": str(deposit_amount),
+                "depositMint": USDC_MINT,
+            }
+
+            response = await self._api_request("POST", "/orders", json=order_payload)
+            tx_b64 = response.get("transaction")
+            if not tx_b64:
+                raise PlatformError("No transaction in order response", Platform.JUPITER)
+
+            # Sign via signer and submit
+            tx_data = base64.b64decode(tx_b64)
+            signed_tx_bytes = await signer.sign_transaction(tx_data)
+            signed_tx = VersionedTransaction.from_bytes(signed_tx_bytes)
+
+            if not self._solana_client:
+                raise RuntimeError("Solana client not initialized")
+
+            result = await self._solana_client.send_transaction(
+                signed_tx,
+                opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
+            )
+            tx_hash = str(result.value)
+
+            return TradeResult(
+                success=True,
+                tx_hash=tx_hash,
+                input_amount=quote.input_amount,
+                output_amount=quote.expected_output,
+                error_message=None,
+                explorer_url=self.get_explorer_url(tx_hash),
+            )
+
+        except PlatformError:
+            raise
+        except Exception as e:
+            error_str = str(e)
+            logger.error("Jupiter trade execution failed (signer)", error=error_str)
+            return TradeResult(
+                success=False,
+                tx_hash=None,
+                input_amount=quote.input_amount,
+                output_amount=None,
+                error_message=f"{type(e).__name__}: {error_str}",
+                explorer_url=None,
+            )
+
     # ===================
     # Sell / Claim
     # ===================
@@ -721,12 +794,16 @@ class JupiterPlatform(BasePlatform):
 
         POST /positions/{positionPubkey}/claim → unsigned tx → sign + submit.
         """
+        # Unwrap LegacySolanaSigner
+        if isinstance(private_key, LegacySolanaSigner):
+            private_key = private_key.keypair
+
         if not isinstance(private_key, Keypair):
             return RedemptionResult(
                 success=False,
                 tx_hash=None,
                 amount_redeemed=None,
-                error_message="Invalid private key type, expected Solana Keypair",
+                error_message="Invalid private key type, expected Solana Keypair or SolanaSigner",
                 explorer_url=None,
             )
 

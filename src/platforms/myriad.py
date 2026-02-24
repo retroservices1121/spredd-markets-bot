@@ -18,6 +18,8 @@ import httpx
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 
+from src.services.signer import EVMSigner, LegacyEVMSigner
+
 # ZKsync SDK for Abstract chain
 try:
     from zksync2.module.module_builder import ZkSyncBuilder
@@ -1167,10 +1169,27 @@ class MyriadPlatform(BasePlatform):
         quote: Quote,
         private_key: Any,
     ) -> TradeResult:
-        """Execute a trade using the calldata from the quote."""
+        """Execute a trade using the calldata from the quote.
+
+        Accepts either a LocalAccount (legacy) or EVMSigner (Privy).
+        """
+        # Unwrap EVMSigner
+        if isinstance(private_key, EVMSigner):
+            if isinstance(private_key, LegacyEVMSigner):
+                private_key = private_key.local_account
+            else:
+                return TradeResult(
+                    success=False,
+                    tx_hash=None,
+                    input_amount=quote.input_amount,
+                    output_amount=None,
+                    error_message="Myriad trading with Privy wallets coming soon. Use legacy wallet for now.",
+                    explorer_url=None,
+                )
+
         if not isinstance(private_key, LocalAccount):
             raise PlatformError(
-                "Invalid private key type, expected EVM LocalAccount",
+                "Invalid private key type, expected EVM LocalAccount or EVMSigner",
                 Platform.MYRIAD,
             )
 
@@ -1408,9 +1427,13 @@ class MyriadPlatform(BasePlatform):
         token_id: str = None,
     ) -> RedemptionResult:
         """Redeem winning tokens from a resolved market."""
+        # Unwrap LegacyEVMSigner
+        if isinstance(private_key, LegacyEVMSigner):
+            private_key = private_key.local_account
+
         if not isinstance(private_key, LocalAccount):
             raise PlatformError(
-                "Invalid private key type, expected EVM LocalAccount",
+                "Invalid private key type, expected EVM LocalAccount or EVMSigner",
                 Platform.MYRIAD,
             )
 

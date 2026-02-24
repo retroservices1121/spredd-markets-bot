@@ -17,6 +17,8 @@ from solana.rpc.types import TxOpts
 import base64
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
+from src.services.signer import SolanaSigner, LegacySolanaSigner
+
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
 from src.platforms.base import (
@@ -928,10 +930,21 @@ class KalshiPlatform(BasePlatform):
         quote: Quote,
         private_key: Any,
     ) -> TradeResult:
-        """Execute a trade using the DFlow order endpoint."""
+        """Execute a trade using the DFlow order endpoint.
+
+        Accepts either a Solana Keypair (legacy) or SolanaSigner (Privy).
+        """
+        # Unwrap signer types
+        if isinstance(private_key, SolanaSigner):
+            if isinstance(private_key, LegacySolanaSigner):
+                private_key = private_key.keypair
+            else:
+                # Privy signer — use async signing path
+                return await self._execute_trade_with_signer(quote, private_key)
+
         if not isinstance(private_key, Keypair):
             raise PlatformError(
-                "Invalid private key type, expected Solana Keypair",
+                "Invalid private key type, expected Solana Keypair or SolanaSigner",
                 Platform.KALSHI,
             )
 
@@ -1064,6 +1077,79 @@ class KalshiPlatform(BasePlatform):
                 explorer_url=None,
             )
 
+    async def _execute_trade_with_signer(
+        self,
+        quote: Quote,
+        signer: SolanaSigner,
+    ) -> TradeResult:
+        """Execute a trade using a SolanaSigner (Privy wallet).
+
+        Same flow as execute_trade but uses signer.sign_transaction() instead of Keypair.
+        """
+        if not quote.quote_data:
+            raise PlatformError("Quote data missing", Platform.KALSHI)
+
+        try:
+            params = {
+                "inputMint": quote.input_token,
+                "outputMint": quote.output_token,
+                "amount": str(int(quote.input_amount * Decimal(10**self.collateral_decimals))),
+                "slippageBps": 100,
+                "userPublicKey": signer.public_key,
+            }
+
+            fee_enabled = bool(self._fee_account and len(self._fee_account) >= 32)
+            if fee_enabled:
+                params["feeAccount"] = self._fee_account
+                params["platformFeeScale"] = str(self._fee_bps // 2)
+
+            try:
+                response = await self._trading_request("GET", "/order", params=params)
+            except PlatformError as e:
+                if "route_not_found" in str(e).lower() and fee_enabled:
+                    params.pop("feeAccount", None)
+                    params.pop("platformFeeScale", None)
+                    response = await self._trading_request("GET", "/order", params=params)
+                else:
+                    raise
+
+            # Sign the transaction via signer (Privy remote signing)
+            tx_data = base64.b64decode(response["transaction"])
+            signed_tx_bytes = await signer.sign_transaction(tx_data)
+
+            # Submit to Solana
+            if not self._solana_client:
+                raise RuntimeError("Solana client not initialized")
+
+            signed_tx = VersionedTransaction.from_bytes(signed_tx_bytes)
+            result = await self._solana_client.send_transaction(
+                signed_tx,
+                opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
+            )
+
+            tx_hash = str(result.value)
+            logger.info("Trade executed (signer)", platform="kalshi", tx_hash=tx_hash)
+
+            return TradeResult(
+                success=True,
+                tx_hash=tx_hash,
+                input_amount=quote.input_amount,
+                output_amount=quote.expected_output,
+                error_message=None,
+                explorer_url=self.get_explorer_url(tx_hash),
+            )
+
+        except Exception as e:
+            logger.error("Trade execution failed (signer)", error=str(e))
+            return TradeResult(
+                success=False,
+                tx_hash=None,
+                input_amount=quote.input_amount,
+                output_amount=None,
+                error_message=str(e),
+                explorer_url=None,
+            )
+
     async def get_market_resolution(self, market_id: str) -> MarketResolution:
         """
         Check if a Kalshi market has resolved and what the outcome is.
@@ -1129,12 +1215,16 @@ class KalshiPlatform(BasePlatform):
 
         Uses the DFlow /redeem endpoint to claim winnings.
         """
+        # Unwrap LegacySolanaSigner
+        if isinstance(private_key, LegacySolanaSigner):
+            private_key = private_key.keypair
+
         if not isinstance(private_key, Keypair):
             return RedemptionResult(
                 success=False,
                 tx_hash=None,
                 amount_redeemed=None,
-                error_message="Invalid private key type, expected Solana Keypair",
+                error_message="Invalid private key type, expected Solana Keypair or SolanaSigner",
                 explorer_url=None,
             )
 

@@ -106,6 +106,9 @@ class User(Base):
     first_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     last_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # Privy integration
+    privy_user_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True)
+
     # Platform preference
     active_platform: Mapped[Platform] = mapped_column(
         SQLEnum(Platform),
@@ -172,11 +175,17 @@ class Wallet(Base):
     # Chain family determines wallet type
     chain_family: Mapped[ChainFamily] = mapped_column(SQLEnum(ChainFamily))
 
+    # Wallet type: "legacy" (local keys) or "privy" (server-managed)
+    wallet_type: Mapped[str] = mapped_column(String(20), default="legacy")
+
+    # Privy wallet ID (only for wallet_type="privy")
+    privy_wallet_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True)
+
     # Wallet addresses
     public_key: Mapped[str] = mapped_column(String(255), index=True)
 
-    # Encrypted private key (AES-256-GCM)
-    encrypted_private_key: Mapped[str] = mapped_column(Text)
+    # Encrypted private key (AES-256-GCM) — nullable for Privy wallets
+    encrypted_private_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # PIN protection - if True, user PIN is required to decrypt
     # PIN is never stored, only used in key derivation
