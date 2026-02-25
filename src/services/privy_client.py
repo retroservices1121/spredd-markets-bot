@@ -1,108 +1,56 @@
 """
-Privy server-wallet REST API client.
+Privy server-wallet client using the official privy-client SDK.
 
 Handles user creation, HD wallet provisioning, and remote signing
 via Privy's TEE-backed infrastructure. Spredd never touches raw private keys.
 
-Docs: https://docs.privy.io/guide/server-wallets
+Docs: https://docs.privy.io/basics/python/quickstart
 """
 
-import hashlib
-import json
-import time
 from typing import Any, Optional
-
-import httpx
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 from src.config import settings
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Privy API version header
-PRIVY_API_VERSION = "2025-01-01"
+# CAIP-2 chain identifiers for Privy RPC calls
+_EVM_DEFAULT_CAIP2 = "eip155:1"
+_SOLANA_MAINNET_CAIP2 = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+
+# Map numeric chain IDs to CAIP-2
+_CHAIN_ID_TO_CAIP2 = {
+    1: "eip155:1",         # Ethereum
+    10: "eip155:10",       # Optimism
+    56: "eip155:56",       # BSC
+    137: "eip155:137",     # Polygon
+    2741: "eip155:2741",   # Abstract
+    8453: "eip155:8453",   # Base
+    42161: "eip155:42161", # Arbitrum
+    59144: "eip155:59144", # Linea
+    10143: "eip155:10143", # Monad
+}
 
 
-def _load_p256_private_key(pem_or_hex: str) -> ec.EllipticCurvePrivateKey:
-    """Load a P-256 private key from Privy format, PEM, base64 DER, or hex."""
-    import base64
-
-    pem_or_hex = pem_or_hex.strip()
-
-    # Handle Privy dashboard format: "wallet-auth:<base64-DER-key>"
-    if pem_or_hex.startswith("wallet-auth:"):
-        key_b64 = pem_or_hex.split(":", 1)[1].strip()
-        der_bytes = base64.b64decode(key_b64)
-        return serialization.load_der_private_key(der_bytes, password=None)
-
-    # Handle escaped newlines from env vars (Railway, Docker, etc.)
-    if r"\n" in pem_or_hex:
-        pem_or_hex = pem_or_hex.replace(r"\n", "\n").strip()
-
-    if "-----BEGIN" in pem_or_hex:
-        return serialization.load_pem_private_key(
-            pem_or_hex.encode(), password=None
-        )
-
-    # Try raw hex (32 bytes = 64 hex chars)
-    try:
-        raw_bytes = bytes.fromhex(pem_or_hex)
-        return ec.derive_private_key(
-            int.from_bytes(raw_bytes, "big"),
-            ec.SECP256R1(),
-        )
-    except ValueError:
-        pass
-
-    # Try base64-encoded DER
-    try:
-        der_bytes = base64.b64decode(pem_or_hex)
-        return serialization.load_der_private_key(der_bytes, password=None)
-    except Exception:
-        pass
-
-    raise ValueError(
-        "PRIVY_SIGNING_KEY must be 'wallet-auth:<base64>', PEM, 64-char hex, or base64 DER. "
-        f"Got {len(pem_or_hex)} chars starting with: {pem_or_hex[:20]!r}"
-    )
-
-
-def _build_authorization_signature(
-    signing_key: ec.EllipticCurvePrivateKey,
-    url: str,
-    body: Optional[dict],
-) -> dict[str, str]:
-    """Build Privy authorization headers with P-256 ECDSA signature.
-
-    Returns dict with privy-authorization-signature and related headers.
-    Follows: https://docs.privy.io/guide/server-wallets/authorization/signatures
-    """
-    timestamp = int(time.time())
-
-    # Build the payload to sign: SHA-256(timestamp.url.body_json)
-    body_json = json.dumps(body, separators=(",", ":"), sort_keys=True) if body else ""
-    payload = f"{timestamp}.{url}.{body_json}"
-    payload_hash = hashlib.sha256(payload.encode()).digest()
-
-    # Sign with P-256
-    der_sig = signing_key.sign(payload_hash, ec.ECDSA(hashes.SHA256()))
-    r, s = decode_dss_signature(der_sig)
-
-    # Encode as r:s hex
-    sig_hex = f"{r:064x}:{s:064x}"
-
-    return {
-        "privy-authorization-signature": f"v1:{timestamp}:{sig_hex}",
-    }
+def _chain_id_to_caip2(chain_id: Any) -> str:
+    """Convert a numeric or hex chain ID to a CAIP-2 identifier."""
+    if chain_id is None:
+        return _EVM_DEFAULT_CAIP2
+    if isinstance(chain_id, str):
+        if chain_id.startswith("0x"):
+            chain_id = int(chain_id, 16)
+        else:
+            chain_id = int(chain_id)
+    return _CHAIN_ID_TO_CAIP2.get(int(chain_id), f"eip155:{int(chain_id)}")
 
 
 class PrivyClient:
-    """Async HTTP client for Privy server-wallet API."""
+    """Async wrapper around the official Privy SDK (AsyncPrivyAPI).
 
-    BASE_URL = "https://api.privy.io/v1"
+    Maintains the same external method signatures as the previous custom
+    implementation so that signer.py, wallet.py, and commands.py work
+    without changes.
+    """
 
     def __init__(
         self,
@@ -112,7 +60,7 @@ class PrivyClient:
     ):
         self._app_id = app_id or settings.privy_app_id
         self._app_secret = app_secret or settings.privy_app_secret
-        self._signing_key: Optional[ec.EllipticCurvePrivateKey] = None
+        self._signing_key_raw = signing_key_pem or settings.privy_signing_key
 
         if not self._app_id or not self._app_secret:
             logger.warning(
@@ -121,96 +69,45 @@ class PrivyClient:
                 has_app_secret=bool(self._app_secret),
             )
 
-        raw_key = signing_key_pem or settings.privy_signing_key
-        if raw_key:
-            self._signing_key = _load_p256_private_key(raw_key)
-
-        self._http: Optional[httpx.AsyncClient] = None
+        self._client = None
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                base_url=self.BASE_URL,
-                timeout=30.0,
-                auth=(self._app_id, self._app_secret),
-                headers={
-                    "privy-app-id": self._app_id,
-                    "Content-Type": "application/json",
-                },
+    def _get_client(self):
+        """Lazily initialize the AsyncPrivyAPI client."""
+        if self._client is None:
+            if not self._app_id or not self._app_secret:
+                raise RuntimeError(
+                    f"Privy not configured: app_id={'set' if self._app_id else 'MISSING'}, "
+                    f"app_secret={'set' if self._app_secret else 'MISSING'}"
+                )
+
+            from privy import AsyncPrivyAPI
+
+            self._client = AsyncPrivyAPI(
+                app_id=self._app_id,
+                app_secret=self._app_secret,
             )
-        return self._http
+
+            # Register the authorization signing key for wallet operations
+            if self._signing_key_raw:
+                self._client.update_authorization_key(self._signing_key_raw)
+                logger.info("Privy authorization key configured")
+
+            logger.info(
+                "Privy SDK client initialized",
+                app_id_prefix=self._app_id[:8] + "..." if self._app_id else None,
+            )
+
+        return self._client
 
     async def close(self) -> None:
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
-            self._http = None
-
-    # ------------------------------------------------------------------
-    # Internal request helper
-    # ------------------------------------------------------------------
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        body: Optional[dict] = None,
-    ) -> dict[str, Any]:
-        """Make an authenticated request to Privy API."""
-        if not self._app_id or not self._app_secret:
-            raise RuntimeError(
-                f"Privy not configured: app_id={'set' if self._app_id else 'MISSING'}, "
-                f"app_secret={'set' if self._app_secret else 'MISSING'}"
-            )
-
-        logger.debug(
-            "Privy API request",
-            method=method,
-            path=path,
-            has_signing_key=bool(self._signing_key),
-            app_id_prefix=self._app_id[:8] + "..." if self._app_id else None,
-        )
-
-        try:
-            client = await self._get_client()
-        except Exception as e:
-            logger.error("Failed to create Privy HTTP client", error=str(e), error_type=type(e).__name__)
-            raise
-
-        url = f"{self.BASE_URL}{path}"
-
-        headers: dict[str, str] = {}
-
-        # Add authorization signature if signing key is configured
-        if self._signing_key:
-            try:
-                headers.update(
-                    _build_authorization_signature(self._signing_key, url, body)
-                )
-            except Exception as e:
-                logger.error("Failed to build Privy authorization signature", error=str(e), error_type=type(e).__name__)
-                raise
-
-        response = await client.request(
-            method,
-            path,
-            json=body,
-            headers=headers,
-        )
-
-        if response.status_code >= 400:
-            logger.error(
-                "Privy API error",
-                status=response.status_code,
-                path=path,
-                body=response.text[:500],
-            )
-            response.raise_for_status()
-
-        return response.json()
+        """Close the underlying SDK client."""
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
 
     # ------------------------------------------------------------------
     # User management
@@ -221,15 +118,16 @@ class PrivyClient:
 
         Returns the Privy user ID (e.g. "did:privy:...").
         """
-        data = await self._request("POST", "/users", body={
-            "create_linked_accounts": [
+        client = self._get_client()
+        user = await client.users.create(
+            linked_accounts=[
                 {
                     "type": "telegram",
                     "telegram_user_id": str(telegram_id),
                 }
             ]
-        })
-        privy_user_id = data.get("id") or data.get("user_id")
+        )
+        privy_user_id = user.id
         logger.info(
             "Created Privy user",
             telegram_id=telegram_id,
@@ -239,7 +137,10 @@ class PrivyClient:
 
     async def get_user(self, privy_user_id: str) -> dict[str, Any]:
         """Get Privy user details."""
-        return await self._request("GET", f"/users/{privy_user_id}")
+        client = self._get_client()
+        user = await client.users.get(user_id=privy_user_id)
+        # Return as dict for backward compatibility
+        return user.model_dump() if hasattr(user, "model_dump") else vars(user)
 
     # ------------------------------------------------------------------
     # Wallet management
@@ -259,12 +160,13 @@ class PrivyClient:
         Returns:
             Dict with keys: id, address, chain_type.
         """
-        data = await self._request("POST", "/wallets", body={
-            "user_id": privy_user_id,
-            "chain_type": chain_type,
-        })
-        wallet_id = data.get("id")
-        address = data.get("address")
+        client = self._get_client()
+        wallet = await client.wallets.create(
+            chain_type=chain_type,
+            owner={"user_id": privy_user_id},
+        )
+        wallet_id = wallet.id
+        address = wallet.address
         logger.info(
             "Created Privy wallet",
             privy_user_id=privy_user_id,
@@ -275,13 +177,22 @@ class PrivyClient:
         return {
             "id": wallet_id,
             "address": address,
-            "chain_type": data.get("chain_type", chain_type),
+            "chain_type": getattr(wallet, "chain_type", chain_type),
         }
 
     async def get_user_wallets(self, privy_user_id: str) -> list[dict[str, Any]]:
         """List all wallets for a Privy user."""
-        data = await self._request("GET", f"/users/{privy_user_id}/wallets")
-        return data.get("wallets", data if isinstance(data, list) else [])
+        client = self._get_client()
+        result = await client.wallets.list(user_id=privy_user_id)
+        wallets = result.data if hasattr(result, "data") else result
+        return [
+            {
+                "id": w.id,
+                "address": w.address,
+                "chain_type": getattr(w, "chain_type", None),
+            }
+            for w in wallets
+        ]
 
     # ------------------------------------------------------------------
     # Signing — EVM
@@ -297,13 +208,17 @@ class PrivyClient:
         Returns:
             Signature hex string (0x-prefixed).
         """
-        data = await self._request("POST", f"/wallets/{wallet_id}/rpc", body={
-            "method": "personal_sign",
-            "params": {
+        client = self._get_client()
+        result = await client.wallets.rpc(
+            wallet_id=wallet_id,
+            method="personal_sign",
+            caip2=_EVM_DEFAULT_CAIP2,
+            params={
                 "message": message,
+                "encoding": "utf-8",
             },
-        })
-        return data.get("data", {}).get("signature", data.get("signature", ""))
+        )
+        return result.data.signature
 
     async def sign_typed_data(
         self,
@@ -315,19 +230,20 @@ class PrivyClient:
     ) -> str:
         """Sign EIP-712 typed data.
 
-        Args:
-            wallet_id: Privy wallet ID.
-            domain: EIP-712 domain separator.
-            types: Type definitions.
-            primary_type: The primary type name.
-            message: The structured data to sign.
-
         Returns:
             Signature hex string (0x-prefixed).
         """
-        data = await self._request("POST", f"/wallets/{wallet_id}/rpc", body={
-            "method": "eth_signTypedData_v4",
-            "params": {
+        client = self._get_client()
+
+        # Extract chain ID from domain for CAIP-2
+        chain_id = domain.get("chainId")
+        caip2 = _chain_id_to_caip2(chain_id)
+
+        result = await client.wallets.rpc(
+            wallet_id=wallet_id,
+            method="eth_signTypedData_v4",
+            caip2=caip2,
+            params={
                 "typed_data": {
                     "domain": domain,
                     "types": types,
@@ -335,8 +251,8 @@ class PrivyClient:
                     "message": message,
                 },
             },
-        })
-        return data.get("data", {}).get("signature", data.get("signature", ""))
+        )
+        return result.data.signature
 
     async def sign_transaction(
         self,
@@ -352,13 +268,21 @@ class PrivyClient:
         Returns:
             Signed transaction hex (ready for broadcast).
         """
-        data = await self._request("POST", f"/wallets/{wallet_id}/rpc", body={
-            "method": "eth_signTransaction",
-            "params": {
+        client = self._get_client()
+
+        # Extract chain ID for CAIP-2
+        chain_id = transaction.get("chainId") or transaction.get("chain_id")
+        caip2 = _chain_id_to_caip2(chain_id)
+
+        result = await client.wallets.rpc(
+            wallet_id=wallet_id,
+            method="eth_signTransaction",
+            caip2=caip2,
+            params={
                 "transaction": transaction,
             },
-        })
-        return data.get("data", {}).get("signed_transaction", data.get("signed_transaction", ""))
+        )
+        return result.data.signed_transaction
 
     # ------------------------------------------------------------------
     # Signing — Solana
@@ -378,13 +302,17 @@ class PrivyClient:
         Returns:
             Base64-encoded signed transaction.
         """
-        data = await self._request("POST", f"/wallets/{wallet_id}/rpc", body={
-            "method": "solana_signTransaction",
-            "params": {
+        client = self._get_client()
+        result = await client.wallets.rpc(
+            wallet_id=wallet_id,
+            method="signTransaction",
+            caip2=_SOLANA_MAINNET_CAIP2,
+            params={
                 "transaction": transaction_b64,
+                "encoding": "base64",
             },
-        })
-        return data.get("data", {}).get("signed_transaction", data.get("signed_transaction", ""))
+        )
+        return result.data.signed_transaction
 
 
 # Singleton
