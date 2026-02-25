@@ -77,6 +77,19 @@ class PrivyClient:
             or os.environ.get("PRIVY_SIGNING_KEY")
         )
 
+        # Debug: log what each source provides
+        _env_keys = [k for k in os.environ if k.upper().startswith("PRIVY")]
+        logger.info(
+            "Privy config debug",
+            settings_app_id=bool(settings.privy_app_id),
+            settings_app_secret=bool(settings.privy_app_secret),
+            env_app_id=bool(os.environ.get("PRIVY_APP_ID")),
+            env_app_secret=bool(os.environ.get("PRIVY_APP_SECRET")),
+            env_privy_keys=_env_keys,
+            resolved_app_id=bool(self._app_id),
+            resolved_app_secret=bool(self._app_secret),
+        )
+
         if not self._app_id or not self._app_secret:
             logger.warning(
                 "Privy app credentials missing — PRIVY_APP_ID and PRIVY_APP_SECRET required",
