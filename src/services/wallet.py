@@ -2,9 +2,7 @@
 Wallet service for managing Solana and EVM wallets.
 Supports one wallet per chain family, shared across platforms.
 
-Supports two wallet types:
-- Legacy: Local keypairs encrypted with AES-256-GCM (existing users)
-- Privy: Server-managed wallets via Privy TEE (new users when privy_enabled=True)
+Wallets use local keypairs encrypted with AES-256-GCM.
 """
 
 import asyncio
@@ -34,8 +32,6 @@ from src.services.signer import (
     SolanaSigner,
     LegacyEVMSigner,
     LegacySolanaSigner,
-    PrivyEVMSigner,
-    PrivySolanaSigner,
 )
 from src.utils.encryption import encrypt, decrypt
 from src.utils.logging import get_logger, LoggerMixin
@@ -74,8 +70,6 @@ class WalletInfo:
     """Wallet information without private key."""
     chain_family: ChainFamily
     public_key: str
-    wallet_type: str = "legacy"  # "legacy" or "privy"
-
     @property
     def solana_address(self) -> Optional[str]:
         return self.public_key if self.chain_family == ChainFamily.SOLANA else None
@@ -83,10 +77,6 @@ class WalletInfo:
     @property
     def evm_address(self) -> Optional[str]:
         return self.public_key if self.chain_family == ChainFamily.EVM else None
-
-    @property
-    def is_privy(self) -> bool:
-        return self.wallet_type == "privy"
 
 
 @dataclass
@@ -190,74 +180,20 @@ class WalletService(LoggerMixin):
         computed_hash = self._hash_export_pin(pin, telegram_id)
         return computed_hash == stored_hash
 
-    async def _create_privy_wallet(
-        self,
-        user_id: str,
-        privy_user_id: str,
-        chain_family: ChainFamily,
-    ) -> WalletInfo:
-        """Create a Privy-managed wallet for a user.
-
-        Args:
-            user_id: Database user ID
-            privy_user_id: Privy user ID (did:privy:...)
-            chain_family: SOLANA or EVM
-
-        Returns:
-            WalletInfo with public key
-        """
-        from src.services.privy_client import privy_client
-
-        chain_type = "solana" if chain_family == ChainFamily.SOLANA else "ethereum"
-        wallet_data = await privy_client.create_wallet(privy_user_id, chain_type)
-
-        privy_wallet_id = wallet_data["id"]
-        public_key = wallet_data["address"]
-
-        # Store in database (no encrypted_private_key for Privy wallets)
-        await create_wallet(
-            user_id=user_id,
-            chain_family=chain_family,
-            public_key=public_key,
-            encrypted_private_key=None,
-            pin_protected=False,
-            wallet_type="privy",
-            privy_wallet_id=privy_wallet_id,
-        )
-
-        self.log.info(
-            "Created Privy wallet",
-            user_id=user_id,
-            chain_family=chain_family.value,
-            public_key=public_key[:10] + "...",
-            privy_wallet_id=privy_wallet_id,
-        )
-
-        return WalletInfo(
-            chain_family=chain_family,
-            public_key=public_key,
-            wallet_type="privy",
-        )
-
     async def create_wallet_for_user(
         self,
         user_id: str,
         telegram_id: int,
         chain_family: ChainFamily,
         user_pin: str = "",
-        privy_user_id: Optional[str] = None,
     ) -> WalletInfo:
         """Create a new wallet for a user.
-
-        If privy_user_id is provided and Privy is enabled, creates a Privy wallet.
-        Otherwise creates a legacy wallet with local keys.
 
         Args:
             user_id: Database user ID
             telegram_id: Telegram user ID
             chain_family: SOLANA or EVM
-            user_pin: PIN for export verification (only for legacy wallets)
-            privy_user_id: Privy user ID for Privy wallet creation
+            user_pin: PIN for export verification
 
         Returns:
             WalletInfo with public key
@@ -268,18 +204,9 @@ class WalletService(LoggerMixin):
             return WalletInfo(
                 chain_family=chain_family,
                 public_key=existing.public_key,
-                wallet_type=getattr(existing, 'wallet_type', 'legacy'),
             )
 
-        # Use Privy if enabled and privy_user_id provided
-        if privy_user_id and settings.privy_enabled:
-            return await self._create_privy_wallet(
-                user_id=user_id,
-                privy_user_id=privy_user_id,
-                chain_family=chain_family,
-            )
-
-        # Legacy wallet creation
+        # Generate wallet
         if chain_family == ChainFamily.SOLANA:
             public_key, private_key = self._generate_solana_keypair()
         else:
@@ -306,11 +233,10 @@ class WalletService(LoggerMixin):
             encrypted_private_key=encrypted_key,
             pin_protected=False,  # Trading never requires PIN
             export_pin_hash=export_pin_hash,
-            wallet_type="legacy",
         )
 
         self.log.info(
-            "Created legacy wallet",
+            "Created wallet",
             user_id=user_id,
             chain_family=chain_family.value,
             public_key=public_key[:8] + "...",
@@ -320,7 +246,6 @@ class WalletService(LoggerMixin):
         return WalletInfo(
             chain_family=chain_family,
             public_key=public_key,
-            wallet_type="legacy",
         )
 
     async def get_or_create_wallets(
@@ -328,15 +253,13 @@ class WalletService(LoggerMixin):
         user_id: str,
         telegram_id: int,
         user_pin: str = "",
-        privy_user_id: Optional[str] = None,
     ) -> dict[ChainFamily, WalletInfo]:
         """Get or create both Solana and EVM wallets for a user.
 
         Args:
             user_id: Database user ID
             telegram_id: Telegram user ID
-            user_pin: PIN for new wallet encryption (only used if creating legacy)
-            privy_user_id: Privy user ID for Privy wallet creation
+            user_pin: PIN for new wallet encryption
 
         Returns:
             Dict mapping ChainFamily to WalletInfo
@@ -349,7 +272,6 @@ class WalletService(LoggerMixin):
                 telegram_id=telegram_id,
                 chain_family=family,
                 user_pin=user_pin,
-                privy_user_id=privy_user_id,
             )
 
         return wallets
@@ -395,16 +317,9 @@ class WalletService(LoggerMixin):
         telegram_id: int,
         user_pin: str = "",
     ) -> Optional[SolanaKeypair]:
-        """Get decrypted Solana keypair for signing (legacy wallets only).
-
-        For Privy wallets, use get_solana_signer() instead.
-        """
+        """Get decrypted Solana keypair for signing."""
         wallet = await get_wallet(user_id, ChainFamily.SOLANA)
         if not wallet:
-            return None
-
-        # Privy wallets don't have local keys
-        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
             return None
 
         private_key = decrypt(
@@ -422,16 +337,9 @@ class WalletService(LoggerMixin):
         telegram_id: int,
         user_pin: str = "",
     ) -> Optional[LocalAccount]:
-        """Get decrypted EVM account for signing (legacy wallets only).
-
-        For Privy wallets, use get_evm_signer() instead.
-        """
+        """Get decrypted EVM account for signing."""
         wallet = await get_wallet(user_id, ChainFamily.EVM)
         if not wallet:
-            return None
-
-        # Privy wallets don't have local keys
-        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
             return None
 
         private_key = decrypt(
@@ -452,9 +360,7 @@ class WalletService(LoggerMixin):
     ):
         """Get private key/keypair for signing transactions.
 
-        For legacy wallets, returns SolanaKeypair or LocalAccount.
-        For Privy wallets, returns the appropriate Signer instead.
-
+        Returns SolanaKeypair or LocalAccount depending on chain_family.
         This is the main entry point used by platform adapters.
         """
         # Handle positional arg: get_private_key(user_id, telegram_id, chain_family, pin)
@@ -468,27 +374,6 @@ class WalletService(LoggerMixin):
             # Default: return EVM for backward compat
             chain_family = ChainFamily.EVM
 
-        wallet = await get_wallet(user_id, chain_family)
-        if not wallet:
-            return None
-
-        # Privy wallets → return signer
-        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
-            from src.services.privy_client import privy_client
-            if chain_family == ChainFamily.SOLANA:
-                return PrivySolanaSigner(
-                    wallet_id=wallet.privy_wallet_id,
-                    wallet_address=wallet.public_key,
-                    privy_client=privy_client,
-                )
-            else:
-                return PrivyEVMSigner(
-                    wallet_id=wallet.privy_wallet_id,
-                    wallet_address=wallet.public_key,
-                    privy_client=privy_client,
-                )
-
-        # Legacy wallets → return raw key objects (backward compatible)
         if chain_family == ChainFamily.SOLANA:
             return await self.get_solana_keypair(user_id, telegram_id, user_pin)
         else:
@@ -504,24 +389,7 @@ class WalletService(LoggerMixin):
         telegram_id: int,
         user_pin: str = "",
     ) -> Optional[EVMSigner]:
-        """Get an EVM signer for the user's wallet.
-
-        Returns the appropriate signer type based on wallet type:
-        - LegacyEVMSigner for legacy wallets (wraps LocalAccount)
-        - PrivyEVMSigner for Privy wallets (remote signing)
-        """
-        wallet = await get_wallet(user_id, ChainFamily.EVM)
-        if not wallet:
-            return None
-
-        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
-            from src.services.privy_client import privy_client
-            return PrivyEVMSigner(
-                wallet_id=wallet.privy_wallet_id,
-                wallet_address=wallet.public_key,
-                privy_client=privy_client,
-            )
-
+        """Get an EVM signer for the user's wallet."""
         account = await self.get_evm_account(user_id, telegram_id, user_pin)
         if not account:
             return None
@@ -533,24 +401,7 @@ class WalletService(LoggerMixin):
         telegram_id: int,
         user_pin: str = "",
     ) -> Optional[SolanaSigner]:
-        """Get a Solana signer for the user's wallet.
-
-        Returns the appropriate signer type based on wallet type:
-        - LegacySolanaSigner for legacy wallets (wraps Keypair)
-        - PrivySolanaSigner for Privy wallets (remote signing)
-        """
-        wallet = await get_wallet(user_id, ChainFamily.SOLANA)
-        if not wallet:
-            return None
-
-        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
-            from src.services.privy_client import privy_client
-            return PrivySolanaSigner(
-                wallet_id=wallet.privy_wallet_id,
-                wallet_address=wallet.public_key,
-                privy_client=privy_client,
-            )
-
+        """Get a Solana signer for the user's wallet."""
         keypair = await self.get_solana_keypair(user_id, telegram_id, user_pin)
         if not keypair:
             return None
@@ -563,16 +414,9 @@ class WalletService(LoggerMixin):
         chain_family: ChainFamily,
         user_pin: str = "",
     ) -> Optional[str]:
-        """Export private key for user backup.
-
-        For Privy wallets, returns None (export is handled through Privy's SDK).
-        """
+        """Export private key for user backup."""
         wallet = await get_wallet(user_id, chain_family)
         if not wallet:
-            return None
-
-        # Privy wallets don't expose private keys through our API
-        if getattr(wallet, 'wallet_type', 'legacy') == 'privy':
             return None
 
         private_key = decrypt(
