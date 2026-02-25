@@ -161,17 +161,38 @@ class PrivyClient:
     ) -> dict[str, Any]:
         """Make an authenticated request to Privy API."""
         if not self._app_id or not self._app_secret:
-            raise RuntimeError("Privy not configured: PRIVY_APP_ID and PRIVY_APP_SECRET required")
-        client = await self._get_client()
+            raise RuntimeError(
+                f"Privy not configured: app_id={'set' if self._app_id else 'MISSING'}, "
+                f"app_secret={'set' if self._app_secret else 'MISSING'}"
+            )
+
+        logger.debug(
+            "Privy API request",
+            method=method,
+            path=path,
+            has_signing_key=bool(self._signing_key),
+            app_id_prefix=self._app_id[:8] + "..." if self._app_id else None,
+        )
+
+        try:
+            client = await self._get_client()
+        except Exception as e:
+            logger.error("Failed to create Privy HTTP client", error=str(e), error_type=type(e).__name__)
+            raise
+
         url = f"{self.BASE_URL}{path}"
 
         headers: dict[str, str] = {}
 
         # Add authorization signature if signing key is configured
         if self._signing_key:
-            headers.update(
-                _build_authorization_signature(self._signing_key, url, body)
-            )
+            try:
+                headers.update(
+                    _build_authorization_signature(self._signing_key, url, body)
+                )
+            except Exception as e:
+                logger.error("Failed to build Privy authorization signature", error=str(e), error_type=type(e).__name__)
+                raise
 
         response = await client.request(
             method,
