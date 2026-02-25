@@ -28,7 +28,6 @@ py-clob-client>=0.34.0
 opinion-clob-sdk>=0.1.0
 limitless-sdk>=1.0.0
 httpx>=0.27.0
-privy-client>=0.4.0
 
 # Virtuals ACP (Agent Commerce Protocol)
 virtuals-acp>=0.1.0
