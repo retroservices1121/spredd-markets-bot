@@ -11,7 +11,7 @@ import time
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 
-from src.services.signer import EVMSigner, LegacyEVMSigner, PrivyEVMSigner
+from src.services.signer import EVMSigner, LegacyEVMSigner
 
 from limitless_sdk.api import HttpClient as LimitlessHttpClient
 from limitless_sdk.markets import MarketFetcher
@@ -1421,36 +1421,6 @@ class LimitlessPlatform(BasePlatform):
         if isinstance(private_key, EVMSigner):
             if isinstance(private_key, LegacyEVMSigner):
                 private_key = private_key.local_account
-            elif isinstance(private_key, PrivyEVMSigner):
-                if is_amm:
-                    # AMM markets can use Privy signer (direct contract interaction)
-                    if not quote.quote_data:
-                        raise PlatformError("Quote data missing", Platform.LIMITLESS)
-                    market_slug = quote.quote_data.get("market_slug", quote.market_id)
-                    venue = await self._get_venue(market_slug)
-                    exchange = venue.get("exchange", venue.get("address"))
-                    if not exchange:
-                        return TradeResult(
-                            success=False, tx_hash=None,
-                            input_amount=quote.input_amount, output_amount=None,
-                            error_message="Exchange address not found for market",
-                            explorer_url=None,
-                        )
-                    return await self._execute_amm_trade_with_signer(
-                        quote=quote,
-                        signer=private_key,
-                        amm_address=exchange,
-                        outcome_index=outcome_index,
-                    )
-                else:
-                    return TradeResult(
-                        success=False,
-                        tx_hash=None,
-                        input_amount=quote.input_amount,
-                        output_amount=None,
-                        error_message="Limitless CLOB trading with Privy wallets coming soon. AMM markets are supported — try an AMM market instead.",
-                        explorer_url=None,
-                    )
             else:
                 return TradeResult(
                     success=False,
@@ -1980,7 +1950,7 @@ class LimitlessPlatform(BasePlatform):
 
     async def _ensure_approval_with_signer(
         self,
-        signer: PrivyEVMSigner,
+        signer: EVMSigner,
         spender: str,
     ) -> None:
         """Ensure USDC approval on Base using Privy signer."""
@@ -2039,7 +2009,7 @@ class LimitlessPlatform(BasePlatform):
 
     async def _ensure_ctf_approval_with_signer(
         self,
-        signer: PrivyEVMSigner,
+        signer: EVMSigner,
         ctf_address: str,
         exchange: str,
     ) -> None:
@@ -2121,7 +2091,7 @@ class LimitlessPlatform(BasePlatform):
     async def _execute_amm_trade_with_signer(
         self,
         quote: Quote,
-        signer: PrivyEVMSigner,
+        signer: EVMSigner,
         amm_address: str,
         outcome_index: int,
     ) -> TradeResult:

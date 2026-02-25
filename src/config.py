@@ -378,6 +378,14 @@ class Settings(BaseSettings):
     )
 
     # ===================
+    # Trading Pause (Admin Bypass)
+    # ===================
+    trading_paused: bool = Field(
+        default=False,
+        description="Pause trading for all non-admin users (set TRADING_PAUSED=true)"
+    )
+
+    # ===================
     # Rate Limiting
     # ===================
     max_requests_per_minute: int = Field(default=30, ge=1, le=100)

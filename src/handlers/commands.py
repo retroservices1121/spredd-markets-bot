@@ -7396,6 +7396,16 @@ Type /cancel to cancel.
 
 async def handle_buy_confirm(query, platform_value: str, market_id: str, outcome: str, amount_str: str, telegram_id: int) -> None:
     """Execute the confirmed buy order."""
+    # Trading pause check (admins bypass)
+    if is_trading_paused() and not is_admin(telegram_id):
+        await query.edit_message_text(
+            "\u23f8 <b>Trading Paused</b>\n\n"
+            "Trading is temporarily disabled for maintenance. "
+            "Please try again later.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     # Truncate for callback_data limit
     short_market_id = market_id[:40]
 
@@ -7761,6 +7771,16 @@ Select amount to sell:
 
 async def handle_sell_confirm(query, position_id: str, percent_str: str, telegram_id: int) -> None:
     """Execute the sell order."""
+    # Trading pause check (admins bypass)
+    if is_trading_paused() and not is_admin(telegram_id):
+        await query.edit_message_text(
+            "\u23f8 <b>Trading Paused</b>\n\n"
+            "Trading is temporarily disabled for maintenance. "
+            "Please try again later.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     user = await get_user_by_telegram_id(telegram_id)
     if not user:
         await query.edit_message_text("Please /start first!")
@@ -9648,6 +9668,17 @@ Trading works without PIN.
 def is_admin(telegram_id: int) -> bool:
     """Check if user is an admin."""
     return telegram_id in settings.admin_ids
+
+
+# Runtime override for trading pause (None = use env var, True/False = override)
+_trading_paused_override: bool | None = None
+
+
+def is_trading_paused() -> bool:
+    """Check if trading is currently paused. Runtime override takes precedence over env var."""
+    if _trading_paused_override is not None:
+        return _trading_paused_override
+    return settings.trading_paused
 
 
 async def verify_position_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -11894,6 +11925,49 @@ async def handle_arb_amount(
     except Exception as e:
         logger.error("Failed to execute arb trade", error=str(e))
         await query.edit_message_text(f"❌ Error: {friendly_error(str(e))}")
+
+
+# ===================
+# Trading Pause Commands (Admin)
+# ===================
+
+async def pause_trading_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to pause trading for all non-admin users."""
+    if not update.effective_user or not update.message:
+        return
+
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    global _trading_paused_override
+    _trading_paused_override = True
+
+    await update.message.reply_text(
+        "⏸ <b>Trading Paused</b>\n\n"
+        "All non-admin trading is now disabled.\n"
+        "Use /resume_trading to re-enable.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def resume_trading_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to resume trading for all users."""
+    if not update.effective_user or not update.message:
+        return
+
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    global _trading_paused_override
+    _trading_paused_override = False
+
+    await update.message.reply_text(
+        "▶️ <b>Trading Resumed</b>\n\n"
+        "All users can now trade again.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 # ===================

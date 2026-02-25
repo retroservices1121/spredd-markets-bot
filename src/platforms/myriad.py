@@ -18,7 +18,7 @@ import httpx
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 
-from src.services.signer import EVMSigner, LegacyEVMSigner, PrivyEVMSigner
+from src.services.signer import EVMSigner, LegacyEVMSigner
 
 # ZKsync SDK for Abstract chain
 try:
@@ -1177,9 +1177,6 @@ class MyriadPlatform(BasePlatform):
         if isinstance(private_key, EVMSigner):
             if isinstance(private_key, LegacyEVMSigner):
                 private_key = private_key.local_account
-            elif isinstance(private_key, PrivyEVMSigner):
-                # Privy signer — use async signing path
-                return await self._execute_trade_with_signer(quote, private_key)
             else:
                 return TradeResult(
                     success=False,
@@ -1392,7 +1389,7 @@ class MyriadPlatform(BasePlatform):
 
     async def _ensure_approval_with_signer(
         self,
-        signer: PrivyEVMSigner,
+        signer: EVMSigner,
         network_id: int,
         token_address: str,
         spender_address: str,
@@ -1468,7 +1465,7 @@ class MyriadPlatform(BasePlatform):
 
     async def _ensure_erc1155_approval_with_signer(
         self,
-        signer: PrivyEVMSigner,
+        signer: EVMSigner,
         network_id: int,
         token_contract: str,
         operator_address: str,
@@ -1538,7 +1535,7 @@ class MyriadPlatform(BasePlatform):
     async def _send_zksync_transaction_with_signer(
         self,
         network_id: int,
-        signer: PrivyEVMSigner,
+        signer: EVMSigner,
         to: str,
         data: str,
         value: int = 0,
@@ -1617,7 +1614,7 @@ class MyriadPlatform(BasePlatform):
     async def _execute_trade_with_signer(
         self,
         quote: Quote,
-        signer: PrivyEVMSigner,
+        signer: EVMSigner,
     ) -> TradeResult:
         """Execute a trade using Privy signer with calldata from the quote."""
         if not quote.quote_data:
@@ -1813,9 +1810,13 @@ class MyriadPlatform(BasePlatform):
         # Unwrap EVMSigner
         if isinstance(private_key, LegacyEVMSigner):
             private_key = private_key.local_account
-        elif isinstance(private_key, PrivyEVMSigner):
-            return await self._redeem_position_with_signer(
-                market_id, outcome, token_amount, private_key,
+        elif isinstance(private_key, EVMSigner):
+            return RedemptionResult(
+                success=False,
+                tx_hash=None,
+                amount_redeemed=None,
+                error_message="Unsupported EVM signer type for Myriad.",
+                explorer_url=None,
             )
 
         if not isinstance(private_key, LocalAccount):
@@ -1908,7 +1909,7 @@ class MyriadPlatform(BasePlatform):
         market_id: str,
         outcome: Outcome,
         token_amount: Decimal,
-        signer: PrivyEVMSigner,
+        signer: EVMSigner,
     ) -> RedemptionResult:
         """Redeem winning tokens from a resolved market using Privy signer."""
         try:

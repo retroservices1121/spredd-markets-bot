@@ -69,6 +69,9 @@ from src.handlers.commands import (
     # Broadcast
     broadcast_command,
     handle_broadcast_message,
+    # Trading pause
+    pause_trading_command,
+    resume_trading_command,
 )
 from src.utils.logging import setup_logging, get_logger
 
@@ -185,6 +188,10 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("setalert", setalert_command))
     application.add_handler(CommandHandler("deletealert", deletealert_command))
     application.add_handler(CommandHandler("arbitrage", arbitrage_command))
+
+    # Trading pause commands
+    application.add_handler(CommandHandler("pause_trading", pause_trading_command))
+    application.add_handler(CommandHandler("resume_trading", resume_trading_command))
 
     # Broadcast commands
     application.add_handler(CommandHandler("broadcast", broadcast_command))

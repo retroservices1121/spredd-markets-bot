@@ -13,7 +13,7 @@ from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 
-from src.services.signer import EVMSigner, LegacyEVMSigner, PrivyEVMSigner
+from src.services.signer import EVMSigner, LegacyEVMSigner
 
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
@@ -307,7 +307,7 @@ class OpinionPlatform(BasePlatform):
                 Platform.OPINION,
             )
 
-    async def _enable_trading_eoa_with_signer(self, signer: PrivyEVMSigner) -> bool:
+    async def _enable_trading_eoa_with_signer(self, signer: EVMSigner) -> bool:
         """Enable trading for a Privy wallet by approving USDT and CT on BSC.
 
         Same approvals as _enable_trading_eoa but uses Privy signer for signing.
@@ -1147,21 +1147,6 @@ class OpinionPlatform(BasePlatform):
         if isinstance(private_key, EVMSigner):
             if isinstance(private_key, LegacyEVMSigner):
                 private_key = private_key.local_account
-            elif isinstance(private_key, PrivyEVMSigner):
-                # Privy signer — set up on-chain approvals proactively
-                try:
-                    await self._enable_trading_eoa_with_signer(private_key)
-                    logger.info("Opinion approvals completed for Privy wallet", wallet=private_key.address[:10])
-                except Exception as e:
-                    logger.warning("Opinion Privy approval failed (non-blocking)", error=str(e))
-                return TradeResult(
-                    success=False,
-                    tx_hash=None,
-                    input_amount=quote.input_amount,
-                    output_amount=None,
-                    error_message="Opinion CLOB trading with Privy wallets coming soon. On-chain approvals have been set up. Use legacy wallet for now.",
-                    explorer_url=None,
-                )
             else:
                 return TradeResult(
                     success=False,

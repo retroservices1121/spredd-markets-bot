@@ -13,7 +13,7 @@ import httpx
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3, Web3
 
-from src.services.signer import EVMSigner, LegacyEVMSigner, PrivyEVMSigner
+from src.services.signer import EVMSigner, LegacyEVMSigner
 
 from src.config import settings
 from src.db.models import Chain, Outcome, Platform
@@ -1934,7 +1934,7 @@ class PolymarketPlatform(BasePlatform):
                 Platform.POLYMARKET,
             )
 
-    async def _ensure_exchange_approval_with_signer(self, signer: PrivyEVMSigner) -> None:
+    async def _ensure_exchange_approval_with_signer(self, signer: EVMSigner) -> None:
         """Ensure USDC.e and CTF tokens are approved for Polymarket exchange contracts using Privy signer.
 
         Checks allowances via sync web3 (read-only) and signs approval txs via Privy.
@@ -2146,27 +2146,10 @@ class PolymarketPlatform(BasePlatform):
         Collects platform fee AFTER successful trade execution.
         Uses caching for approval checks and CLOB client to speed up execution.
         """
-        # Accept EVMSigner — extract LocalAccount if legacy, otherwise error for now
-        # (Privy CLOB order signing requires manual EIP-712 construction, coming in Phase 2)
+        # Accept EVMSigner — extract LocalAccount if legacy, otherwise error
         if isinstance(private_key, EVMSigner):
             if isinstance(private_key, LegacyEVMSigner):
                 private_key = private_key.local_account
-            elif isinstance(private_key, PrivyEVMSigner):
-                # Privy signer — set up on-chain approvals proactively,
-                # so they're ready when CLOB signing support lands
-                try:
-                    await self._ensure_exchange_approval_with_signer(private_key)
-                    logger.info("Polymarket approvals completed for Privy wallet", wallet=private_key.address[:10])
-                except Exception as e:
-                    logger.warning("Polymarket Privy approval failed (non-blocking)", error=str(e))
-                return TradeResult(
-                    success=False,
-                    tx_hash=None,
-                    input_amount=quote.input_amount,
-                    output_amount=None,
-                    error_message="Polymarket CLOB trading with Privy wallets coming soon. On-chain approvals have been set up. Use legacy wallet for now.",
-                    explorer_url=None,
-                )
             else:
                 return TradeResult(
                     success=False,
