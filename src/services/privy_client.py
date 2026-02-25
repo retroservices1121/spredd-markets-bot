@@ -27,19 +27,46 @@ PRIVY_API_VERSION = "2025-01-01"
 
 
 def _load_p256_private_key(pem_or_hex: str) -> ec.EllipticCurvePrivateKey:
-    """Load a P-256 private key from PEM string or hex-encoded raw key."""
+    """Load a P-256 private key from Privy format, PEM, base64 DER, or hex."""
+    import base64
+
     pem_or_hex = pem_or_hex.strip()
 
-    if pem_or_hex.startswith("-----BEGIN"):
+    # Handle Privy dashboard format: "wallet-auth:<base64-DER-key>"
+    if pem_or_hex.startswith("wallet-auth:"):
+        key_b64 = pem_or_hex.split(":", 1)[1].strip()
+        der_bytes = base64.b64decode(key_b64)
+        return serialization.load_der_private_key(der_bytes, password=None)
+
+    # Handle escaped newlines from env vars (Railway, Docker, etc.)
+    if r"\n" in pem_or_hex:
+        pem_or_hex = pem_or_hex.replace(r"\n", "\n").strip()
+
+    if "-----BEGIN" in pem_or_hex:
         return serialization.load_pem_private_key(
             pem_or_hex.encode(), password=None
         )
 
-    # Assume raw hex (32 bytes = 64 hex chars)
-    raw_bytes = bytes.fromhex(pem_or_hex)
-    return ec.derive_private_key(
-        int.from_bytes(raw_bytes, "big"),
-        ec.SECP256R1(),
+    # Try raw hex (32 bytes = 64 hex chars)
+    try:
+        raw_bytes = bytes.fromhex(pem_or_hex)
+        return ec.derive_private_key(
+            int.from_bytes(raw_bytes, "big"),
+            ec.SECP256R1(),
+        )
+    except ValueError:
+        pass
+
+    # Try base64-encoded DER
+    try:
+        der_bytes = base64.b64decode(pem_or_hex)
+        return serialization.load_der_private_key(der_bytes, password=None)
+    except Exception:
+        pass
+
+    raise ValueError(
+        "PRIVY_SIGNING_KEY must be 'wallet-auth:<base64>', PEM, 64-char hex, or base64 DER. "
+        f"Got {len(pem_or_hex)} chars starting with: {pem_or_hex[:20]!r}"
     )
 
 
