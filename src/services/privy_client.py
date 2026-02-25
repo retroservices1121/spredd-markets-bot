@@ -114,6 +114,13 @@ class PrivyClient:
         self._app_secret = app_secret or settings.privy_app_secret
         self._signing_key: Optional[ec.EllipticCurvePrivateKey] = None
 
+        if not self._app_id or not self._app_secret:
+            logger.warning(
+                "Privy app credentials missing — PRIVY_APP_ID and PRIVY_APP_SECRET required",
+                has_app_id=bool(self._app_id),
+                has_app_secret=bool(self._app_secret),
+            )
+
         raw_key = signing_key_pem or settings.privy_signing_key
         if raw_key:
             self._signing_key = _load_p256_private_key(raw_key)
@@ -153,6 +160,8 @@ class PrivyClient:
         body: Optional[dict] = None,
     ) -> dict[str, Any]:
         """Make an authenticated request to Privy API."""
+        if not self._app_id or not self._app_secret:
+            raise RuntimeError("Privy not configured: PRIVY_APP_ID and PRIVY_APP_SECRET required")
         client = await self._get_client()
         url = f"{self.BASE_URL}{path}"
 
