@@ -7,6 +7,7 @@ via Privy's TEE-backed infrastructure. Spredd never touches raw private keys.
 Docs: https://docs.privy.io/basics/python/quickstart
 """
 
+import os
 from typing import Any, Optional
 
 from src.config import settings
@@ -58,9 +59,23 @@ class PrivyClient:
         app_secret: Optional[str] = None,
         signing_key_pem: Optional[str] = None,
     ):
-        self._app_id = app_id or settings.privy_app_id
-        self._app_secret = app_secret or settings.privy_app_secret
-        self._signing_key_raw = signing_key_pem or settings.privy_signing_key
+        # Read from args, then pydantic settings, then env vars directly
+        # (env var fallback handles cases where pydantic-settings fails to parse)
+        self._app_id = (
+            app_id
+            or settings.privy_app_id
+            or os.environ.get("PRIVY_APP_ID")
+        )
+        self._app_secret = (
+            app_secret
+            or settings.privy_app_secret
+            or os.environ.get("PRIVY_APP_SECRET")
+        )
+        self._signing_key_raw = (
+            signing_key_pem
+            or settings.privy_signing_key
+            or os.environ.get("PRIVY_SIGNING_KEY")
+        )
 
         if not self._app_id or not self._app_secret:
             logger.warning(
