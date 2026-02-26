@@ -736,48 +736,67 @@ async def get_all_markets(
 
         per_platform_limit = limit if len(platforms_to_fetch) == 1 else max(limit, 200)
 
-        for plat in platforms_to_fetch:
+        async def _fetch_single_platform(plat: str) -> list:
+            platform_instance = platform_registry.get(Platform(plat))
+            if not platform_instance:
+                return []
+
+            markets = await platform_instance.get_markets(limit=per_platform_limit, active_only=active)
+            plat_results = []
+            for m in markets:
+                image = m.image_url
+                if not image and plat == "polymarket" and m.raw_data:
+                    if "event" in m.raw_data:
+                        image = m.raw_data["event"].get("image")
+                    elif "image" in m.raw_data:
+                        image = m.raw_data["image"]
+
+                slug = m.event_id or m.market_id
+
+                plat_results.append({
+                    "id": m.market_id,
+                    "platform": plat,
+                    "question": m.title,
+                    "description": m.description,
+                    "image": image,
+                    "category": m.category or "OTHER",
+                    "outcomes": ["Yes", "No"],
+                    "outcomePrices": [
+                        str(float(m.yes_price)) if m.yes_price else "0.5",
+                        str(float(m.no_price)) if m.no_price else "0.5",
+                    ],
+                    "volume": float(m.volume_24h) if m.volume_24h else 0,
+                    "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
+                    "liquidity": float(m.liquidity) if m.liquidity else 0,
+                    "endDate": m.close_time,
+                    "slug": slug,
+                    "active": m.is_active,
+                    "event_id": m.event_id,
+                    "is_multi_outcome": m.is_multi_outcome,
+                    "outcome_name": m.outcome_name,
+                    "related_market_count": m.related_market_count,
+                })
+            return plat_results
+
+        if len(platforms_to_fetch) > 1:
+            # Parallel fetch with 3-second per-source timeout; return partial results
+            tasks = [
+                asyncio.wait_for(_fetch_single_platform(plat), timeout=3.0)
+                for plat in platforms_to_fetch
+            ]
+            gathered = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, result in enumerate(gathered):
+                if isinstance(result, asyncio.TimeoutError):
+                    print(f"Timeout fetching {platforms_to_fetch[i]} markets (3s)")
+                elif isinstance(result, Exception):
+                    print(f"Error fetching {platforms_to_fetch[i]} markets: {result}")
+                else:
+                    results.extend(result)
+        else:
             try:
-                platform_instance = platform_registry.get(Platform(plat))
-                if not platform_instance:
-                    continue
-
-                markets = await platform_instance.get_markets(limit=per_platform_limit, active_only=active)
-                for m in markets:
-                    image = m.image_url
-                    if not image and plat == "polymarket" and m.raw_data:
-                        if "event" in m.raw_data:
-                            image = m.raw_data["event"].get("image")
-                        elif "image" in m.raw_data:
-                            image = m.raw_data["image"]
-
-                    slug = m.event_id or m.market_id
-
-                    results.append({
-                        "id": m.market_id,
-                        "platform": plat,
-                        "question": m.title,
-                        "description": m.description,
-                        "image": image,
-                        "category": m.category or "OTHER",
-                        "outcomes": ["Yes", "No"],
-                        "outcomePrices": [
-                            str(float(m.yes_price)) if m.yes_price else "0.5",
-                            str(float(m.no_price)) if m.no_price else "0.5",
-                        ],
-                        "volume": float(m.volume_24h) if m.volume_24h else 0,
-                        "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
-                        "liquidity": float(m.liquidity) if m.liquidity else 0,
-                        "endDate": m.close_time,
-                        "slug": slug,
-                        "active": m.is_active,
-                        "event_id": m.event_id,
-                        "is_multi_outcome": m.is_multi_outcome,
-                        "outcome_name": m.outcome_name,
-                        "related_market_count": m.related_market_count,
-                    })
+                results = await _fetch_single_platform(platforms_to_fetch[0])
             except Exception as e:
-                print(f"Error fetching {plat} markets: {e}")
+                print(f"Error fetching {platforms_to_fetch[0]} markets: {e}")
 
         # Sort
         if platform and platform.lower() == "kalshi":
