@@ -15,7 +15,12 @@ import jwt
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.gzip import GZipMiddleware
+
+from .coalesce import coalesce
+from .rate_limit import limiter, rate_limit_handler, get_user_key
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -315,7 +320,9 @@ async def telegram_login(payload: dict, session: AsyncSession = Depends(get_sess
 # ===================
 
 @router.get("/markets/feed")
+@limiter.limit(settings.rate_limit_heavy)
 async def get_market_feed(
+    request: Request,
     cursor: Optional[int] = Query(default=None),
     limit: int = Query(default=20, le=50),
 ):
@@ -328,39 +335,62 @@ async def get_market_feed(
 
     all_markets: list[dict] = []
 
-    # Gather markets from trending cache (all platforms)
+    # Gather markets from trending cache — try Redis first, then in-memory
     cache_key = "all"
-    now = time.time()
-    cached = _trending_cache.get(cache_key)
-    if cached and (now - cached[0]) < _TRENDING_CACHE_TTL:
-        all_markets = list(cached[1])
-    else:
-        # Fall back to fetching fresh
-        for plat_name in ["polymarket", "kalshi", "limitless"]:
-            try:
-                plat_instance = platform_registry.get(Platform(plat_name))
-                if plat_instance:
-                    markets = await plat_instance.get_trending_markets(limit=50)
-                    for m in markets:
-                        image = m.image_url
-                        if not image and m.raw_data:
-                            if "event" in m.raw_data:
-                                image = m.raw_data["event"].get("image")
-                            elif "image" in m.raw_data:
-                                image = m.raw_data["image"]
-                        all_markets.append({
-                            "id": m.market_id,
-                            "platform": plat_name,
-                            "title": m.title,
-                            "image": image,
-                            "yes_price": float(m.yes_price) if m.yes_price else 0.5,
-                            "no_price": float(m.no_price) if m.no_price else 0.5,
-                            "volume": float(m.volume_24h) if m.volume_24h else 0,
-                            "category": getattr(m, "category", None),
-                            "end_date": getattr(m, "end_date", None),
-                        })
-            except Exception as e:
-                print(f"[Feed] Error fetching {plat_name}: {e}")
+    rc = _get_redis_cache()
+    if rc and rc.is_available:
+        redis_hit = await rc.get_api_trending(cache_key)
+        if redis_hit is not None:
+            all_markets = list(redis_hit)
+    if not all_markets:
+        now = time.time()
+        cached = _trending_cache.get(cache_key)
+        if cached and (now - cached[0]) < _TRENDING_CACHE_TTL:
+            all_markets = list(cached[1])
+    if not all_markets:
+        # Coalesce concurrent cache misses — only one coroutine fetches
+        async def _fetch_feed():
+            _all = []
+            for plat_name in ["polymarket", "kalshi", "limitless"]:
+                try:
+                    plat_instance = platform_registry.get(Platform(plat_name))
+                    if plat_instance:
+                        markets = await plat_instance.get_trending_markets(limit=50)
+                        for m in markets:
+                            image = m.image_url
+                            if not image and m.raw_data:
+                                if "event" in m.raw_data:
+                                    image = m.raw_data["event"].get("image")
+                                elif "image" in m.raw_data:
+                                    image = m.raw_data["image"]
+                            _all.append({
+                                "id": m.market_id,
+                                "platform": plat_name,
+                                "title": m.title,
+                                "image": image,
+                                "yes_price": float(m.yes_price) if m.yes_price else 0.5,
+                                "no_price": float(m.no_price) if m.no_price else 0.5,
+                                "volume": float(m.volume_24h) if m.volume_24h else 0,
+                                "category": getattr(m, "category", None),
+                                "end_date": getattr(m, "end_date", None),
+                            })
+                except Exception as e:
+                    print(f"[Feed] Error fetching {plat_name}: {e}")
+            return _all
+
+        async def _recheck_feed():
+            _rc = _get_redis_cache()
+            if _rc and _rc.is_available:
+                hit = await _rc.get_api_trending("all")
+                if hit is not None:
+                    return list(hit)
+            _now = time.time()
+            _cached = _trending_cache.get("all")
+            if _cached and (_now - _cached[0]) < _TRENDING_CACHE_TTL:
+                return list(_cached[1])
+            return None
+
+        all_markets = await coalesce("feed:all", _fetch_feed, _recheck_feed)
 
     # Filter to markets with images for the visual feed
     feed_markets = [m for m in all_markets if m.get("image")]
@@ -654,7 +684,9 @@ async def get_wallet_address(
 # ===================
 
 @router.get("/markets")
+@limiter.limit(settings.rate_limit_heavy)
 async def get_all_markets(
+    request: Request,
     platform: Optional[str] = Query(default="all", description="Platform filter: all, polymarket, kalshi, opinion, limitless, myriad"),
     limit: int = Query(default=100, le=1000),
     active: bool = Query(default=True),
@@ -662,91 +694,112 @@ async def get_all_markets(
     """Get markets from all platforms for the webapp."""
     from ..platforms import platform_registry
 
-    # Check cache
+    # Check Redis cache first, then in-memory fallback
     plat_key = (platform or "all").lower()
     cache_key = (plat_key, active)
+    rc = _get_redis_cache()
+    if rc and rc.is_available:
+        redis_hit = await rc.get_api_markets(plat_key, active)
+        if redis_hit is not None:
+            return redis_hit[:limit]
     now = time.time()
     cached = _markets_cache.get(cache_key)
     if cached and (now - cached[0]) < _MARKETS_CACHE_TTL:
         return cached[1][:limit]
 
-    results = []
+    # Coalesce concurrent cache misses for the same platform/active combo
+    coalesce_key = f"markets:{plat_key}:{active}"
 
-    # Determine which platforms to fetch
-    if platform and platform.lower() != "all":
-        platforms_to_fetch = [platform.lower()]
-    else:
-        platforms_to_fetch = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
+    async def _fetch_markets():
+        results = []
+        if platform and platform.lower() != "all":
+            platforms_to_fetch = [platform.lower()]
+        else:
+            platforms_to_fetch = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
 
-    # Fetch more per platform when aggregating, so each contributes fairly
-    per_platform_limit = limit if len(platforms_to_fetch) == 1 else max(limit, 200)
+        per_platform_limit = limit if len(platforms_to_fetch) == 1 else max(limit, 200)
 
-    for plat in platforms_to_fetch:
-        try:
-            platform_instance = platform_registry.get(Platform(plat))
-            if not platform_instance:
-                continue
+        for plat in platforms_to_fetch:
+            try:
+                platform_instance = platform_registry.get(Platform(plat))
+                if not platform_instance:
+                    continue
 
-            markets = await platform_instance.get_markets(limit=per_platform_limit, active_only=active)
-            for m in markets:
-                # Each platform provides its own image_url; Polymarket
-                # stores images in raw_data so only check that for poly.
-                image = m.image_url
-                if not image and plat == "polymarket" and m.raw_data:
-                    if "event" in m.raw_data:
-                        image = m.raw_data["event"].get("image")
-                    elif "image" in m.raw_data:
-                        image = m.raw_data["image"]
+                markets = await platform_instance.get_markets(limit=per_platform_limit, active_only=active)
+                for m in markets:
+                    image = m.image_url
+                    if not image and plat == "polymarket" and m.raw_data:
+                        if "event" in m.raw_data:
+                            image = m.raw_data["event"].get("image")
+                        elif "image" in m.raw_data:
+                            image = m.raw_data["image"]
 
-                # Build slug from market_id or event_id
-                slug = m.event_id or m.market_id
+                    slug = m.event_id or m.market_id
 
-                results.append({
-                    "id": m.market_id,
-                    "platform": plat,
-                    "question": m.title,
-                    "description": m.description,
-                    "image": image,
-                    "category": m.category or "OTHER",
-                    "outcomes": ["Yes", "No"],
-                    "outcomePrices": [
-                        str(float(m.yes_price)) if m.yes_price else "0.5",
-                        str(float(m.no_price)) if m.no_price else "0.5",
-                    ],
-                    "volume": float(m.volume_24h) if m.volume_24h else 0,
-                    "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
-                    "liquidity": float(m.liquidity) if m.liquidity else 0,
-                    "endDate": m.close_time,
-                    "slug": slug,
-                    "active": m.is_active,
-                    # Multi-outcome grouping
-                    "event_id": m.event_id,
-                    "is_multi_outcome": m.is_multi_outcome,
-                    "outcome_name": m.outcome_name,
-                    "related_market_count": m.related_market_count,
-                })
-        except Exception as e:
-            print(f"Error fetching {plat} markets: {e}")
+                    results.append({
+                        "id": m.market_id,
+                        "platform": plat,
+                        "question": m.title,
+                        "description": m.description,
+                        "image": image,
+                        "category": m.category or "OTHER",
+                        "outcomes": ["Yes", "No"],
+                        "outcomePrices": [
+                            str(float(m.yes_price)) if m.yes_price else "0.5",
+                            str(float(m.no_price)) if m.no_price else "0.5",
+                        ],
+                        "volume": float(m.volume_24h) if m.volume_24h else 0,
+                        "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
+                        "liquidity": float(m.liquidity) if m.liquidity else 0,
+                        "endDate": m.close_time,
+                        "slug": slug,
+                        "active": m.is_active,
+                        "event_id": m.event_id,
+                        "is_multi_outcome": m.is_multi_outcome,
+                        "outcome_name": m.outcome_name,
+                        "related_market_count": m.related_market_count,
+                    })
+            except Exception as e:
+                print(f"Error fetching {plat} markets: {e}")
 
-    # Sort: boost Kalshi rapid markets to the top so they survive limit truncation,
-    # then sort the rest by volume.
-    if platform and platform.lower() == "kalshi":
-        rapid = [r for r in results if _is_rapid_market(r["id"])]
-        regular = [r for r in results if not _is_rapid_market(r["id"])]
-        rapid.sort(key=lambda x: x.get("endDate") or "9999", reverse=False)
-        regular.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
-        results = rapid + regular
-    else:
-        results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
+        # Sort
+        if platform and platform.lower() == "kalshi":
+            rapid = [r for r in results if _is_rapid_market(r["id"])]
+            regular = [r for r in results if not _is_rapid_market(r["id"])]
+            rapid.sort(key=lambda x: x.get("endDate") or "9999", reverse=False)
+            regular.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
+            results = rapid + regular
+        else:
+            results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
 
-    # Update cache
-    _markets_cache[cache_key] = (now, results)
-    _evict_cache(_markets_cache, _MARKETS_CACHE_TTL)
+        # Update cache
+        _now = time.time()
+        _markets_cache[cache_key] = (_now, results)
+        _evict_cache(_markets_cache, _MARKETS_CACHE_TTL)
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            await _rc.set_api_markets(plat_key, active, results)
 
+        return results
+
+    async def _recheck_markets():
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            hit = await _rc.get_api_markets(plat_key, active)
+            if hit is not None:
+                return hit
+        _now = time.time()
+        _cached = _markets_cache.get(cache_key)
+        if _cached and (_now - _cached[0]) < _MARKETS_CACHE_TTL:
+            return _cached[1]
+        return None
+
+    results = await coalesce(coalesce_key, _fetch_markets, _recheck_markets)
     return results[:limit]
 
 
-# API response caches: key -> (timestamp, results)
+# API response caches: in-memory fallback when Redis is unavailable
+# key -> (timestamp, results)
 _search_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
 _markets_cache: dict[tuple[str, bool], tuple[float, list[dict]]] = {}
 _trending_cache: dict[str, tuple[float, list[dict]]] = {}
@@ -754,13 +807,27 @@ _SEARCH_CACHE_TTL = 120  # 2 minutes
 _MARKETS_CACHE_TTL = 120  # 2 minutes
 _TRENDING_CACHE_TTL = 120  # 2 minutes
 
+# Redis cache import (lazy — module may not be loaded yet during import)
+_redis_cache = None
 
-def _evict_cache(cache: dict, ttl: float) -> None:
+def _get_redis_cache():
+    """Get Redis cache singleton (lazy import)."""
+    global _redis_cache
+    if _redis_cache is None:
+        try:
+            from src.services.cache import cache
+            _redis_cache = cache
+        except Exception:
+            pass
+    return _redis_cache
+
+
+def _evict_cache(cache_dict: dict, ttl: float) -> None:
     """Remove stale entries from a cache dict."""
     now = time.time()
-    stale = [k for k, v in cache.items() if (now - v[0]) > ttl * 5]
+    stale = [k for k, v in cache_dict.items() if (now - v[0]) > ttl * 5]
     for k in stale:
-        del cache[k]
+        del cache_dict[k]
 
 
 # ---------------------------------------------------------------------------
@@ -849,6 +916,10 @@ async def _warm_markets_cache() -> None:
 
             now = time.time()
             _markets_cache[(plat, True)] = (now, results)
+            # Also write to Redis
+            rc = _get_redis_cache()
+            if rc and rc.is_available:
+                await rc.set_api_markets(plat, True, results)
         except Exception as e:
             print(f"[CacheWarmer] Error warming {plat}: {e}")
 
@@ -860,6 +931,9 @@ async def _warm_markets_cache() -> None:
             all_results.extend(cached[1])
     all_results.sort(key=lambda x: x.get("volume24hr", 0), reverse=True)
     _markets_cache[("all", True)] = (time.time(), all_results)
+    rc = _get_redis_cache()
+    if rc and rc.is_available:
+        await rc.set_api_markets("all", True, all_results)
 
 
 async def _warm_trending_cache() -> None:
@@ -894,6 +968,15 @@ async def _warm_trending_cache() -> None:
         plat_results = [r for r in results if r["platform"] == plat]
         if plat_results:
             _trending_cache[plat] = (now, plat_results)
+
+    # Write to Redis
+    rc = _get_redis_cache()
+    if rc and rc.is_available:
+        await rc.set_api_trending("all", results)
+        for plat in _ALL_PLATFORMS:
+            plat_results = [r for r in results if r["platform"] == plat]
+            if plat_results:
+                await rc.set_api_trending(plat, plat_results)
 
 
 async def _cache_warmer_loop() -> None:
@@ -934,7 +1017,8 @@ def stop_cache_warmer() -> None:
 
 
 @router.get("/markets/kalshi/event/{event_id}")
-async def get_kalshi_event(event_id: str):
+@limiter.limit(settings.rate_limit_heavy)
+async def get_kalshi_event(request: Request, event_id: str):
     """Get Kalshi event with nested markets and image."""
     from ..platforms import platform_registry
 
@@ -942,14 +1026,37 @@ async def get_kalshi_event(event_id: str):
     if not kalshi:
         raise HTTPException(status_code=503, detail="Kalshi platform not available")
 
-    data = await kalshi.get_event(event_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="Event not found")
-    return data
+    # Check Redis cache
+    rc = _get_redis_cache()
+    cache_key = f"spredd:api:kalshi:event:{event_id}"
+    if rc and rc.is_available:
+        cached = await rc.get_json(cache_key)
+        if cached is not None:
+            return cached
+
+    async def _fetch():
+        data = await kalshi.get_event(event_id)
+        if not data:
+            raise HTTPException(status_code=404, detail="Event not found")
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            from src.config import settings as _s
+            await _rc.set_json(cache_key, data, _s.cache_ttl_market_detail)
+        return data
+
+    async def _recheck():
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            return await _rc.get_json(cache_key)
+        return None
+
+    return await coalesce(f"kalshi_event:{event_id}", _fetch, _recheck)
 
 
 @router.get("/markets/kalshi/{market_id}/candlesticks")
+@limiter.limit(settings.rate_limit_heavy)
 async def get_kalshi_candlesticks(
+    request: Request,
     market_id: str,
     start_ts: int = Query(..., description="Start timestamp (unix seconds)"),
     end_ts: int = Query(..., description="End timestamp (unix seconds)"),
@@ -962,12 +1069,35 @@ async def get_kalshi_candlesticks(
     if not kalshi:
         raise HTTPException(status_code=503, detail="Kalshi platform not available")
 
-    data = await kalshi.get_market_candlesticks(market_id, start_ts, end_ts, interval)
-    return data
+    # Check Redis cache (candlestick data is semi-static for completed intervals)
+    rc = _get_redis_cache()
+    cache_key = f"spredd:api:kalshi:candles:{market_id}:{start_ts}:{end_ts}:{interval}"
+    if rc and rc.is_available:
+        cached = await rc.get_json(cache_key)
+        if cached is not None:
+            return cached
+
+    async def _fetch():
+        data = await kalshi.get_market_candlesticks(market_id, start_ts, end_ts, interval)
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            from src.config import settings as _s
+            await _rc.set_json(cache_key, data, _s.cache_ttl_markets)
+        return data
+
+    async def _recheck():
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            return await _rc.get_json(cache_key)
+        return None
+
+    return await coalesce(f"kalshi_candles:{market_id}:{start_ts}:{end_ts}:{interval}", _fetch, _recheck)
 
 
 @router.get("/markets/kalshi/{market_id}/trades")
+@limiter.limit(settings.rate_limit_heavy)
 async def get_kalshi_trades(
+    request: Request,
     market_id: str,
     limit: int = Query(default=100, le=1000),
 ):
@@ -978,12 +1108,36 @@ async def get_kalshi_trades(
     if not kalshi:
         raise HTTPException(status_code=503, detail="Kalshi platform not available")
 
-    trades = await kalshi.get_trades(market_id=market_id, limit=limit)
-    return {"trades": trades}
+    # Check Redis cache
+    rc = _get_redis_cache()
+    cache_key = f"spredd:api:kalshi:trades:{market_id}:{limit}"
+    if rc and rc.is_available:
+        cached = await rc.get_json(cache_key)
+        if cached is not None:
+            return cached
+
+    async def _fetch():
+        trades = await kalshi.get_trades(market_id=market_id, limit=limit)
+        result = {"trades": trades}
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            from src.config import settings as _s
+            await _rc.set_json(cache_key, result, _s.cache_ttl_market_detail)
+        return result
+
+    async def _recheck():
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            return await _rc.get_json(cache_key)
+        return None
+
+    return await coalesce(f"kalshi_trades:{market_id}:{limit}", _fetch, _recheck)
 
 
 @router.get("/markets/search")
+@limiter.limit(settings.rate_limit_heavy)
 async def search_markets(
+    request: Request,
     q: str = Query(..., min_length=1),
     platform: Optional[str] = None,
     limit: int = Query(default=20, le=100),
@@ -991,110 +1145,42 @@ async def search_markets(
     """Search markets across platforms."""
     from ..platforms import platform_registry
 
-    # Check cache
-    cache_key = (q.lower().strip(), (platform or "all").lower())
+    # Check Redis cache first, then in-memory fallback
+    plat_str = (platform or "all").lower()
+    cache_key = (q.lower().strip(), plat_str)
+    rc = _get_redis_cache()
+    if rc and rc.is_available:
+        redis_hit = await rc.get_api_search(q, plat_str)
+        if redis_hit is not None:
+            return {"markets": redis_hit[:limit]}
     now = time.time()
     cached = _search_cache.get(cache_key)
     if cached and (now - cached[0]) < _SEARCH_CACHE_TTL:
         return {"markets": cached[1][:limit]}
 
-    results = []
+    q_hash = hashlib.md5(q.lower().strip().encode()).hexdigest()[:8]
 
-    # Determine which platforms to search
-    platforms_to_search = []
-    if platform:
-        platforms_to_search = [platform.lower()]
-    else:
-        platforms_to_search = ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
+    async def _fetch_search():
+        results = []
+        platforms_to_search = [platform.lower()] if platform else ["kalshi", "polymarket", "opinion", "limitless", "myriad"]
+        per_platform_limit = limit if len(platforms_to_search) == 1 else max(limit, 50)
 
-    # Fetch more per platform when searching across all, then trim combined results
-    per_platform_limit = limit if len(platforms_to_search) == 1 else max(limit, 50)
+        for plat in platforms_to_search:
+            try:
+                platform_instance = platform_registry.get(Platform(plat))
+                if not platform_instance:
+                    continue
 
-    for plat in platforms_to_search:
-        try:
-            platform_instance = platform_registry.get(Platform(plat))
-            if not platform_instance:
-                continue
-
-            markets = await platform_instance.search_markets(q, limit=per_platform_limit)
-            for m in markets:
-                image = m.image_url
-                if not image and plat == "polymarket" and m.raw_data:
-                    if "event" in m.raw_data:
-                        image = m.raw_data["event"].get("image")
-                    elif "image" in m.raw_data:
-                        image = m.raw_data["image"]
-                results.append({
-                    "platform": plat,
-                    "id": m.market_id,
-                    "title": m.title,
-                    "image": image,
-                    "yes_price": float(m.yes_price) if m.yes_price else None,
-                    "no_price": float(m.no_price) if m.no_price else None,
-                    "volume": str(m.volume_24h) if m.volume_24h else None,
-                    "is_active": m.is_active,
-                    "event_id": m.event_id,
-                })
-        except Exception as e:
-            print(f"Error searching {plat}: {e}")
-
-    # Update cache (store full results, slice on return)
-    _search_cache[cache_key] = (now, results)
-    _evict_cache(_search_cache, _SEARCH_CACHE_TTL)
-
-    return {"markets": results[:limit]}
-
-
-@router.get("/markets/trending")
-async def get_trending_markets(
-    platform: Optional[str] = None,
-    limit: int = Query(default=10, le=50),
-):
-    """Get trending markets."""
-    from ..platforms import platform_registry
-
-    # Check cache
-    cache_key = (platform or "all").lower()
-    now = time.time()
-    cached = _trending_cache.get(cache_key)
-    if cached and (now - cached[0]) < _TRENDING_CACHE_TTL:
-        return {"markets": cached[1][:limit]}
-
-    results = []
-
-    if not platform or platform.lower() == "kalshi":
-        try:
-            kalshi = platform_registry.get(Platform.KALSHI)
-            if kalshi:
-                markets = await kalshi.get_trending_markets(limit=limit)
-                for m in markets:
-                    results.append({
-                        "platform": "kalshi",
-                        "id": m.market_id,
-                        "title": m.title,
-                        "image": m.image_url,
-                        "yes_price": float(m.yes_price) if m.yes_price else None,
-                        "no_price": float(m.no_price) if m.no_price else None,
-                        "volume": str(m.volume_24h) if m.volume_24h else None,
-                        "is_active": m.is_active,
-                    })
-        except Exception as e:
-            print(f"Error getting Kalshi trending: {e}")
-
-    if not platform or platform.lower() == "polymarket":
-        try:
-            poly = platform_registry.get(Platform.POLYMARKET)
-            if poly:
-                markets = await poly.get_trending_markets(limit=limit)
+                markets = await platform_instance.search_markets(q, limit=per_platform_limit)
                 for m in markets:
                     image = m.image_url
-                    if not image and m.raw_data:
+                    if not image and plat == "polymarket" and m.raw_data:
                         if "event" in m.raw_data:
                             image = m.raw_data["event"].get("image")
                         elif "image" in m.raw_data:
                             image = m.raw_data["image"]
                     results.append({
-                        "platform": "polymarket",
+                        "platform": plat,
                         "id": m.market_id,
                         "title": m.title,
                         "image": image,
@@ -1102,19 +1188,68 @@ async def get_trending_markets(
                         "no_price": float(m.no_price) if m.no_price else None,
                         "volume": str(m.volume_24h) if m.volume_24h else None,
                         "is_active": m.is_active,
+                        "event_id": m.event_id,
                     })
-        except Exception as e:
-            print(f"Error getting Polymarket trending: {e}")
+            except Exception as e:
+                print(f"Error searching {plat}: {e}")
 
-    for plat_name in ["opinion", "limitless", "myriad"]:
-        if not platform or platform.lower() == plat_name:
+        _now = time.time()
+        _search_cache[cache_key] = (_now, results)
+        _evict_cache(_search_cache, _SEARCH_CACHE_TTL)
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            await _rc.set_api_search(q, plat_str, results)
+        return results
+
+    async def _recheck_search():
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            hit = await _rc.get_api_search(q, plat_str)
+            if hit is not None:
+                return hit
+        _now = time.time()
+        _cached = _search_cache.get(cache_key)
+        if _cached and (_now - _cached[0]) < _SEARCH_CACHE_TTL:
+            return _cached[1]
+        return None
+
+    results = await coalesce(f"search:{q_hash}:{plat_str}", _fetch_search, _recheck_search)
+    return {"markets": results[:limit]}
+
+
+@router.get("/markets/trending")
+@limiter.limit(settings.rate_limit_heavy)
+async def get_trending_markets(
+    request: Request,
+    platform: Optional[str] = None,
+    limit: int = Query(default=10, le=50),
+):
+    """Get trending markets."""
+    from ..platforms import platform_registry
+
+    # Check Redis cache first, then in-memory fallback
+    plat_key = (platform or "all").lower()
+    rc = _get_redis_cache()
+    if rc and rc.is_available:
+        redis_hit = await rc.get_api_trending(plat_key)
+        if redis_hit is not None:
+            return {"markets": redis_hit[:limit]}
+    now = time.time()
+    cached = _trending_cache.get(plat_key)
+    if cached and (now - cached[0]) < _TRENDING_CACHE_TTL:
+        return {"markets": cached[1][:limit]}
+
+    async def _fetch_trending():
+        results = []
+
+        if not platform or platform.lower() == "kalshi":
             try:
-                plat_instance = platform_registry.get(Platform(plat_name))
-                if plat_instance and hasattr(plat_instance, 'get_trending_markets'):
-                    markets = await plat_instance.get_trending_markets(limit=limit)
+                kalshi = platform_registry.get(Platform.KALSHI)
+                if kalshi:
+                    markets = await kalshi.get_trending_markets(limit=limit)
                     for m in markets:
                         results.append({
-                            "platform": plat_name,
+                            "platform": "kalshi",
                             "id": m.market_id,
                             "title": m.title,
                             "image": m.image_url,
@@ -1124,30 +1259,92 @@ async def get_trending_markets(
                             "is_active": m.is_active,
                         })
             except Exception as e:
-                print(f"Error getting {plat_name} trending: {e}")
+                print(f"Error getting Kalshi trending: {e}")
 
-    # Update cache
-    _trending_cache[cache_key] = (now, results)
-    _evict_cache(_trending_cache, _TRENDING_CACHE_TTL)
+        if not platform or platform.lower() == "polymarket":
+            try:
+                poly = platform_registry.get(Platform.POLYMARKET)
+                if poly:
+                    markets = await poly.get_trending_markets(limit=limit)
+                    for m in markets:
+                        image = m.image_url
+                        if not image and m.raw_data:
+                            if "event" in m.raw_data:
+                                image = m.raw_data["event"].get("image")
+                            elif "image" in m.raw_data:
+                                image = m.raw_data["image"]
+                        results.append({
+                            "platform": "polymarket",
+                            "id": m.market_id,
+                            "title": m.title,
+                            "image": image,
+                            "yes_price": float(m.yes_price) if m.yes_price else None,
+                            "no_price": float(m.no_price) if m.no_price else None,
+                            "volume": str(m.volume_24h) if m.volume_24h else None,
+                            "is_active": m.is_active,
+                        })
+            except Exception as e:
+                print(f"Error getting Polymarket trending: {e}")
 
+        for plat_name in ["opinion", "limitless", "myriad"]:
+            if not platform or platform.lower() == plat_name:
+                try:
+                    plat_instance = platform_registry.get(Platform(plat_name))
+                    if plat_instance and hasattr(plat_instance, 'get_trending_markets'):
+                        markets = await plat_instance.get_trending_markets(limit=limit)
+                        for m in markets:
+                            results.append({
+                                "platform": plat_name,
+                                "id": m.market_id,
+                                "title": m.title,
+                                "image": m.image_url,
+                                "yes_price": float(m.yes_price) if m.yes_price else None,
+                                "no_price": float(m.no_price) if m.no_price else None,
+                                "volume": str(m.volume_24h) if m.volume_24h else None,
+                                "is_active": m.is_active,
+                            })
+                except Exception as e:
+                    print(f"Error getting {plat_name} trending: {e}")
+
+        _now = time.time()
+        _trending_cache[plat_key] = (_now, results)
+        _evict_cache(_trending_cache, _TRENDING_CACHE_TTL)
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            await _rc.set_api_trending(plat_key, results)
+        return results
+
+    async def _recheck_trending():
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            hit = await _rc.get_api_trending(plat_key)
+            if hit is not None:
+                return hit
+        _now = time.time()
+        _cached = _trending_cache.get(plat_key)
+        if _cached and (_now - _cached[0]) < _TRENDING_CACHE_TTL:
+            return _cached[1]
+        return None
+
+    results = await coalesce(f"trending:{plat_key}", _fetch_trending, _recheck_trending)
     return {"markets": results[:limit]}
 
 
 @router.get("/markets/categories")
-async def get_market_categories():
+@limiter.limit(settings.rate_limit_heavy)
+async def get_market_categories(request: Request):
     """Get available market categories for Polymarket."""
     from ..platforms import platform_registry
 
-    try:
-        poly = platform_registry.get(Platform.POLYMARKET)
-        if poly and hasattr(poly, 'get_available_categories'):
-            categories = poly.get_available_categories()
-            return {"categories": categories}
-    except Exception as e:
-        print(f"Error getting categories: {e}")
+    # Check Redis cache (categories are fairly static)
+    rc = _get_redis_cache()
+    cache_key = "spredd:api:categories"
+    if rc and rc.is_available:
+        cached = await rc.get_json(cache_key)
+        if cached is not None:
+            return cached
 
-    # Default categories if platform not available
-    return {
+    _default_categories = {
         "categories": [
             {"id": "sports", "label": "Sports", "emoji": "🏆"},
             {"id": "politics", "label": "Politics", "emoji": "🏛️"},
@@ -1158,16 +1355,48 @@ async def get_market_categories():
         ]
     }
 
+    async def _fetch_categories():
+        try:
+            poly = platform_registry.get(Platform.POLYMARKET)
+            if poly and hasattr(poly, 'get_available_categories'):
+                categories = poly.get_available_categories()
+                result = {"categories": categories}
+                _rc = _get_redis_cache()
+                if _rc and _rc.is_available:
+                    await _rc.set_json(cache_key, result, 300)
+                return result
+        except Exception as e:
+            print(f"Error getting categories: {e}")
+        return _default_categories
+
+    async def _recheck_categories():
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            return await _rc.get_json(cache_key)
+        return None
+
+    return await coalesce("categories", _fetch_categories, _recheck_categories)
+
 
 @router.get("/markets/category/{category}")
+@limiter.limit(settings.rate_limit_heavy)
 async def get_markets_by_category(
+    request: Request,
     category: str,
     limit: int = Query(default=20, le=100),
 ):
     """Get markets by category (Polymarket only)."""
     from ..platforms import platform_registry
 
-    try:
+    # Check Redis cache
+    rc = _get_redis_cache()
+    cache_key = f"spredd:api:category:{category}:{limit}"
+    if rc and rc.is_available:
+        cached = await rc.get_json(cache_key)
+        if cached is not None:
+            return cached
+
+    async def _fetch_category():
         poly = platform_registry.get(Platform.POLYMARKET)
         if not poly:
             raise HTTPException(status_code=400, detail="Polymarket not available")
@@ -1185,8 +1414,21 @@ async def get_markets_by_category(
                 "volume": str(m.volume_24h) if m.volume_24h else None,
                 "is_active": m.is_active,
             })
-        return {"markets": results}
+        result = {"markets": results}
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            from src.config import settings as _s
+            await _rc.set_json(cache_key, result, _s.cache_ttl_markets)
+        return result
 
+    async def _recheck_category():
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            return await _rc.get_json(cache_key)
+        return None
+
+    try:
+        return await coalesce(f"category:{category}:{limit}", _fetch_category, _recheck_category)
     except HTTPException:
         raise
     except Exception as e:
@@ -1195,20 +1437,43 @@ async def get_markets_by_category(
 
 @router.get("/markets/{platform}/{market_id}")
 async def get_market_details(
+    request: Request,
     platform: str,
     market_id: str,
 ):
     """Get detailed market information."""
     from ..platforms import platform_registry
 
-    try:
-        platform_instance = platform_registry.get(Platform(platform.lower()))
+    # Check Redis cache
+    rc = _get_redis_cache()
+    plat_lower = platform.lower()
+    cache_key = f"spredd:api:market:{plat_lower}:{market_id}"
+    if rc and rc.is_available:
+        cached = await rc.get_json(cache_key)
+        if cached is not None:
+            return cached
+
+    async def _fetch_detail():
+        platform_instance = platform_registry.get(Platform(plat_lower))
         if not platform_instance:
             raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
 
         market = await platform_instance.get_market(market_id)
-        return {"market": market}
+        result = {"market": market}
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            from src.config import settings as _s
+            await _rc.set_json(cache_key, result, _s.cache_ttl_market_detail)
+        return result
 
+    async def _recheck_detail():
+        _rc = _get_redis_cache()
+        if _rc and _rc.is_available:
+            return await _rc.get_json(cache_key)
+        return None
+
+    try:
+        return await coalesce(f"detail:{plat_lower}:{market_id}", _fetch_detail, _recheck_detail)
     except HTTPException:
         raise
     except Exception as e:
@@ -1220,8 +1485,10 @@ async def get_market_details(
 # ===================
 
 @router.post("/trading/quote", response_model=QuoteResponse)
+@limiter.limit(settings.rate_limit_trading, key_func=get_user_key)
 async def get_quote(
-    request: QuoteRequest,
+    request: Request,
+    body: QuoteRequest = ...,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
@@ -1229,7 +1496,7 @@ async def get_quote(
     from ..platforms import platform_registry
 
     try:
-        platform = request.platform.lower()
+        platform = body.platform.lower()
 
         try:
             plat = platform_registry.get(Platform(platform))
@@ -1240,27 +1507,27 @@ async def get_quote(
             raise HTTPException(status_code=400, detail=f"Platform not initialized: {platform}")
 
         # Convert amount to Decimal for platform methods
-        amount_decimal = Decimal(str(request.amount))
+        amount_decimal = Decimal(str(body.amount))
 
         # Convert outcome string to Outcome enum
         try:
-            outcome_enum = Outcome(request.outcome.lower())
+            outcome_enum = Outcome(body.outcome.lower())
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid outcome: {request.outcome}")
+            raise HTTPException(status_code=400, detail=f"Invalid outcome: {body.outcome}")
 
         quote = await plat.get_quote(
-            market_id=request.market_id,
+            market_id=body.market_id,
             outcome=outcome_enum,
-            side=request.side,
+            side=body.side,
             amount=amount_decimal,
         )
 
         # Quote is a dataclass, access attributes directly
         return QuoteResponse(
             platform=platform,
-            market_id=request.market_id,
-            outcome=request.outcome,
-            side=request.side,
+            market_id=body.market_id,
+            outcome=body.outcome,
+            side=body.side,
             input_amount=str(quote.input_amount),
             expected_output=str(quote.expected_output),
             price=float(quote.price_per_token),
@@ -1281,8 +1548,10 @@ async def get_quote(
 
 
 @router.post("/trading/execute", response_model=OrderResponse)
+@limiter.limit(settings.rate_limit_trading, key_func=get_user_key)
 async def execute_order(
-    request: OrderRequest,
+    request: Request,
+    body: OrderRequest = ...,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
@@ -1291,7 +1560,7 @@ async def execute_order(
     from ..utils.encryption import decrypt
 
     try:
-        platform = request.platform.lower()
+        platform = body.platform.lower()
 
         # Get platform and determine chain family
         try:
@@ -1331,13 +1600,13 @@ async def execute_order(
         )
 
         # Convert amount to Decimal for platform methods
-        amount_decimal = Decimal(str(request.amount))
+        amount_decimal = Decimal(str(body.amount))
 
         # Convert outcome string to Outcome enum
         try:
-            outcome_enum = Outcome(request.outcome.lower())
+            outcome_enum = Outcome(body.outcome.lower())
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid outcome: {request.outcome}")
+            raise HTTPException(status_code=400, detail=f"Invalid outcome: {body.outcome}")
 
         # Convert private key to appropriate type based on platform
         # decrypt() returns raw bytes
@@ -1352,9 +1621,9 @@ async def execute_order(
 
         # First get a quote
         quote = await plat.get_quote(
-            market_id=request.market_id,
+            market_id=body.market_id,
             outcome=outcome_enum,
-            side=request.side,
+            side=body.side,
             amount=amount_decimal,
         )
 
@@ -1381,12 +1650,12 @@ async def execute_order(
             user_id=user.id,
             platform=platform_enum,
             chain=chain_enum,
-            market_id=request.market_id,
-            outcome=request.outcome,
-            side=request.side,
+            market_id=body.market_id,
+            outcome=body.outcome,
+            side=body.side,
             input_token="USDC",
-            input_amount=request.amount,
-            output_token=f"{request.outcome.upper()} shares",
+            input_amount=body.amount,
+            output_token=f"{body.outcome.upper()} shares",
             expected_output=str(quote.expected_output),
             actual_output=str(tx_result.output_amount) if tx_result.output_amount else None,
             status="confirmed" if tx_result.success else "failed",
@@ -1398,10 +1667,10 @@ async def execute_order(
         if tx_result.success:
             # Get market title
             try:
-                market = await plat.get_market(request.market_id)
-                market_title = market.title if market else f"Market {request.market_id[:16]}..."
+                market = await plat.get_market(body.market_id)
+                market_title = market.title if market else f"Market {body.market_id[:16]}..."
             except Exception:
-                market_title = f"Market {request.market_id[:16]}..."
+                market_title = f"Market {body.market_id[:16]}..."
 
             # Get token_id from quote_data
             token_id = quote.quote_data.get("token_id", "") if quote.quote_data else ""
@@ -1410,13 +1679,13 @@ async def execute_order(
             output_amount = str(tx_result.output_amount) if tx_result.output_amount else str(quote.expected_output)
             entry_price = float(quote.price_per_token)
 
-            if request.side == "buy":
+            if body.side == "buy":
                 # Check for existing open position to update
                 existing_position = await session.execute(
                     select(Position).where(
                         Position.user_id == user.id,
                         Position.platform == platform_enum,
-                        Position.market_id == request.market_id,
+                        Position.market_id == body.market_id,
                         Position.outcome == outcome_enum,
                         Position.status == PositionStatus.OPEN,
                     )
@@ -1444,7 +1713,7 @@ async def execute_order(
                         user_id=user.id,
                         platform=platform_enum,
                         chain=chain_enum,
-                        market_id=request.market_id,
+                        market_id=body.market_id,
                         market_title=market_title,
                         outcome=outcome_enum,
                         token_id=token_id,
@@ -1460,7 +1729,7 @@ async def execute_order(
                     select(Position).where(
                         Position.user_id == user.id,
                         Position.platform == platform_enum,
-                        Position.market_id == request.market_id,
+                        Position.market_id == body.market_id,
                         Position.outcome == outcome_enum,
                         Position.status == PositionStatus.OPEN,
                     )
@@ -1469,7 +1738,7 @@ async def execute_order(
 
                 if existing:
                     # Reduce position or close it
-                    sell_amount = Decimal(str(request.amount)) / Decimal(str(entry_price)) if entry_price > 0 else Decimal("0")
+                    sell_amount = Decimal(str(body.amount)) / Decimal(str(entry_price)) if entry_price > 0 else Decimal("0")
                     remaining = Decimal(existing.token_amount) - sell_amount
 
                     if remaining <= 0:
@@ -2397,15 +2666,23 @@ async def verify_geo_location(
 def create_api_app() -> FastAPI:
     """Create the FastAPI application for the Mini App."""
     import os
+    import traceback
     from pathlib import Path
     from fastapi.staticfiles import StaticFiles
     from fastapi.responses import FileResponse
+    from slowapi.errors import RateLimitExceeded
+    from ..utils.logging import get_logger
+
+    _log = get_logger("api")
 
     app = FastAPI(
         title="Spredd Mini App API",
         description="REST API for Spredd Telegram Mini App",
         version="1.0.0",
     )
+
+    # GZip compression — compresses responses >1KB (cuts bandwidth 5-10x for market lists)
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     # Configure CORS for Mini App
     app.add_middleware(
@@ -2415,6 +2692,33 @@ def create_api_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Rate limiter — middleware applies global default; decorators override per-route
+    from slowapi.middleware import SlowAPIMiddleware
+    app.state.limiter = limiter
+    app.add_middleware(SlowAPIMiddleware)
+    app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+
+    # Global exception handler — catches unhandled errors, returns clean JSON
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        if isinstance(exc, HTTPException):
+            raise exc
+        _log.error(
+            "unhandled_exception",
+            path=str(request.url.path),
+            method=request.method,
+            error_type=type(exc).__name__,
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "internal_server_error",
+                "detail": "An unexpected error occurred. Please try again.",
+            },
+        )
 
     # Include API router
     app.include_router(router)
@@ -2458,10 +2762,20 @@ def create_api_app() -> FastAPI:
         await price_poller.stop()
         print("[API] Real-time services stopped")
 
-    # Health check
+    # Health check (exempt from rate limiting)
     @app.get("/health")
+    @limiter.exempt
     async def health_check():
         return {"status": "healthy", "service": "spredd-miniapp-api"}
+
+    @app.get("/health/cache")
+    @limiter.exempt
+    async def cache_health_check():
+        """Check Redis cache health."""
+        rc = _get_redis_cache()
+        if not rc:
+            return {"status": "unavailable", "reason": "cache module not loaded"}
+        return await rc.health_check()
 
     # =========================================
     # Direct routes for webapp (no /api/v1 prefix)
@@ -2469,13 +2783,14 @@ def create_api_app() -> FastAPI:
 
     @app.get("/markets")
     async def get_webapp_markets(
+        request: Request,
         platform: Optional[str] = Query(default="all"),
         limit: int = Query(default=100, le=1000),
         active: bool = Query(default=True),
     ):
         """Get markets for webapp - direct route without /api/v1 prefix."""
         # Delegate to the /api/v1/markets endpoint (shares cache)
-        return await get_all_markets(platform=platform, limit=limit, active=active)
+        return await get_all_markets(request=request, platform=platform, limit=limit, active=active)
 
     @app.get("/markets/{market_id}")
     async def get_webapp_market_details(market_id: str):
@@ -2483,73 +2798,94 @@ def create_api_app() -> FastAPI:
         from ..platforms import platform_registry
         from ..platforms.base import Outcome
 
-        # Try to find the market across all platforms
-        for plat_name in ["polymarket", "kalshi", "limitless", "myriad"]:
-            try:
-                platform_instance = platform_registry.get(Platform(plat_name))
-                if not platform_instance:
+        # Check Redis cache first (this is the most expensive endpoint)
+        rc = _get_redis_cache()
+        cache_key = f"spredd:api:webapp:market:{market_id}"
+        if rc and rc.is_available:
+            cached = await rc.get_json(cache_key)
+            if cached is not None:
+                return cached
+
+        async def _fetch_webapp_market():
+            # Try to find the market across all platforms
+            for plat_name in ["polymarket", "kalshi", "limitless", "myriad"]:
+                try:
+                    platform_instance = platform_registry.get(Platform(plat_name))
+                    if not platform_instance:
+                        continue
+
+                    market = await platform_instance.get_market(market_id)
+                    if market:
+                        # Extract image from raw_data
+                        image = None
+                        if market.raw_data:
+                            if "event" in market.raw_data:
+                                image = market.raw_data["event"].get("image")
+                            elif "image" in market.raw_data:
+                                image = market.raw_data["image"]
+
+                        # Get orderbook prices for accuracy (Polymarket)
+                        yes_price = float(market.yes_price) if market.yes_price else 0.5
+                        no_price = float(market.no_price) if market.no_price else 0.5
+
+                        if plat_name == "polymarket" and hasattr(platform_instance, 'get_orderbook'):
+                            try:
+                                yes_orderbook = await platform_instance.get_orderbook(market_id, Outcome.YES)
+                                no_orderbook = await platform_instance.get_orderbook(market_id, Outcome.NO)
+
+                                if yes_orderbook.best_bid and yes_orderbook.best_ask:
+                                    yes_price = float((yes_orderbook.best_bid + yes_orderbook.best_ask) / 2)
+                                elif yes_orderbook.best_ask:
+                                    yes_price = float(yes_orderbook.best_ask)
+                                elif yes_orderbook.best_bid:
+                                    yes_price = float(yes_orderbook.best_bid)
+
+                                if no_orderbook.best_bid and no_orderbook.best_ask:
+                                    no_price = float((no_orderbook.best_bid + no_orderbook.best_ask) / 2)
+                                elif no_orderbook.best_ask:
+                                    no_price = float(no_orderbook.best_ask)
+                                elif no_orderbook.best_bid:
+                                    no_price = float(no_orderbook.best_bid)
+                            except Exception as e:
+                                print(f"Error fetching orderbook for {market_id}: {e}")
+
+                        result = {
+                            "market": {
+                                "market_id": market.market_id,
+                                "platform": plat_name,
+                                "title": market.title,
+                                "description": market.description,
+                                "image": image,
+                                "category": market.category,
+                                "yes_price": yes_price,
+                                "no_price": no_price,
+                                "volume_24h": str(market.volume_24h) if market.volume_24h else "0",
+                                "liquidity": str(market.liquidity) if market.liquidity else "0",
+                                "is_active": market.is_active,
+                                "close_time": market.close_time,
+                                "slug": market.event_id or market.market_id,
+                                "outcomes": ["Yes", "No"],
+                            }
+                        }
+
+                        _rc = _get_redis_cache()
+                        if _rc and _rc.is_available:
+                            from src.config import settings as _s
+                            await _rc.set_json(cache_key, result, _s.cache_ttl_market_detail)
+                        return result
+                except Exception as e:
+                    print(f"Error fetching {plat_name} market {market_id}: {e}")
                     continue
 
-                market = await platform_instance.get_market(market_id)
-                if market:
-                    # Extract image from raw_data
-                    image = None
-                    if market.raw_data:
-                        if "event" in market.raw_data:
-                            image = market.raw_data["event"].get("image")
-                        elif "image" in market.raw_data:
-                            image = market.raw_data["image"]
+            raise HTTPException(status_code=404, detail=f"Market not found: {market_id}")
 
-                    # Get orderbook prices for accuracy (Polymarket)
-                    yes_price = float(market.yes_price) if market.yes_price else 0.5
-                    no_price = float(market.no_price) if market.no_price else 0.5
+        async def _recheck_webapp_market():
+            _rc = _get_redis_cache()
+            if _rc and _rc.is_available:
+                return await _rc.get_json(cache_key)
+            return None
 
-                    if plat_name == "polymarket" and hasattr(platform_instance, 'get_orderbook'):
-                        try:
-                            yes_orderbook = await platform_instance.get_orderbook(market_id, Outcome.YES)
-                            no_orderbook = await platform_instance.get_orderbook(market_id, Outcome.NO)
-
-                            # Use mid price from orderbook if available
-                            if yes_orderbook.best_bid and yes_orderbook.best_ask:
-                                yes_price = float((yes_orderbook.best_bid + yes_orderbook.best_ask) / 2)
-                            elif yes_orderbook.best_ask:
-                                yes_price = float(yes_orderbook.best_ask)
-                            elif yes_orderbook.best_bid:
-                                yes_price = float(yes_orderbook.best_bid)
-
-                            if no_orderbook.best_bid and no_orderbook.best_ask:
-                                no_price = float((no_orderbook.best_bid + no_orderbook.best_ask) / 2)
-                            elif no_orderbook.best_ask:
-                                no_price = float(no_orderbook.best_ask)
-                            elif no_orderbook.best_bid:
-                                no_price = float(no_orderbook.best_bid)
-                        except Exception as e:
-                            print(f"Error fetching orderbook for {market_id}: {e}")
-                            # Fall back to market prices
-
-                    return {
-                        "market": {
-                            "market_id": market.market_id,
-                            "platform": plat_name,
-                            "title": market.title,
-                            "description": market.description,
-                            "image": image,
-                            "category": market.category,
-                            "yes_price": yes_price,
-                            "no_price": no_price,
-                            "volume_24h": str(market.volume_24h) if market.volume_24h else "0",
-                            "liquidity": str(market.liquidity) if market.liquidity else "0",
-                            "is_active": market.is_active,
-                            "close_time": market.close_time,
-                            "slug": market.event_id or market.market_id,
-                            "outcomes": ["Yes", "No"],
-                        }
-                    }
-            except Exception as e:
-                print(f"Error fetching {plat_name} market {market_id}: {e}")
-                continue
-
-        raise HTTPException(status_code=404, detail=f"Market not found: {market_id}")
+        return await coalesce(f"webapp:{market_id}", _fetch_webapp_market, _recheck_webapp_market)
 
     # Serve static webapp files if they exist
     webapp_dist = Path(__file__).parent.parent.parent / "webapp" / "dist"

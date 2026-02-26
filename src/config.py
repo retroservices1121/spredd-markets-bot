@@ -386,10 +386,22 @@ class Settings(BaseSettings):
     )
 
     # ===================
+    # Redis Cache
+    # ===================
+    redis_url: Optional[str] = Field(default=None, description="Redis connection URL (e.g. redis://localhost:6379)")
+    redis_pool_size: int = Field(default=10, description="Redis connection pool size")
+    cache_ttl_markets: int = Field(default=15, description="TTL for market listings, trending, categories (seconds)")
+    cache_ttl_market_detail: int = Field(default=5, description="TTL for individual market, orderbook (seconds)")
+    cache_ttl_search: int = Field(default=15, description="TTL for search results (seconds)")
+
+    # ===================
     # Rate Limiting
     # ===================
     max_requests_per_minute: int = Field(default=30, ge=1, le=100)
-    
+    rate_limit_global: str = Field(default="100/minute", description="Global rate limit per IP")
+    rate_limit_heavy: str = Field(default="30/minute", description="Rate limit for heavy fetch endpoints")
+    rate_limit_trading: str = Field(default="10/minute", description="Rate limit for trading endpoints per user")
+
     # ===================
     # Logging
     # ===================
