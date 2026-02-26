@@ -19,6 +19,11 @@ logger = get_logger(__name__)
 PROOF_API_BASE = "https://proof.dflow.net"
 PROOF_DEEP_LINK_BASE = "https://dflow.net/proof"
 
+_http_client = httpx.AsyncClient(
+    timeout=10.0,
+    limits=httpx.Limits(max_connections=10, max_keepalive_connections=5, keepalive_expiry=30),
+)
+
 
 async def check_proof_verified(solana_address: str) -> bool:
     """Check if a Solana wallet is DFlow Proof KYC verified.
@@ -31,13 +36,12 @@ async def check_proof_verified(solana_address: str) -> bool:
     """
     url = f"{PROOF_API_BASE}/verify/{solana_address}"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            data = response.json()
-            verified = data.get("verified", False)
-            logger.info("Proof KYC check", address=solana_address[:8], verified=verified)
-            return verified
+        response = await _http_client.get(url)
+        response.raise_for_status()
+        data = response.json()
+        verified = data.get("verified", False)
+        logger.info("Proof KYC check", address=solana_address[:8], verified=verified)
+        return verified
     except Exception as e:
         logger.error("Proof KYC check failed", address=solana_address[:8], error=str(e))
         return False

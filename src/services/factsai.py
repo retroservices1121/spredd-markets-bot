@@ -7,7 +7,7 @@ Access is gated by $SPRDD token balance or trading volume requirements.
 
 import json
 
-import aiohttp
+import httpx
 from decimal import Decimal
 from typing import Optional
 from web3 import Web3
@@ -47,6 +47,7 @@ class FactsAIService:
         self.min_sprdd_balance = settings.sprdd_min_balance
         self.min_volume = settings.ai_research_min_volume
         self._web3: Optional[Web3] = None
+        self._http_client: Optional[httpx.AsyncClient] = None
 
     @property
     def web3(self) -> Web3:
@@ -59,6 +60,19 @@ class FactsAIService:
     def is_configured(self) -> bool:
         """Check if FactsAI is properly configured."""
         return bool(self.api_key)
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                timeout=60.0,
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5, keepalive_expiry=30),
+            )
+        return self._http_client
+
+    async def close(self) -> None:
+        if self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None
 
     async def get_sprdd_balance(self, wallet_address: str) -> Decimal:
         """
@@ -178,98 +192,97 @@ class FactsAIService:
             query = query[:997] + "..."
 
         try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
+            client = self._get_client()
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+
+            payload = {
+                "query": query,
+                "text": True,  # Include full text in citations
+            }
+
+            print(f"[FactsAI] Request to {self.api_url}/answer, query_length={len(query)}")
+
+            response = await client.post(
+                f"{self.api_url}/answer",
+                headers=headers,
+                json=payload,
+            )
+            response_text = response.text
+            print(f"[FactsAI] Response status={response.status_code}, body_preview={response_text[:500] if response_text else 'empty'}")
+
+            if response.status_code == 401:
+                return {
+                    "error": "Invalid API key",
+                    "answer": None,
+                    "citations": [],
+                }
+            elif response.status_code == 402:
+                return {
+                    "error": "API credits exhausted",
+                    "answer": None,
+                    "citations": [],
+                }
+            elif response.status_code == 429:
+                logger.warning("FactsAI rate limited by Cloudflare")
+                return {
+                    "error": "AI Research is temporarily unavailable due to high demand. Please try again in a few minutes.",
+                    "answer": None,
+                    "citations": [],
+                }
+            elif response.status_code == 503:
+                return {
+                    "error": "AI Research service is temporarily unavailable. Please try again later.",
+                    "answer": None,
+                    "citations": [],
+                }
+            elif response.status_code == 500:
+                print(f"[FactsAI] ERROR 500: {response_text[:1000] if response_text else 'empty'}")
+                # Parse error message if available
+                try:
+                    err_data = json.loads(response_text)
+                    err_msg = err_data.get("error", "Server error")
+                except Exception:
+                    err_msg = "Server error"
+                return {
+                    "error": f"FactsAI: {err_msg}. Please try again later.",
+                    "answer": None,
+                    "citations": [],
+                }
+            elif response.status_code != 200:
+                print(f"[FactsAI] ERROR {response.status_code}: {response_text[:500] if response_text else 'empty'}")
+                return {
+                    "error": f"API error: {response.status_code}",
+                    "answer": None,
+                    "citations": [],
                 }
 
-                payload = {
-                    "query": query,
-                    "text": True,  # Include full text in citations
+            data = json.loads(response_text)
+
+            # Response structure: {"success": true, "data": {"answer": ..., "citations": ...}}
+            if data.get("success"):
+                inner_data = data.get("data", {})
+                answer = inner_data.get("answer", "")
+                print(f"[FactsAI] SUCCESS: answer_length={len(answer)}, citations={len(inner_data.get('citations', []))}")
+                return {
+                    "answer": answer,
+                    "citations": inner_data.get("citations", []),
+                    "cost": inner_data.get("costDollars", "$0.012"),
+                    "error": None,
+                }
+            else:
+                # API returned success: false
+                error_msg = data.get("error", data.get("message", "Unknown API error"))
+                print(f"[FactsAI] API returned error: {error_msg}")
+                return {
+                    "error": str(error_msg)[:100],
+                    "answer": None,
+                    "citations": [],
                 }
 
-                print(f"[FactsAI] Request to {self.api_url}/answer, query_length={len(query)}")
-
-                async with session.post(
-                    f"{self.api_url}/answer",
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as response:
-                    response_text = await response.text()
-                    print(f"[FactsAI] Response status={response.status}, body_preview={response_text[:500] if response_text else 'empty'}")
-
-                    if response.status == 401:
-                        return {
-                            "error": "Invalid API key",
-                            "answer": None,
-                            "citations": [],
-                        }
-                    elif response.status == 402:
-                        return {
-                            "error": "API credits exhausted",
-                            "answer": None,
-                            "citations": [],
-                        }
-                    elif response.status == 429:
-                        logger.warning("FactsAI rate limited by Cloudflare")
-                        return {
-                            "error": "AI Research is temporarily unavailable due to high demand. Please try again in a few minutes.",
-                            "answer": None,
-                            "citations": [],
-                        }
-                    elif response.status == 503:
-                        return {
-                            "error": "AI Research service is temporarily unavailable. Please try again later.",
-                            "answer": None,
-                            "citations": [],
-                        }
-                    elif response.status == 500:
-                        print(f"[FactsAI] ERROR 500: {response_text[:1000] if response_text else 'empty'}")
-                        # Parse error message if available
-                        try:
-                            err_data = json.loads(response_text)
-                            err_msg = err_data.get("error", "Server error")
-                        except Exception:
-                            err_msg = "Server error"
-                        return {
-                            "error": f"FactsAI: {err_msg}. Please try again later.",
-                            "answer": None,
-                            "citations": [],
-                        }
-                    elif response.status != 200:
-                        print(f"[FactsAI] ERROR {response.status}: {response_text[:500] if response_text else 'empty'}")
-                        return {
-                            "error": f"API error: {response.status}",
-                            "answer": None,
-                            "citations": [],
-                        }
-
-                    data = json.loads(response_text)
-
-                    # Response structure: {"success": true, "data": {"answer": ..., "citations": ...}}
-                    if data.get("success"):
-                        inner_data = data.get("data", {})
-                        answer = inner_data.get("answer", "")
-                        print(f"[FactsAI] SUCCESS: answer_length={len(answer)}, citations={len(inner_data.get('citations', []))}")
-                        return {
-                            "answer": answer,
-                            "citations": inner_data.get("citations", []),
-                            "cost": inner_data.get("costDollars", "$0.012"),
-                            "error": None,
-                        }
-                    else:
-                        # API returned success: false
-                        error_msg = data.get("error", data.get("message", "Unknown API error"))
-                        print(f"[FactsAI] API returned error: {error_msg}")
-                        return {
-                            "error": str(error_msg)[:100],
-                            "answer": None,
-                            "citations": [],
-                        }
-
-        except aiohttp.ClientTimeout:
+        except httpx.TimeoutException:
             return {
                 "error": "Request timed out",
                 "answer": None,

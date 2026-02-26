@@ -121,6 +121,13 @@ async def post_shutdown(application: Application) -> None:
     except Exception as e:
         logger.warning("Postback service shutdown error", error=str(e))
 
+    # Close FactsAI HTTP client
+    try:
+        from src.services.factsai import factsai_service
+        await factsai_service.close()
+    except Exception as e:
+        logger.warning("FactsAI shutdown error", error=str(e))
+
     # Close Redis cache
     try:
         from src.services.cache import cache

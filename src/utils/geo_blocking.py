@@ -11,6 +11,11 @@ import httpx
 
 from src.db.models import Platform
 
+_http_client = httpx.AsyncClient(
+    timeout=10.0,
+    limits=httpx.Limits(max_connections=10, max_keepalive_connections=5, keepalive_expiry=30),
+)
+
 # Countries blocked from Kalshi (ISO 3166-1 alpha-2 codes)
 # Per agreement with Kalshi
 KALSHI_BLOCKED_COUNTRIES = {
@@ -193,20 +198,19 @@ async def get_country_from_ip(ip_address: str) -> Optional[str]:
         return None
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # ip-api.com is free for non-commercial use, no API key needed
-            # Returns JSON with countryCode field
-            response = await client.get(
-                f"http://ip-api.com/json/{ip_address}",
-                params={"fields": "status,countryCode,message"}
-            )
-            response.raise_for_status()
-            data = response.json()
+        # ip-api.com is free for non-commercial use, no API key needed
+        # Returns JSON with countryCode field
+        response = await _http_client.get(
+            f"http://ip-api.com/json/{ip_address}",
+            params={"fields": "status,countryCode,message"}
+        )
+        response.raise_for_status()
+        data = response.json()
 
-            if data.get("status") == "success":
-                return data.get("countryCode")
+        if data.get("status") == "success":
+            return data.get("countryCode")
 
-            return None
+        return None
     except Exception:
         return None
 
