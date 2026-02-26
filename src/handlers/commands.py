@@ -931,16 +931,16 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Handle /search command - search markets."""
     if not update.effective_user or not update.message:
         return
-    
+
     user = await get_user_by_telegram_id(update.effective_user.id)
     if not user:
         await update.message.reply_text("Please /start first!")
         return
-    
+
     # Get search query from args
-    query = " ".join(context.args) if context.args else None
-    
-    if not query:
+    search_query = " ".join(context.args) if context.args else None
+
+    if not search_query:
         await update.message.reply_text(
             "🔍 <b>Search Markets</b>\n\n"
             "Usage: /search [query]\n\n"
@@ -951,38 +951,67 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode=ParseMode.HTML,
         )
         return
-    
+
+    # Store query for pagination callbacks
+    context.user_data["search_query"] = search_query
+
     platform_info = PLATFORM_INFO[user.active_platform]
-    platform = get_platform(user.active_platform)
 
     await update.message.reply_text(
-        f"🔍 Searching {platform_info['name']} for \"{escape_html(query)}\"...",
+        f"🔍 Searching {platform_info['name']} for \"{escape_html(search_query)}\"...",
         parse_mode=ParseMode.HTML,
     )
 
-    try:
-        # Try cache first
-        from src.services.cache import cache
-        markets = await cache.get_search(user.active_platform.value, query, 10)
-        if markets is None:
-            markets = await platform.search_markets(query, limit=10)
-            if markets:
-                await cache.set_search(user.active_platform.value, query, 10, markets)
+    await show_search_results(update.message, update.effective_user.id, search_query, page=0, is_callback=False)
 
-        if not markets:
-            await update.message.reply_text(
-                f"No results for \"{escape_html(query)}\" on {platform_info['name']}",
-                parse_mode=ParseMode.HTML,
-            )
+
+async def show_search_results(target, telegram_id: int, search_query: str, page: int = 0, is_callback: bool = False) -> None:
+    """Show search results with pagination."""
+    RESULTS_PER_PAGE = 10
+
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        return
+
+    platform_info = PLATFORM_INFO[user.active_platform]
+    platform = get_platform(user.active_platform)
+
+    try:
+        # Fetch up to 25 results (cache or platform)
+        from src.services.cache import cache
+        all_markets = await cache.get_search(user.active_platform.value, search_query, 25)
+        if all_markets is None:
+            all_markets = await platform.search_markets(search_query, limit=25)
+            if all_markets:
+                await cache.set_search(user.active_platform.value, search_query, 25, all_markets)
+
+        if not all_markets:
+            msg = f"No results for \"{escape_html(search_query)}\" on {platform_info['name']}"
+            if is_callback:
+                await target.edit_message_text(msg, parse_mode=ParseMode.HTML)
+            else:
+                await target.reply_text(msg, parse_mode=ParseMode.HTML)
             return
+
+        # Calculate pagination
+        total_markets = len(all_markets)
+        total_pages = (total_markets + RESULTS_PER_PAGE - 1) // RESULTS_PER_PAGE
+        page = max(0, min(page, total_pages - 1))
+
+        start_idx = page * RESULTS_PER_PAGE
+        end_idx = min(start_idx + RESULTS_PER_PAGE, total_markets)
+        markets = all_markets[start_idx:end_idx]
 
         # Enrich with actual orderbook ask prices (replaces mid-prices)
         await enrich_orderbook_prices(markets, platform)
 
-        text = f"🔍 <b>Results for \"{escape_html(query)}\"</b>\n\n"
+        text = f"🔍 <b>Results for \"{escape_html(search_query)}\"</b>"
+        if total_pages > 1:
+            text += f" (Page {page + 1}/{total_pages})"
+        text += "\n\n"
 
         buttons = []
-        for i, market in enumerate(markets, 1):
+        for i, market in enumerate(markets, start_idx + 1):
             title = escape_html(market.title[:50] + "..." if len(market.title) > 50 else market.title)
             yes_prob = format_probability(market.yes_price)
             exp = format_expiration(market.close_time)
@@ -1002,19 +1031,37 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     callback_data=f"market:{user.active_platform.value}:{market.market_id[:40]}"
                 )
             ])
-        
-        await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-        
+
+        # Add pagination buttons if needed
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("« Prev", callback_data=f"search:{page - 1}"))
+            nav_buttons.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("Next »", callback_data=f"search:{page + 1}"))
+            buttons.append(nav_buttons)
+
+        if is_callback:
+            await target.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+        else:
+            await target.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+
     except Exception as e:
-        logger.error("Search failed", error=str(e), query=query)
-        await update.message.reply_text(
-            f"❌ Search failed: {friendly_error(str(e))}",
-            parse_mode=ParseMode.HTML,
-        )
+        logger.error("Search failed", error=str(e), query=search_query)
+        msg = f"❌ Search failed: {friendly_error(str(e))}"
+        if is_callback:
+            await target.edit_message_text(msg, parse_mode=ParseMode.HTML)
+        else:
+            await target.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
 async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2339,6 +2386,15 @@ Select which prediction market you want to trade on:
             # 5-minute markets pagination: markets5m:page:X
             page = int(parts[2]) if len(parts) > 2 else 0
             await handle_5m_markets(query, update.effective_user.id, page=page)
+
+        elif action == "search":
+            # Search results pagination: search:page
+            page = int(parts[1]) if len(parts) > 1 else 0
+            search_query = context.user_data.get("search_query", "")
+            if search_query:
+                await show_search_results(query, update.effective_user.id, search_query, page=page, is_callback=True)
+            else:
+                await query.edit_message_text("Search session expired. Please use /search again.")
 
         elif action == "categories":
             await handle_categories_menu(query, update.effective_user.id)

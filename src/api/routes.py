@@ -144,6 +144,20 @@ class PnLSummary(BaseModel):
 
 
 # ===================
+# Pagination Helper
+# ===================
+
+def paginate_results(items: list, page: int, limit: int) -> tuple[dict, list]:
+    """Slice a list and return pagination metadata + page items."""
+    total = len(items)
+    offset = (page - 1) * limit
+    page_items = items[offset:offset + limit]
+    return {
+        "pagination": {"page": page, "limit": limit, "total": total, "has_more": (offset + limit) < total}
+    }, page_items
+
+
+# ===================
 # Dependencies
 # ===================
 
@@ -688,7 +702,8 @@ async def get_wallet_address(
 async def get_all_markets(
     request: Request,
     platform: Optional[str] = Query(default="all", description="Platform filter: all, polymarket, kalshi, opinion, limitless, myriad"),
-    limit: int = Query(default=100, le=1000),
+    limit: int = Query(default=25, le=25),
+    page: int = Query(default=1, ge=1),
     active: bool = Query(default=True),
 ):
     """Get markets from all platforms for the webapp."""
@@ -701,11 +716,13 @@ async def get_all_markets(
     if rc and rc.is_available:
         redis_hit = await rc.get_api_markets(plat_key, active)
         if redis_hit is not None:
-            return redis_hit[:limit]
+            meta, page_items = paginate_results(redis_hit, page, limit)
+            return {"markets": page_items, **meta}
     now = time.time()
     cached = _markets_cache.get(cache_key)
     if cached and (now - cached[0]) < _MARKETS_CACHE_TTL:
-        return cached[1][:limit]
+        meta, page_items = paginate_results(cached[1], page, limit)
+        return {"markets": page_items, **meta}
 
     # Coalesce concurrent cache misses for the same platform/active combo
     coalesce_key = f"markets:{plat_key}:{active}"
@@ -795,7 +812,8 @@ async def get_all_markets(
         return None
 
     results = await coalesce(coalesce_key, _fetch_markets, _recheck_markets)
-    return results[:limit]
+    meta, page_items = paginate_results(results, page, limit)
+    return {"markets": page_items, **meta}
 
 
 # API response caches: in-memory fallback when Redis is unavailable
@@ -1140,7 +1158,8 @@ async def search_markets(
     request: Request,
     q: str = Query(..., min_length=1),
     platform: Optional[str] = None,
-    limit: int = Query(default=20, le=100),
+    limit: int = Query(default=20, le=25),
+    page: int = Query(default=1, ge=1),
 ):
     """Search markets across platforms."""
     from ..platforms import platform_registry
@@ -1152,11 +1171,13 @@ async def search_markets(
     if rc and rc.is_available:
         redis_hit = await rc.get_api_search(q, plat_str)
         if redis_hit is not None:
-            return {"markets": redis_hit[:limit]}
+            meta, page_items = paginate_results(redis_hit, page, limit)
+            return {"markets": page_items, **meta}
     now = time.time()
     cached = _search_cache.get(cache_key)
     if cached and (now - cached[0]) < _SEARCH_CACHE_TTL:
-        return {"markets": cached[1][:limit]}
+        meta, page_items = paginate_results(cached[1], page, limit)
+        return {"markets": page_items, **meta}
 
     q_hash = hashlib.md5(q.lower().strip().encode()).hexdigest()[:8]
 
@@ -1214,7 +1235,8 @@ async def search_markets(
         return None
 
     results = await coalesce(f"search:{q_hash}:{plat_str}", _fetch_search, _recheck_search)
-    return {"markets": results[:limit]}
+    meta, page_items = paginate_results(results, page, limit)
+    return {"markets": page_items, **meta}
 
 
 @router.get("/markets/trending")
@@ -1222,7 +1244,8 @@ async def search_markets(
 async def get_trending_markets(
     request: Request,
     platform: Optional[str] = None,
-    limit: int = Query(default=10, le=50),
+    limit: int = Query(default=10, le=25),
+    page: int = Query(default=1, ge=1),
 ):
     """Get trending markets."""
     from ..platforms import platform_registry
@@ -1233,11 +1256,13 @@ async def get_trending_markets(
     if rc and rc.is_available:
         redis_hit = await rc.get_api_trending(plat_key)
         if redis_hit is not None:
-            return {"markets": redis_hit[:limit]}
+            meta, page_items = paginate_results(redis_hit, page, limit)
+            return {"markets": page_items, **meta}
     now = time.time()
     cached = _trending_cache.get(plat_key)
     if cached and (now - cached[0]) < _TRENDING_CACHE_TTL:
-        return {"markets": cached[1][:limit]}
+        meta, page_items = paginate_results(cached[1], page, limit)
+        return {"markets": page_items, **meta}
 
     async def _fetch_trending():
         results = []
@@ -1327,7 +1352,8 @@ async def get_trending_markets(
         return None
 
     results = await coalesce(f"trending:{plat_key}", _fetch_trending, _recheck_trending)
-    return {"markets": results[:limit]}
+    meta, page_items = paginate_results(results, page, limit)
+    return {"markets": page_items, **meta}
 
 
 @router.get("/markets/categories")
@@ -1383,25 +1409,29 @@ async def get_market_categories(request: Request):
 async def get_markets_by_category(
     request: Request,
     category: str,
-    limit: int = Query(default=20, le=100),
+    limit: int = Query(default=20, le=25),
+    page: int = Query(default=1, ge=1),
 ):
     """Get markets by category (Polymarket only)."""
     from ..platforms import platform_registry
 
     # Check Redis cache
     rc = _get_redis_cache()
-    cache_key = f"spredd:api:category:{category}:{limit}"
+    cache_key = f"spredd:api:category:{category}"
     if rc and rc.is_available:
         cached = await rc.get_json(cache_key)
         if cached is not None:
-            return cached
+            # Handle both old {"markets": [...]} and new [...] cache format
+            items = cached.get("markets", cached) if isinstance(cached, dict) else cached
+            meta, page_items = paginate_results(items, page, limit)
+            return {"markets": page_items, **meta}
 
     async def _fetch_category():
         poly = platform_registry.get(Platform.POLYMARKET)
         if not poly:
             raise HTTPException(status_code=400, detail="Polymarket not available")
 
-        markets = await poly.get_markets_by_category(category, limit=limit)
+        markets = await poly.get_markets_by_category(category, limit=100)
         results = []
         for m in markets:
             results.append({
@@ -1414,21 +1444,24 @@ async def get_markets_by_category(
                 "volume": str(m.volume_24h) if m.volume_24h else None,
                 "is_active": m.is_active,
             })
-        result = {"markets": results}
         _rc = _get_redis_cache()
         if _rc and _rc.is_available:
             from src.config import settings as _s
-            await _rc.set_json(cache_key, result, _s.cache_ttl_markets)
-        return result
+            await _rc.set_json(cache_key, results, _s.cache_ttl_markets)
+        return results
 
     async def _recheck_category():
         _rc = _get_redis_cache()
         if _rc and _rc.is_available:
-            return await _rc.get_json(cache_key)
+            hit = await _rc.get_json(cache_key)
+            if hit is not None:
+                return hit.get("markets", hit) if isinstance(hit, dict) else hit
         return None
 
     try:
-        return await coalesce(f"category:{category}:{limit}", _fetch_category, _recheck_category)
+        results = await coalesce(f"category:{category}", _fetch_category, _recheck_category)
+        meta, page_items = paginate_results(results, page, limit)
+        return {"markets": page_items, **meta}
     except HTTPException:
         raise
     except Exception as e:
@@ -2199,6 +2232,8 @@ async def execute_swap(
 async def get_positions(
     platform: Optional[str] = None,
     status: str = "open",
+    limit: int = Query(default=25, le=25),
+    page: int = Query(default=1, ge=1),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
@@ -2222,24 +2257,25 @@ async def get_positions(
     result = await session.execute(query)
     positions = result.scalars().all()
 
-    return {
-        "positions": [
-            {
-                "id": p.id,
-                "platform": p.platform.value,
-                "market_id": p.market_id,
-                "market_title": p.market_title,
-                "outcome": p.outcome.value,
-                "token_amount": p.token_amount,
-                "entry_price": float(p.entry_price),
-                "current_price": float(p.current_price) if p.current_price else None,
-                "status": p.status.value,
-                "pnl": calculate_pnl(p),
-                "created_at": p.created_at.isoformat(),
-            }
-            for p in positions
-        ]
-    }
+    all_items = [
+        {
+            "id": p.id,
+            "platform": p.platform.value,
+            "market_id": p.market_id,
+            "market_title": p.market_title,
+            "outcome": p.outcome.value,
+            "token_amount": p.token_amount,
+            "entry_price": float(p.entry_price),
+            "current_price": float(p.current_price) if p.current_price else None,
+            "status": p.status.value,
+            "pnl": calculate_pnl(p),
+            "created_at": p.created_at.isoformat(),
+        }
+        for p in positions
+    ]
+
+    meta, page_items = paginate_results(all_items, page, limit)
+    return {"positions": page_items, **meta}
 
 
 def calculate_pnl(position: Position) -> Optional[float]:

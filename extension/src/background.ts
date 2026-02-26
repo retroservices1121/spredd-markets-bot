@@ -609,7 +609,8 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
         if (params.platform) qs.set("platform", params.platform);
         if (params.limit) qs.set("limit", String(params.limit));
         if (params.active !== undefined) qs.set("active", String(params.active));
-        const markets = await botApiFetch(`/api/v1/markets?${qs.toString()}`);
+        const raw = await botApiFetch<{ markets?: unknown[] }>(`/api/v1/markets?${qs.toString()}`);
+        const markets = raw?.markets ?? raw;
         return { success: true, data: markets };
       } catch (e) {
         return {
