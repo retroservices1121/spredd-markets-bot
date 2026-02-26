@@ -263,6 +263,7 @@ async def enrich_orderbook_prices(markets: list, platform) -> None:
     Kalshi/Jupiter already return ask prices from their API.
     """
     from src.db.models import Outcome as OutcomeEnum
+    from src.services.cache import cache
 
     # Only enrich Polymarket markets (others already use ask prices)
     if not markets or not hasattr(platform, 'get_orderbook'):
@@ -273,7 +274,12 @@ async def enrich_orderbook_prices(markets: list, platform) -> None:
 
     async def fetch_ask(market):
         try:
-            ob = await platform.get_orderbook(market.market_id, OutcomeEnum.YES)
+            # Try cache first
+            ob = await cache.get_orderbook(platform_name, market.market_id, "yes")
+            if ob is None:
+                ob = await platform.get_orderbook(market.market_id, OutcomeEnum.YES)
+                if ob:
+                    await cache.set_orderbook(platform_name, market.market_id, "yes", ob)
             if ob and ob.best_ask:
                 market.yes_price = ob.best_ask
             if ob and ob.best_bid:
@@ -948,22 +954,28 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     platform_info = PLATFORM_INFO[user.active_platform]
     platform = get_platform(user.active_platform)
-    
+
     await update.message.reply_text(
         f"🔍 Searching {platform_info['name']} for \"{escape_html(query)}\"...",
         parse_mode=ParseMode.HTML,
     )
-    
+
     try:
-        markets = await platform.search_markets(query, limit=10)
-        
+        # Try cache first
+        from src.services.cache import cache
+        markets = await cache.get_search(user.active_platform.value, query, 10)
+        if markets is None:
+            markets = await platform.search_markets(query, limit=10)
+            if markets:
+                await cache.set_search(user.active_platform.value, query, 10, markets)
+
         if not markets:
             await update.message.reply_text(
                 f"No results for \"{escape_html(query)}\" on {platform_info['name']}",
                 parse_mode=ParseMode.HTML,
             )
             return
-        
+
         # Enrich with actual orderbook ask prices (replaces mid-prices)
         await enrich_orderbook_prices(markets, platform)
 
@@ -2670,7 +2682,14 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
         return
 
     platform = get_platform(platform_enum)
-    market = await platform.get_market(market_id)
+
+    # Try cache first for market detail
+    from src.services.cache import cache
+    market = await cache.get_market(platform_value, market_id)
+    if market is None:
+        market = await platform.get_market(market_id)
+        if market:
+            await cache.set_market(platform_value, market_id, market)
 
     # Truncate market_id for callback_data (Telegram 64-byte limit)
     # Polymarket condition IDs can be 66+ chars, which exceeds the limit
@@ -2686,7 +2705,11 @@ async def handle_market_view(query, platform_value: str, market_id: str, telegra
     # Check if this is a multi-outcome event
     related_markets = []
     if market.is_multi_outcome and market.event_id:
-        related_markets = await platform.get_related_markets(market.event_id)
+        related_markets = await cache.get_related(platform_value, market.event_id)
+        if related_markets is None:
+            related_markets = await platform.get_related_markets(market.event_id)
+            if related_markets:
+                await cache.set_related(platform_value, market.event_id, related_markets)
 
     if related_markets and len(related_markets) > 1:
         # Multi-outcome event - show all options
@@ -6323,7 +6346,13 @@ async def handle_trending_markets(query, telegram_id: int, page: int = 0) -> Non
 
     try:
         # Fetch more to account for deduplication of multi-outcome events
-        markets = await platform.get_markets(limit=(per_page * 3) + 1, offset=offset, active_only=True)
+        from src.services.cache import cache
+        fetch_limit = (per_page * 3) + 1
+        markets = await cache.get_markets(user.active_platform.value, fetch_limit, offset, True)
+        if markets is None:
+            markets = await platform.get_markets(limit=fetch_limit, offset=offset, active_only=True)
+            if markets:
+                await cache.set_markets(user.active_platform.value, fetch_limit, offset, True, markets)
 
         # Deduplicate multi-outcome events by event_id or title
         seen_events = set()
@@ -6498,7 +6527,12 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
 
     try:
         # Fetch markets (Limitless API has max limit of 25)
-        all_markets = await platform.get_markets_by_category(category_id, limit=25)
+        from src.services.cache import cache
+        all_markets = await cache.get_category(user.active_platform.value, category_id)
+        if all_markets is None:
+            all_markets = await platform.get_markets_by_category(category_id, limit=25)
+            if all_markets:
+                await cache.set_category(user.active_platform.value, category_id, all_markets)
 
         if not all_markets:
             await query.edit_message_text(
@@ -10400,15 +10434,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Treat as search query
         platform_info = PLATFORM_INFO[user.active_platform]
         platform = get_platform(user.active_platform)
-        
+
         await update.message.reply_text(
             f"🔍 Searching {platform_info['name']} for \"{escape_html(text)}\"...",
             parse_mode=ParseMode.HTML,
         )
-        
+
         try:
-            markets = await platform.search_markets(text, limit=5)
-            
+            # Try cache first
+            from src.services.cache import cache
+            markets = await cache.get_search(user.active_platform.value, text, 5)
+            if markets is None:
+                markets = await platform.search_markets(text, limit=5)
+                if markets:
+                    await cache.set_search(user.active_platform.value, text, 5, markets)
+
             if not markets:
                 await update.message.reply_text(
                     f"No results for \"{escape_html(text)}\".\nTry different keywords!",
@@ -11968,6 +12008,37 @@ async def resume_trading_command(update: Update, context: ContextTypes.DEFAULT_T
         "All users can now trade again.",
         parse_mode=ParseMode.HTML,
     )
+
+
+async def flush_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to flush Redis cache."""
+    if not update.effective_user or not update.message:
+        return
+
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    from src.services.cache import cache
+
+    if not cache.is_available:
+        await update.message.reply_text("⚠️ Redis cache is not connected.")
+        return
+
+    target = context.args[0].lower() if context.args else "all"
+
+    if target == "all":
+        count = await cache.flush_all()
+        await update.message.reply_text(
+            f"🗑 <b>Cache Flushed</b>\n\nCleared {count} keys (all platforms).",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        count = await cache.flush_platform(target)
+        await update.message.reply_text(
+            f"🗑 <b>Cache Flushed</b>\n\nCleared {count} keys for <code>{target}</code>.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 # ===================

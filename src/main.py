@@ -72,6 +72,8 @@ from src.handlers.commands import (
     # Trading pause
     pause_trading_command,
     resume_trading_command,
+    # Cache management
+    flush_cache_command,
 )
 from src.utils.logging import setup_logging, get_logger
 
@@ -118,6 +120,13 @@ async def post_shutdown(application: Application) -> None:
         await postback_service.close()
     except Exception as e:
         logger.warning("Postback service shutdown error", error=str(e))
+
+    # Close Redis cache
+    try:
+        from src.services.cache import cache
+        await cache.close()
+    except Exception as e:
+        logger.warning("Cache shutdown error", error=str(e))
 
     # Close platforms
     await platform_registry.close()
@@ -192,6 +201,9 @@ def setup_handlers(application: Application) -> None:
     # Trading pause commands
     application.add_handler(CommandHandler("pause_trading", pause_trading_command))
     application.add_handler(CommandHandler("resume_trading", resume_trading_command))
+
+    # Cache management
+    application.add_handler(CommandHandler("flush_cache", flush_cache_command))
 
     # Broadcast commands
     application.add_handler(CommandHandler("broadcast", broadcast_command))
@@ -291,6 +303,10 @@ async def run_bot() -> None:
 
     logger.info("Initializing platforms...")
     await platform_registry.initialize()
+
+    # Initialize Redis cache
+    from src.services.cache import cache
+    await cache.connect()
 
     # Initialize ACP service if enabled
     if settings.acp_enabled:
