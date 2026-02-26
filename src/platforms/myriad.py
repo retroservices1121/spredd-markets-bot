@@ -241,6 +241,7 @@ class MyriadPlatform(BasePlatform):
             base_url=settings.myriad_api_url,
             headers=headers,
             timeout=30.0,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30),
         )
 
         # Initialize Web3 for default network

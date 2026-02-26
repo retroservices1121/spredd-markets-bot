@@ -72,6 +72,7 @@ class KalshiPlatform(BasePlatform):
         self._http_client = httpx.AsyncClient(
             timeout=30.0,
             headers=headers,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30),
         )
 
         self._solana_client = SolanaClient(settings.solana_rpc_url)

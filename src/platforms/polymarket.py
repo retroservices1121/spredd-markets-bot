@@ -212,6 +212,7 @@ class PolymarketPlatform(BasePlatform):
             base_url=settings.polymarket_api_url,
             timeout=30.0,
             headers={"Content-Type": "application/json"},
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30),
         )
 
         # Gamma API for market data
@@ -219,6 +220,7 @@ class PolymarketPlatform(BasePlatform):
             base_url="https://gamma-api.polymarket.com",
             timeout=30.0,
             headers={"Content-Type": "application/json"},
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30),
         )
 
         # Async Web3 for Polygon

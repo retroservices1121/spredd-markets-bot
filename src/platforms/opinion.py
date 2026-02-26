@@ -87,6 +87,7 @@ class OpinionPlatform(BasePlatform):
             base_url=settings.opinion_api_url,
             timeout=30.0,
             headers=headers,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30),
         )
 
         # Web3 for BSC

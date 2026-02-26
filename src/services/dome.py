@@ -120,6 +120,7 @@ class DomeAPIClient:
             base_url=DOME_API_BASE,
             timeout=30.0,
             headers=headers,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30),
         )
         logger.info("Dome API client initialized", has_api_key=bool(self.api_key))
 
