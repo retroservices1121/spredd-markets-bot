@@ -2735,6 +2735,22 @@ def create_api_app() -> FastAPI:
     app.add_middleware(SlowAPIMiddleware)
     app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 
+    # Timing middleware — logs duration and adds X-Response-Time header
+    @app.middleware("http")
+    async def timing_middleware(request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        response.headers["X-Response-Time"] = f"{elapsed_ms:.1f}ms"
+        _log.info(
+            "request_completed",
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            duration_ms=round(elapsed_ms, 1),
+        )
+        return response
+
     # Global exception handler — catches unhandled errors, returns clean JSON
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):

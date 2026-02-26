@@ -125,6 +125,8 @@ class RedisCache:
     def __init__(self):
         self._redis = None
         self._available = False
+        self._hits = 0
+        self._misses = 0
 
     @property
     def is_available(self) -> bool:
@@ -167,19 +169,30 @@ class RedisCache:
             self._available = False
             logger.info("Redis cache closed")
 
+    def cache_stats(self) -> dict:
+        """Return hit/miss statistics."""
+        total = self._hits + self._misses
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate": round(self._hits / total * 100, 1) if total > 0 else 0.0,
+            "total": total,
+        }
+
     async def health_check(self) -> dict:
         """Return cache health status."""
         if not self._available or not self._redis:
-            return {"status": "unavailable", "reason": "not connected"}
+            return {"status": "unavailable", "reason": "not connected", **self.cache_stats()}
         try:
             await self._redis.ping()
             info = await self._redis.info("memory")
             return {
                 "status": "healthy",
                 "used_memory": info.get("used_memory_human", "unknown"),
+                **self.cache_stats(),
             }
         except Exception as e:
-            return {"status": "unhealthy", "reason": str(e)}
+            return {"status": "unhealthy", "reason": str(e), **self.cache_stats()}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -187,10 +200,17 @@ class RedisCache:
 
     async def _get(self, key: str) -> Optional[str]:
         if not self._available or not self._redis:
+            self._misses += 1
             return None
         try:
-            return await self._redis.get(key)
+            val = await self._redis.get(key)
+            if val is not None:
+                self._hits += 1
+            else:
+                self._misses += 1
+            return val
         except Exception as e:
+            self._misses += 1
             logger.debug("Redis GET failed", key=key, error=str(e))
             return None
 

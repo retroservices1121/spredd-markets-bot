@@ -4,6 +4,7 @@ Handles all user interactions with platform selection and trading.
 """
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from collections.abc import Callable
@@ -2553,13 +2554,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     if not query or not query.data or not update.effective_user:
         return
-    
+
     await query.answer()
-    
+
     data = query.data
     parts = data.split(":")
     action = parts[0]
-    
+    start = time.perf_counter()
+
     try:
         handler = CALLBACK_ROUTES.get(action)
         if handler:
@@ -2577,6 +2579,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
         except Exception:
             pass
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.info("callback_completed", action=action, duration_ms=round(elapsed_ms, 1))
 
 
 async def handle_platform_select(query, platform_value: str, telegram_id: int) -> None:
