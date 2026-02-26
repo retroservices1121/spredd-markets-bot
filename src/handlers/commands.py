@@ -6,6 +6,7 @@ Handles all user interactions with platform selection and trading.
 import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from collections.abc import Callable
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, WebAppInfo
@@ -2188,7 +2189,363 @@ async def handle_proof_retry(query, telegram_id: int) -> None:
 
 
 # ===================
-# Callback Handlers
+# Callback Route Handlers
+# ===================
+
+
+async def _route_landing(query, parts: list[str], telegram_id: int, context) -> None:
+    if parts[1] == "start":
+        text = """
+🎯 <b>Choose Your Platform</b>
+
+Select which prediction market you want to trade on:
+"""
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=platform_keyboard(),
+        )
+
+
+async def _route_platform(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_platform_select(query, parts[1], telegram_id)
+
+
+async def _route_market(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_market_view(query, parts[1], parts[2], telegram_id)
+
+
+async def _route_buy(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_buy_start(query, parts[1], parts[2], parts[3], telegram_id, context)
+
+
+async def _route_confirm_buy(query, parts: list[str], telegram_id: int, context) -> None:
+    pending = context.user_data.get("pending_confirm")
+    if pending:
+        context.user_data.pop("pending_confirm", None)
+        await handle_buy_confirm(
+            query,
+            pending["platform"],
+            pending["market_id"],
+            pending["outcome"],
+            pending["amount"],
+            telegram_id
+        )
+    else:
+        await query.edit_message_text("❌ Order expired. Please try again.")
+
+
+async def _route_cancel_buy(query, parts: list[str], telegram_id: int, context) -> None:
+    context.user_data.pop("pending_confirm", None)
+    await query.edit_message_text("❌ Order cancelled.")
+
+
+async def _route_polychain(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_polymarket_chain_select(query, parts[1], telegram_id)
+
+
+async def _route_wallet(query, parts: list[str], telegram_id: int, context) -> None:
+    if parts[1] == "refresh":
+        await handle_wallet_refresh(query, telegram_id)
+    elif parts[1] == "export":
+        await handle_wallet_export(query, telegram_id)
+    elif parts[1] == "create_new":
+        await handle_wallet_create_new(query, telegram_id, context)
+    elif parts[1] == "confirm_create":
+        await handle_wallet_confirm_create(query, telegram_id, context)
+    elif parts[1] == "bridge":
+        await handle_bridge_menu(query, telegram_id, context)
+    elif parts[1] == "setup":
+        await handle_wallet_setup(query, telegram_id, context)
+
+
+async def _route_bridge(query, parts: list[str], telegram_id: int, context) -> None:
+    data = ":".join(parts)
+    logger.info("Bridge callback received", callback_data=data, parts=parts)
+    if parts[1] == "action":
+        if parts[2] == "usdc":
+            await handle_bridge_usdc_menu(query, telegram_id, context)
+        elif parts[2] == "swap":
+            await handle_swap_menu(query, telegram_id, context)
+        elif parts[2] == "gas":
+            await handle_gas_bridge_menu(query, telegram_id, context)
+    elif parts[1] == "dest":
+        await handle_bridge_dest(query, parts[2], telegram_id, context)
+    elif parts[1] == "source":
+        await handle_bridge_start(query, parts[2], telegram_id, context, dest_chain=parts[3])
+    elif parts[1] == "amount":
+        if len(parts) == 5:
+            await handle_bridge_amount(query, parts[2], parts[3], int(parts[4]), telegram_id, context)
+        else:
+            await handle_bridge_amount(query, parts[2], "polygon", int(parts[3]), telegram_id, context)
+    elif parts[1] == "custom":
+        if len(parts) == 4:
+            await handle_bridge_custom(query, parts[2], parts[3], telegram_id, context)
+        else:
+            await handle_bridge_custom(query, parts[2], "polygon", telegram_id, context)
+    elif parts[1] == "speed":
+        if len(parts) == 5:
+            await handle_bridge_speed(query, parts[2], parts[3], parts[4], telegram_id, context)
+        else:
+            await handle_bridge_speed(query, parts[2], "polygon", parts[3], telegram_id, context)
+    elif parts[1] == "start":
+        await handle_bridge_start(query, parts[2], telegram_id, context, dest_chain="polygon")
+    elif parts[1] == "swap" and parts[2] == "bsc_usdt":
+        await handle_bsc_usdc_swap(query, telegram_id, context)
+    elif parts[1] == "swap_exec":
+        await handle_bsc_swap_execute(query, int(parts[2]), telegram_id, context)
+    else:
+        logger.info("Using legacy bridge format", chain=parts[1])
+        await handle_bridge_start(query, parts[1], telegram_id, context, dest_chain="polygon")
+
+
+async def _route_swap(query, parts: list[str], telegram_id: int, context) -> None:
+    if parts[1] == "native":
+        await handle_native_swap(query, parts[2], telegram_id, context)
+    elif parts[1] == "erc20":
+        await handle_erc20_swap(query, parts[2], telegram_id, context)
+    elif parts[1] == "amount":
+        await handle_native_swap_amount(query, parts[2], int(parts[3]), telegram_id, context)
+    elif parts[1] == "confirm":
+        await handle_native_swap_confirm(query, telegram_id, context)
+
+
+async def _route_gas_bridge(query, parts: list[str], telegram_id: int, context) -> None:
+    if parts[1] == "source":
+        await handle_gas_bridge_source(query, parts[2], telegram_id, context)
+    elif parts[1] == "dest":
+        await handle_gas_bridge_dest(query, parts[2], parts[3], telegram_id, context)
+    elif parts[1] == "amount":
+        await handle_gas_bridge_amount(query, parts[2], parts[3], int(parts[4]), telegram_id, context)
+    elif parts[1] == "confirm":
+        await handle_gas_bridge_confirm(query, telegram_id, context)
+
+
+async def _route_export(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_export_key(query, parts[1], telegram_id, context)
+
+
+async def _route_markets(query, parts: list[str], telegram_id: int, context) -> None:
+    if parts[1] == "refresh":
+        await handle_markets_refresh(query, telegram_id)
+    elif parts[1] == "trending":
+        page = int(parts[2]) if len(parts) > 2 else 0
+        await handle_trending_markets(query, telegram_id, page=page)
+    elif parts[1] == "page":
+        page = int(parts[2]) if len(parts) > 2 else 0
+        await handle_trending_markets(query, telegram_id, page=page)
+    elif parts[1] == "15m":
+        await handle_15m_markets(query, telegram_id, page=0)
+    elif parts[1] == "hourly":
+        await handle_hourly_markets(query, telegram_id, page=0)
+    elif parts[1] == "5m":
+        await handle_5m_markets(query, telegram_id, page=0)
+
+
+async def _route_markets15m(query, parts: list[str], telegram_id: int, context) -> None:
+    page = int(parts[2]) if len(parts) > 2 else 0
+    await handle_15m_markets(query, telegram_id, page=page)
+
+
+async def _route_marketshourly(query, parts: list[str], telegram_id: int, context) -> None:
+    page = int(parts[2]) if len(parts) > 2 else 0
+    await handle_hourly_markets(query, telegram_id, page=page)
+
+
+async def _route_markets5m(query, parts: list[str], telegram_id: int, context) -> None:
+    page = int(parts[2]) if len(parts) > 2 else 0
+    await handle_5m_markets(query, telegram_id, page=page)
+
+
+async def _route_search(query, parts: list[str], telegram_id: int, context) -> None:
+    page = int(parts[1]) if len(parts) > 1 else 0
+    search_query = context.user_data.get("search_query", "")
+    if search_query:
+        await show_search_results(query, telegram_id, search_query, page=page, is_callback=True)
+    else:
+        await query.edit_message_text("Search session expired. Please use /search again.")
+
+
+async def _route_categories(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_categories_menu(query, telegram_id)
+
+
+async def _route_category(query, parts: list[str], telegram_id: int, context) -> None:
+    page = int(parts[2]) if len(parts) > 2 else 0
+    await handle_category_view(query, parts[1], telegram_id, page=page)
+
+
+async def _route_positions(query, parts: list[str], telegram_id: int, context) -> None:
+    page = 0
+    if len(parts) > 1 and parts[1] not in ("view", "refresh"):
+        try:
+            page = int(parts[1])
+        except ValueError:
+            page = 0
+    await show_positions(query, telegram_id, page=page, is_callback=True)
+
+
+async def _route_orders(query, parts: list[str], telegram_id: int, context) -> None:
+    page = int(parts[1]) if len(parts) > 1 else 0
+    await show_orders(query, telegram_id, page=page, is_callback=True)
+
+
+async def _route_sell(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_sell_start(query, parts[1], telegram_id)
+
+
+async def _route_sell_confirm(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_sell_confirm(query, parts[1], parts[2], telegram_id)
+
+
+async def _route_redeem(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_redeem(query, parts[1], telegram_id)
+
+
+async def _route_wincard(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_wincard_generate(query, parts[1], telegram_id)
+
+
+async def _route_sellwin(query, parts: list[str], telegram_id: int, context) -> None:
+    callback_data = ":".join(parts[1:])
+    await handle_sellwin_card(query, callback_data, telegram_id)
+
+
+async def _route_menu(query, parts: list[str], telegram_id: int, context) -> None:
+    if parts[1] == "main":
+        await handle_main_menu(query, telegram_id)
+    elif parts[1] == "platform":
+        await handle_platform_menu(query, telegram_id)
+
+
+async def _route_faq(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_faq_topic(query, parts[1])
+
+
+async def _route_referral(query, parts: list[str], telegram_id: int, context) -> None:
+    chain_param = parts[2] if len(parts) > 2 else None
+    await handle_referral_action(query, parts[1], telegram_id, context, chain_param)
+
+
+async def _route_pnlcard(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_pnlcard_generate(query, parts[1], telegram_id)
+
+
+async def _route_geo(query, parts: list[str], telegram_id: int, context) -> None:
+    if parts[1] == "verify":
+        pending_platform = parts[2] if len(parts) > 2 else None
+        await show_geo_verification(query, telegram_id, pending_platform)
+
+
+async def _route_proof_retry(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_proof_retry(query, telegram_id)
+
+
+async def _route_more(query, parts: list[str], telegram_id: int, context) -> None:
+    offset = int(parts[3]) if len(parts) > 3 else 0
+    await handle_market_more_options(query, parts[1], parts[2], offset, telegram_id)
+
+
+async def _route_ai_research(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_ai_research(query, parts[1], parts[2], telegram_id)
+
+
+async def _route_analytics(query, parts: list[str], telegram_id: int, context) -> None:
+    if parts[1] == "platforms":
+        await handle_analytics_platforms(query, telegram_id)
+    elif parts[1] == "plat":
+        period = parts[2] if len(parts) > 2 else "all"
+        await handle_analytics_platforms(query, telegram_id, period)
+    elif parts[1] == "traders":
+        await handle_analytics_traders(query, telegram_id)
+    elif parts[1] == "top":
+        period = parts[2] if len(parts) > 2 else "all"
+        await handle_analytics_traders(query, telegram_id, period)
+    elif parts[1] == "referrers":
+        await handle_analytics_referrers(query, telegram_id)
+    elif parts[1] == "ref":
+        period = parts[2] if len(parts) > 2 else "all"
+        await handle_analytics_referrers(query, telegram_id, period)
+    else:
+        await handle_analytics_callback(query, parts[1], telegram_id)
+
+
+async def _route_arbitrage(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_arbitrage_callback(query, parts[1], telegram_id)
+
+
+async def _route_alerts(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_alerts_callback(query, parts[1], telegram_id)
+
+
+async def _route_arb_trade(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_arb_trade(query, parts[1], parts[2], parts[3], parts[4], telegram_id, context)
+
+
+async def _route_arb_amount(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_arb_amount(query, parts[1], parts[2], parts[3], parts[4], parts[5], telegram_id, context)
+
+
+async def _route_cancel_arb(query, parts: list[str], telegram_id: int, context) -> None:
+    context.user_data.pop("pending_arb_trade", None)
+    await query.edit_message_text("❌ Trade cancelled.")
+
+
+async def _route_view_market(query, parts: list[str], telegram_id: int, context) -> None:
+    await handle_view_market_from_arb(query, parts[1], parts[2], telegram_id)
+
+
+# Dispatch table for callback routing — O(1) lookup instead of elif chain
+CALLBACK_ROUTES: dict[str, Callable] = {
+    "noop": lambda *_: None,
+    "landing": _route_landing,
+    "platform": _route_platform,
+    "market": _route_market,
+    "buy": _route_buy,
+    "buy_start": _route_buy,
+    "confirm_buy": _route_confirm_buy,
+    "cancel_buy": _route_cancel_buy,
+    "polychain": _route_polychain,
+    "wallet": _route_wallet,
+    "bridge": _route_bridge,
+    "swap": _route_swap,
+    "gas_bridge": _route_gas_bridge,
+    "export": _route_export,
+    "markets": _route_markets,
+    "markets15m": _route_markets15m,
+    "marketshourly": _route_marketshourly,
+    "markets5m": _route_markets5m,
+    "search": _route_search,
+    "categories": _route_categories,
+    "category": _route_category,
+    "positions": _route_positions,
+    "orders": _route_orders,
+    "sell": _route_sell,
+    "sell_start": _route_sell,
+    "sell_confirm": _route_sell_confirm,
+    "redeem": _route_redeem,
+    "wincard": _route_wincard,
+    "sellwin": _route_sellwin,
+    "menu": _route_menu,
+    "faq": _route_faq,
+    "referral": _route_referral,
+    "pnlcard": _route_pnlcard,
+    "geo": _route_geo,
+    "proof_retry": _route_proof_retry,
+    "more": _route_more,
+    "ai_research": _route_ai_research,
+    "analytics": _route_analytics,
+    "arbitrage": _route_arbitrage,
+    "alerts": _route_alerts,
+    "arb_trade": _route_arb_trade,
+    "arb_amount": _route_arb_amount,
+    "cancel_arb": _route_cancel_arb,
+    "view_market": _route_view_market,
+}
+
+
+# ===================
+# Callback Dispatcher
 # ===================
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2204,334 +2561,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     action = parts[0]
     
     try:
-        if action == "landing":
-            # User clicked "Get Started" on landing page - show platform selection
-            if parts[1] == "start":
-                text = """
-🎯 <b>Choose Your Platform</b>
-
-Select which prediction market you want to trade on:
-"""
-                await query.edit_message_text(
-                    text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=platform_keyboard(),
-                )
-
-        elif action == "platform":
-            await handle_platform_select(query, parts[1], update.effective_user.id)
-        
-        elif action == "market":
-            await handle_market_view(query, parts[1], parts[2], update.effective_user.id)
-        
-        elif action == "buy":
-            await handle_buy_start(query, parts[1], parts[2], parts[3], update.effective_user.id, context)
-
-        elif action == "buy_start":
-            # Retry button handler - same as buy
-            await handle_buy_start(query, parts[1], parts[2], parts[3], update.effective_user.id, context)
-
-        elif action == "confirm_buy":
-            # Read from user_data (stored when quote was shown)
-            pending = context.user_data.get("pending_confirm")
-            if pending:
-                context.user_data.pop("pending_confirm", None)
-                await handle_buy_confirm(
-                    query,
-                    pending["platform"],
-                    pending["market_id"],
-                    pending["outcome"],
-                    pending["amount"],
-                    update.effective_user.id
-                )
-            else:
-                await query.edit_message_text("❌ Order expired. Please try again.")
-
-        elif action == "cancel_buy":
-            context.user_data.pop("pending_confirm", None)
-            await query.edit_message_text("❌ Order cancelled.")
-
-        elif action == "polychain":
-            await handle_polymarket_chain_select(query, parts[1], update.effective_user.id)
-
-        elif action == "wallet":
-            if parts[1] == "refresh":
-                await handle_wallet_refresh(query, update.effective_user.id)
-            elif parts[1] == "export":
-                await handle_wallet_export(query, update.effective_user.id)
-            elif parts[1] == "create_new":
-                await handle_wallet_create_new(query, update.effective_user.id, context)
-            elif parts[1] == "confirm_create":
-                await handle_wallet_confirm_create(query, update.effective_user.id, context)
-            elif parts[1] == "bridge":
-                await handle_bridge_menu(query, update.effective_user.id, context)
-            elif parts[1] == "setup":
-                await handle_wallet_setup(query, update.effective_user.id, context)
-
-        elif action == "bridge":
-            # New format: bridge:dest:chain, bridge:source:source:dest, bridge:amount:source:dest:percent
-            # Legacy format: bridge:start:source, bridge:amount:source:percent, bridge:custom:source
-            logger.info("Bridge callback received", callback_data=data, parts=parts)
-            if parts[1] == "action":
-                # bridge:action:usdc/swap/gas - simplified action menu
-                if parts[2] == "usdc":
-                    await handle_bridge_usdc_menu(query, update.effective_user.id, context)
-                elif parts[2] == "swap":
-                    await handle_swap_menu(query, update.effective_user.id, context)
-                elif parts[2] == "gas":
-                    await handle_gas_bridge_menu(query, update.effective_user.id, context)
-            elif parts[1] == "dest":
-                # bridge:dest:chain - user selected destination chain
-                await handle_bridge_dest(query, parts[2], update.effective_user.id, context)
-            elif parts[1] == "source":
-                # bridge:source:source_chain:dest_chain - user selected source chain
-                await handle_bridge_start(query, parts[2], update.effective_user.id, context, dest_chain=parts[3])
-            elif parts[1] == "amount":
-                # New: bridge:amount:source:dest:percent or Legacy: bridge:amount:source:percent
-                if len(parts) == 5:
-                    # New format with destination
-                    await handle_bridge_amount(query, parts[2], parts[3], int(parts[4]), update.effective_user.id, context)
-                else:
-                    # Legacy format - assume polygon destination
-                    await handle_bridge_amount(query, parts[2], "polygon", int(parts[3]), update.effective_user.id, context)
-            elif parts[1] == "custom":
-                # New: bridge:custom:source:dest or Legacy: bridge:custom:source
-                if len(parts) == 4:
-                    await handle_bridge_custom(query, parts[2], parts[3], update.effective_user.id, context)
-                else:
-                    await handle_bridge_custom(query, parts[2], "polygon", update.effective_user.id, context)
-            elif parts[1] == "speed":
-                # bridge:speed:source:dest:mode or legacy bridge:speed:source:mode
-                if len(parts) == 5:
-                    await handle_bridge_speed(query, parts[2], parts[3], parts[4], update.effective_user.id, context)
-                else:
-                    await handle_bridge_speed(query, parts[2], "polygon", parts[3], update.effective_user.id, context)
-            elif parts[1] == "start":
-                # Legacy: bridge:start:source_chain - assume polygon destination
-                await handle_bridge_start(query, parts[2], update.effective_user.id, context, dest_chain="polygon")
-            elif parts[1] == "swap" and parts[2] == "bsc_usdt":
-                # Swap BSC USDC → USDT for Opinion Labs
-                await handle_bsc_usdc_swap(query, update.effective_user.id, context)
-            elif parts[1] == "swap_exec":
-                # Execute BSC USDC → USDT swap
-                await handle_bsc_swap_execute(query, int(parts[2]), update.effective_user.id, context)
-            else:
-                # bridge:source_chain - legacy format
-                logger.info("Using legacy bridge format", chain=parts[1])
-                await handle_bridge_start(query, parts[1], update.effective_user.id, context, dest_chain="polygon")
-
-        elif action == "swap":
-            # Token → USDC swaps
-            # Format: swap:native:{chain}, swap:erc20:{token_key}, swap:amount:{chain}:{percent}, swap:confirm
-            if parts[1] == "native":
-                # swap:native:polygon - user wants to swap native token on chain
-                await handle_native_swap(query, parts[2], update.effective_user.id, context)
-            elif parts[1] == "erc20":
-                # swap:erc20:virtual - user wants to swap an ERC-20 token
-                await handle_erc20_swap(query, parts[2], update.effective_user.id, context)
-            elif parts[1] == "amount":
-                # swap:amount:{chain}:{percent} - user selected swap amount
-                await handle_native_swap_amount(query, parts[2], int(parts[3]), update.effective_user.id, context)
-            elif parts[1] == "confirm":
-                # swap:confirm - user confirmed the swap (quote stored in user_data)
-                await handle_native_swap_confirm(query, update.effective_user.id, context)
-
-        elif action == "gas_bridge":
-            # Native token bridging (ETH/POL between chains)
-            # Format: gas_bridge:source:{chain}, gas_bridge:dest:{source}:{dest},
-            #         gas_bridge:amount:{source}:{dest}:{percent}, gas_bridge:confirm
-            if parts[1] == "source":
-                # gas_bridge:source:base - user wants to bridge from this chain
-                await handle_gas_bridge_source(query, parts[2], update.effective_user.id, context)
-            elif parts[1] == "dest":
-                # gas_bridge:dest:{source}:{dest} - user selected destination
-                await handle_gas_bridge_dest(query, parts[2], parts[3], update.effective_user.id, context)
-            elif parts[1] == "amount":
-                # gas_bridge:amount:{source}:{dest}:{percent}
-                await handle_gas_bridge_amount(query, parts[2], parts[3], int(parts[4]), update.effective_user.id, context)
-            elif parts[1] == "confirm":
-                # gas_bridge:confirm - execute the bridge
-                await handle_gas_bridge_confirm(query, update.effective_user.id, context)
-
-        elif action == "export":
-            await handle_export_key(query, parts[1], update.effective_user.id, context)
-
-        elif action == "markets":
-            if parts[1] == "refresh":
-                await handle_markets_refresh(query, update.effective_user.id)
-            elif parts[1] == "trending":
-                page = int(parts[2]) if len(parts) > 2 else 0
-                await handle_trending_markets(query, update.effective_user.id, page=page)
-            elif parts[1] == "page":
-                page = int(parts[2]) if len(parts) > 2 else 0
-                await handle_trending_markets(query, update.effective_user.id, page=page)
-            elif parts[1] == "15m":
-                await handle_15m_markets(query, update.effective_user.id, page=0)
-            elif parts[1] == "hourly":
-                await handle_hourly_markets(query, update.effective_user.id, page=0)
-            elif parts[1] == "5m":
-                await handle_5m_markets(query, update.effective_user.id, page=0)
-
-        elif action == "markets15m":
-            # 15-minute markets pagination: markets15m:page:X
-            page = int(parts[2]) if len(parts) > 2 else 0
-            await handle_15m_markets(query, update.effective_user.id, page=page)
-
-        elif action == "marketshourly":
-            # Hourly markets pagination: marketshourly:page:X
-            page = int(parts[2]) if len(parts) > 2 else 0
-            await handle_hourly_markets(query, update.effective_user.id, page=page)
-
-        elif action == "markets5m":
-            # 5-minute markets pagination: markets5m:page:X
-            page = int(parts[2]) if len(parts) > 2 else 0
-            await handle_5m_markets(query, update.effective_user.id, page=page)
-
-        elif action == "search":
-            # Search results pagination: search:page
-            page = int(parts[1]) if len(parts) > 1 else 0
-            search_query = context.user_data.get("search_query", "")
-            if search_query:
-                await show_search_results(query, update.effective_user.id, search_query, page=page, is_callback=True)
-            else:
-                await query.edit_message_text("Search session expired. Please use /search again.")
-
-        elif action == "categories":
-            await handle_categories_menu(query, update.effective_user.id)
-
-        elif action == "category":
-            # Format: category:category_id or category:category_id:page
-            page = int(parts[2]) if len(parts) > 2 else 0
-            await handle_category_view(query, parts[1], update.effective_user.id, page=page)
-
-        elif action == "positions":
-            # Format: positions:page or positions:view or positions:refresh
-            page = 0
-            if len(parts) > 1 and parts[1] not in ("view", "refresh"):
-                try:
-                    page = int(parts[1])
-                except ValueError:
-                    page = 0
-            await show_positions(query, update.effective_user.id, page=page, is_callback=True)
-
-        elif action == "orders":
-            # Format: orders:page
-            page = int(parts[1]) if len(parts) > 1 else 0
-            await show_orders(query, update.effective_user.id, page=page, is_callback=True)
-
-        elif action == "sell":
-            # Format: sell:position_id
-            await handle_sell_start(query, parts[1], update.effective_user.id)
-
-        elif action == "sell_start":
-            # Retry button handler - same as sell
-            await handle_sell_start(query, parts[1], update.effective_user.id)
-
-        elif action == "sell_confirm":
-            # Format: sell_confirm:position_id:percent
-            await handle_sell_confirm(query, parts[1], parts[2], update.effective_user.id)
-
-        elif action == "redeem":
-            # Format: redeem:position_id
-            await handle_redeem(query, parts[1], update.effective_user.id)
-
-        elif action == "wincard":
-            # Format: wincard:position_id
-            await handle_wincard_generate(query, parts[1], update.effective_user.id)
-
-        elif action == "sellwin":
-            # Format: sellwin:position_id:exit_price_x1000 - generate win card from sell
-            # Combine parts after action to preserve the position_id:price format
-            callback_data = ":".join(parts[1:])
-            await handle_sellwin_card(query, callback_data, update.effective_user.id)
-
-        elif action == "menu":
-            if parts[1] == "main":
-                await handle_main_menu(query, update.effective_user.id)
-            elif parts[1] == "platform":
-                await handle_platform_menu(query, update.effective_user.id)
-
-        elif action == "faq":
-            await handle_faq_topic(query, parts[1])
-
-        elif action == "referral":
-            # parts[1] is the action, parts[2] might be chain_family for withdraw
-            chain_param = parts[2] if len(parts) > 2 else None
-            await handle_referral_action(query, parts[1], update.effective_user.id, context, chain_param)
-
-        elif action == "pnlcard":
-            # Format: pnlcard:platform
-            await handle_pnlcard_generate(query, parts[1], update.effective_user.id)
-
-        elif action == "geo":
-            # IP-based geo verification
-            # Formats: geo:verify, geo:verify:platform
-            if parts[1] == "verify":
-                pending_platform = parts[2] if len(parts) > 2 else None
-                await show_geo_verification(query, update.effective_user.id, pending_platform)
-
-        elif action == "proof_retry":
-            # User clicked "I've Completed KYC" — re-check Proof API
-            await handle_proof_retry(query, update.effective_user.id)
-
-        elif action == "more":
-            # View more options for multi-outcome market
-            # Format: more:platform:market_id:offset (shortened from market_more for 64-byte limit)
-            offset = int(parts[3]) if len(parts) > 3 else 0
-            await handle_market_more_options(query, parts[1], parts[2], offset, update.effective_user.id)
-
-        elif action == "ai_research":
-            # AI Research for market
-            # Format: ai_research:platform:market_id
-            await handle_ai_research(query, parts[1], parts[2], update.effective_user.id)
-
-        elif action == "analytics":
-            # Admin analytics dashboard
-            # Formats: analytics:period, analytics:platforms, analytics:plat:period, analytics:traders, analytics:top:period, analytics:referrers, analytics:ref:period
-            if parts[1] == "platforms":
-                await handle_analytics_platforms(query, update.effective_user.id)
-            elif parts[1] == "plat":
-                # Platform breakdown with time period
-                period = parts[2] if len(parts) > 2 else "all"
-                await handle_analytics_platforms(query, update.effective_user.id, period)
-            elif parts[1] == "traders":
-                await handle_analytics_traders(query, update.effective_user.id)
-            elif parts[1] == "top":
-                # Top traders with time period
-                period = parts[2] if len(parts) > 2 else "all"
-                await handle_analytics_traders(query, update.effective_user.id, period)
-            elif parts[1] == "referrers":
-                await handle_analytics_referrers(query, update.effective_user.id)
-            elif parts[1] == "ref":
-                # Top referrers with time period
-                period = parts[2] if len(parts) > 2 else "all"
-                await handle_analytics_referrers(query, update.effective_user.id, period)
-            else:
-                # Time period selection (daily, weekly, monthly, all)
-                await handle_analytics_callback(query, parts[1], update.effective_user.id)
-
-        elif action == "arbitrage":
-            await handle_arbitrage_callback(query, parts[1], update.effective_user.id)
-
-        elif action == "alerts":
-            await handle_alerts_callback(query, parts[1], update.effective_user.id)
-
-        elif action == "arb_trade":
-            # Format: arb_trade:platform:market_id:outcome:side
-            await handle_arb_trade(query, parts[1], parts[2], parts[3], parts[4], update.effective_user.id, context)
-
-        elif action == "arb_amount":
-            # Format: arb_amount:platform:market_id:outcome:side:amount
-            await handle_arb_amount(query, parts[1], parts[2], parts[3], parts[4], parts[5], update.effective_user.id, context)
-
-        elif action == "cancel_arb":
-            context.user_data.pop("pending_arb_trade", None)
-            await query.edit_message_text("❌ Trade cancelled.")
-
-        elif action == "view_market":
-            # Format: view_market:platform:market_id
-            await handle_view_market_from_arb(query, parts[1], parts[2], update.effective_user.id)
-
+        handler = CALLBACK_ROUTES.get(action)
+        if handler:
+            await handler(query, parts, update.effective_user.id, context)
     except Exception as e:
         error_str = str(e)
         # Silently ignore "message not modified" errors (happens on refresh with no changes)
@@ -2544,7 +2576,7 @@ Select which prediction market you want to trade on:
                 parse_mode=ParseMode.HTML,
             )
         except Exception:
-            pass  # Ignore errors when showing error message
+            pass
 
 
 async def handle_platform_select(query, platform_value: str, telegram_id: int) -> None:
