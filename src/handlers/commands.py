@@ -293,6 +293,34 @@ async def enrich_orderbook_prices(markets: list, platform) -> None:
     await asyncio.gather(*[fetch_ask(m) for m in markets])
 
 
+def _prefetch_market_details(markets: list, platform_value: str, platform) -> None:
+    """Fire-and-forget pre-fetch of market details for the top visible markets.
+
+    When a user views a market list, the most likely next action is tapping
+    one of the first few markets. Pre-fetching their details into cache
+    makes that next view near-instant.
+    """
+    async def _do_prefetch():
+        from src.services.cache import cache
+        for market in markets[:3]:
+            try:
+                cached = await cache.get_market(platform_value, market.market_id)
+                if cached is None:
+                    detail = await platform.get_market(market.market_id)
+                    if detail:
+                        await cache.set_market(platform_value, market.market_id, detail)
+                        if detail.is_multi_outcome and detail.event_id:
+                            related = await cache.get_related(platform_value, detail.event_id)
+                            if related is None:
+                                related = await platform.get_related_markets(detail.event_id)
+                                if related:
+                                    await cache.set_related(platform_value, detail.event_id, related)
+            except Exception:
+                pass  # Pre-fetch failures are silent — cache miss is fine
+
+    asyncio.create_task(_do_prefetch())
+
+
 def platform_keyboard() -> InlineKeyboardMarkup:
     """Create platform selection keyboard."""
     buttons = []
@@ -1006,6 +1034,7 @@ async def show_search_results(target, telegram_id: int, search_query: str, page:
 
         # Enrich with actual orderbook ask prices (replaces mid-prices)
         await enrich_orderbook_prices(markets, platform)
+        _prefetch_market_details(markets, user.active_platform.value, platform)
 
         text = f"🔍 <b>Results for \"{escape_html(search_query)}\"</b>"
         if total_pages > 1:
@@ -6475,6 +6504,7 @@ async def handle_trending_markets(query, telegram_id: int, page: int = 0) -> Non
 
         # Enrich with actual orderbook ask prices (replaces mid-prices)
         await enrich_orderbook_prices(markets, platform)
+        _prefetch_market_details(markets, user.active_platform.value, platform)
 
         page_display = page + 1
         text = f"{platform_info['emoji']} <b>Trending on {platform_info['name']}</b>\n"
@@ -6649,6 +6679,7 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
 
         # Enrich with actual orderbook ask prices (replaces mid-prices)
         await enrich_orderbook_prices(markets, platform)
+        _prefetch_market_details(markets, user.active_platform.value, platform)
 
         text = f"{category_emoji} <b>{category_label} Markets</b>"
         if total_pages > 1:
