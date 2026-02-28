@@ -13,8 +13,8 @@ export default defineConfig({
         name: "Spredd - Prediction Markets",
         short_name: "Spredd",
         description: "Trade prediction markets with a swipe",
-        theme_color: "#0D0D0D",
-        background_color: "#0D0D0D",
+        theme_color: "#0F0F1A",
+        background_color: "#0F0F1A",
         display: "standalone",
         orientation: "portrait",
         start_url: "/pwa/",
@@ -40,6 +40,22 @@ export default defineConfig({
       workbox: {
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
         runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+            handler: "StaleWhileRevalidate",
+            options: {
+              cacheName: "google-fonts-stylesheets",
+              expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
+            },
+          },
+          {
+            urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
+            handler: "CacheFirst",
+            options: {
+              cacheName: "google-fonts-webfonts",
+              expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 365 },
+            },
+          },
           {
             urlPattern: /^https:\/\/.*\/api\/v1\/.*/i,
             handler: "NetworkFirst",

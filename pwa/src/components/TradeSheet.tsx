@@ -2,6 +2,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
 import { formatUSD, formatPercent } from "@/lib/utils";
 import { type FeedMarket } from "@/api/client";
 import { useTrade } from "@/hooks/useTrade";
@@ -13,7 +14,7 @@ interface TradeSheetProps {
   onClose: () => void;
 }
 
-const PRESETS = ["1", "5", "10", "25"];
+const PRESETS = ["5", "25", "50", "100"];
 
 export function TradeSheet({ market, initialOutcome, onClose }: TradeSheetProps) {
   const {
@@ -75,7 +76,7 @@ export function TradeSheet({ market, initialOutcome, onClose }: TradeSheetProps)
 
         {/* Sheet */}
         <motion.div
-          className="relative w-full bg-spredd-dark rounded-t-2xl pb-8 pt-4 px-5 z-10 max-h-[80vh] overflow-y-auto"
+          className="relative w-full bg-spredd-bg rounded-t-2xl pb-8 pt-4 px-5 z-10 max-h-[85vh] overflow-y-auto"
           initial={{ y: "100%" }}
           animate={{ y: 0 }}
           exit={{ y: "100%" }}
@@ -103,7 +104,7 @@ export function TradeSheet({ market, initialOutcome, onClose }: TradeSheetProps)
               className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${
                 isYes
                   ? "bg-spredd-green text-black"
-                  : "bg-spredd-surface text-white/50"
+                  : "bg-white/6 text-white/50"
               }`}
               onClick={() => setOutcome("yes")}
             >
@@ -113,12 +114,24 @@ export function TradeSheet({ market, initialOutcome, onClose }: TradeSheetProps)
               className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${
                 !isYes
                   ? "bg-spredd-red text-white"
-                  : "bg-spredd-surface text-white/50"
+                  : "bg-white/6 text-white/50"
               }`}
               onClick={() => setOutcome("no")}
             >
               No {formatPercent(market.no_price)}
             </button>
+          </div>
+
+          {/* Amount slider */}
+          <div className="mb-4">
+            <Slider
+              min={0}
+              max={500}
+              step={5}
+              value={amountNum}
+              onChange={(v) => setAmount(String(v))}
+              formatLabel={(v) => formatUSD(v)}
+            />
           </div>
 
           {/* Amount presets */}
@@ -128,8 +141,8 @@ export function TradeSheet({ market, initialOutcome, onClose }: TradeSheetProps)
                 key={preset}
                 className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all ${
                   amount === preset
-                    ? "bg-spredd-orange text-white"
-                    : "bg-spredd-surface text-white/70 hover:bg-spredd-surface/80"
+                    ? "bg-spredd-green/20 text-spredd-green border border-spredd-green/30"
+                    : "bg-white/6 text-white/70 hover:bg-white/10"
                 }`}
                 onClick={() => setAmount(preset)}
               >
@@ -146,13 +159,13 @@ export function TradeSheet({ market, initialOutcome, onClose }: TradeSheetProps)
               inputMode="decimal"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              className="pl-7 bg-spredd-surface border-spredd-surface text-white"
+              className="pl-7 bg-white/6 border-white/10 text-white"
               placeholder="Custom amount"
             />
           </div>
 
           {/* Quote summary */}
-          <div className="bg-spredd-surface rounded-xl p-4 mb-5 space-y-2">
+          <div className="glass-card p-4 mb-5 space-y-2">
             <div className="flex justify-between text-sm">
               <span className="text-white/50">Amount</span>
               <span className="text-white font-medium">
@@ -180,7 +193,7 @@ export function TradeSheet({ market, initialOutcome, onClose }: TradeSheetProps)
               </span>
             </div>
             <div className="flex justify-between text-sm border-t border-white/10 pt-2">
-              <span className="text-white/50">Potential payout</span>
+              <span className="text-white/50">Potential return</span>
               <span className={isYes ? "text-spredd-green font-bold" : "text-spredd-red font-bold"}>
                 {formatUSD(expectedPayout)}
               </span>

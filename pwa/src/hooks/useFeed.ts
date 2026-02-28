@@ -122,7 +122,7 @@ export function useFeed(): UseFeedReturn {
       const raw = res.markets || [];
 
       // Normalize API response: volume can be string, prices can be missing
-      const newMarkets: FeedMarket[] = raw.map((m: Record<string, unknown>) => ({
+      const newMarkets: FeedMarket[] = raw.map((m: any) => ({
         id: String(m.id || ""),
         platform: String(m.platform || ""),
         title: String(m.title || m.question || ""),

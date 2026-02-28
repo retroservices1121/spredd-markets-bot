@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { motion } from "framer-motion";
 import { CheckCircle, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,13 @@ export function TradeConfirm({
   const isSuccess = result.success;
   const isYes = outcome === "yes";
 
+  // Haptic feedback on success
+  useEffect(() => {
+    if (isSuccess && navigator.vibrate) {
+      navigator.vibrate([50, 30, 50]);
+    }
+  }, [isSuccess]);
+
   return (
     <motion.div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
@@ -30,22 +38,26 @@ export function TradeConfirm({
       exit={{ opacity: 0 }}
     >
       <motion.div
-        className="bg-spredd-dark rounded-2xl p-6 mx-6 w-full max-w-sm text-center"
+        className="bg-spredd-bg rounded-2xl p-6 mx-6 w-full max-w-sm text-center border border-white/8"
         initial={{ scale: 0.8, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         transition={{ type: "spring", damping: 20, stiffness: 300 }}
       >
-        {/* Icon */}
+        {/* Animated icon */}
         <motion.div
           className="flex justify-center mb-4"
-          initial={{ scale: 0 }}
-          animate={{ scale: 1 }}
+          initial={{ scale: 0, rotate: -180 }}
+          animate={{ scale: 1, rotate: 0 }}
           transition={{ delay: 0.1, type: "spring", damping: 10, stiffness: 200 }}
         >
           {isSuccess ? (
-            <CheckCircle className="w-16 h-16 text-spredd-green" />
+            <div className="w-20 h-20 rounded-full bg-spredd-green/10 flex items-center justify-center">
+              <CheckCircle className="w-12 h-12 text-spredd-green" />
+            </div>
           ) : (
-            <XCircle className="w-16 h-16 text-spredd-red" />
+            <div className="w-20 h-20 rounded-full bg-spredd-red/10 flex items-center justify-center">
+              <XCircle className="w-12 h-12 text-spredd-red" />
+            </div>
           )}
         </motion.div>
 
