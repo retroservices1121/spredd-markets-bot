@@ -598,14 +598,28 @@ class KalshiPlatform(BasePlatform):
             List of markets belonging to the same event, sorted by probability (highest first)
         """
         try:
-            # Use cached markets to find related ones
-            all_markets = await self.get_markets(limit=200, offset=0, active_only=True)
+            # Fetch directly from the DFlow event endpoint to get ALL markets,
+            # not just those in the limited cache.
+            event_data = await self._fetch_event(event_id)
+            if not event_data:
+                return []
 
-            # Filter by event_id
-            related = [m for m in all_markets if m.event_id == event_id]
+            image_url = event_data.get("imageUrl")
+            event_markets = event_data.get("markets", [])
+            if len(event_markets) <= 1:
+                return []
 
-            if len(related) <= 1:
-                return []  # Not a multi-outcome event
+            related = []
+            for m_data in event_markets:
+                m = self._parse_market(m_data)
+                m.image_url = image_url
+                m.is_multi_outcome = True
+                m.related_market_count = len(event_markets)
+                # Set outcome name from yesSubTitle
+                outcome_name = m_data.get("yesSubTitle") or m_data.get("subtitle")
+                if outcome_name:
+                    m.outcome_name = outcome_name[:50]
+                related.append(m)
 
             # Sort by yes_price (probability) descending
             related.sort(key=lambda m: m.yes_price or Decimal(0), reverse=True)
@@ -733,6 +747,59 @@ class KalshiPlatform(BasePlatform):
                         filtered.append(market)
                         seen_ids.add(market.market_id)
                         break
+
+        # Supplement with DFlow search to find markets beyond the cached pages.
+        # The cache only holds ~800 markets; categories like mentions may have
+        # many more spread across the full 4000+ market catalogue.
+        CATEGORY_SEARCH_TERMS = {
+            "mentions": ["mention"],
+            "sports": ["NBA", "NFL", "NHL", "MLB"],
+            "politics": ["president", "election"],
+            "economics": ["fed rate", "inflation"],
+            "world": ["ukraine", "russia"],
+            "entertainment": ["oscar", "grammy"],
+        }
+        search_terms = CATEGORY_SEARCH_TERMS.get(category.lower(), [])
+        if search_terms:
+            async def _search_cat(term: str) -> list[Market]:
+                try:
+                    data = await self._metadata_request("GET", "/api/v1/search", params={
+                        "q": term,
+                        "limit": 50,
+                        "withNestedMarkets": True,
+                    })
+                    results = []
+                    for event in data.get("events", []):
+                        image_url = event.get("imageUrl")
+                        event_markets = event.get("markets", [])
+                        is_multi = len(event_markets) > 1
+                        for m_data in event_markets:
+                            m = self._parse_market(m_data)
+                            m.image_url = image_url
+                            if is_multi:
+                                m.is_multi_outcome = True
+                                m.related_market_count = len(event_markets)
+                            results.append(m)
+                    return results
+                except Exception as e:
+                    logger.warning("Category search failed", term=term, error=str(e))
+                    return []
+
+            search_results = await asyncio.gather(
+                *(_search_cat(term) for term in search_terms)
+            )
+            for batch in search_results:
+                for m in batch:
+                    if m.market_id not in seen_ids:
+                        ticker = m.market_id.upper()
+                        title_lower = (m.title or "").lower()
+                        desc_lower = (m.description or "").lower()
+                        matches = any(ticker.startswith(p) for p in patterns)
+                        if not matches and keywords:
+                            matches = any(kw in title_lower or kw in desc_lower for kw in keywords)
+                        if matches:
+                            filtered.append(m)
+                            seen_ids.add(m.market_id)
 
         # Deduplicate multi-outcome events: keep one representative market per event
         # so the user sees "NBA Mentions - HOU vs NYK [12 options]" once, not 12 rows.
