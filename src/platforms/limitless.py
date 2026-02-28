@@ -1253,7 +1253,7 @@ class LimitlessPlatform(BasePlatform):
             try:
                 sdk_market = await self._market_fetcher.get_market(market_id)
                 if sdk_market and hasattr(sdk_market, "venue") and sdk_market.venue:
-                    venue = sdk_market.venue if isinstance(sdk_market.venue, dict) else {"exchange": sdk_market.venue}
+                    venue = sdk_market.venue if isinstance(sdk_market.venue, dict) else {"exchange": str(sdk_market.venue)}
                     logger.debug("Got venue via SDK MarketFetcher", market_id=market_id, exchange=venue.get("exchange"))
                     return venue
             except Exception as e:
