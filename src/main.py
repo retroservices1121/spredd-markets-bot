@@ -74,6 +74,8 @@ from src.handlers.commands import (
     resume_trading_command,
     # Cache management
     flush_cache_command,
+    # Wallet import
+    import_command,
 )
 from src.utils.logging import setup_logging, get_logger
 
@@ -178,6 +180,7 @@ def setup_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("wallet", wallet_command))
     application.add_handler(CommandHandler("balance", balance_command))
     application.add_handler(CommandHandler("resetwallet", resetwallet_command))
+    application.add_handler(CommandHandler("import", import_command))
     application.add_handler(CommandHandler("markets", markets_command))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("positions", positions_command))

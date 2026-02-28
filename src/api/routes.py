@@ -329,6 +329,78 @@ async def telegram_login(payload: dict, session: AsyncSession = Depends(get_sess
     }
 
 
+@router.post("/auth/wallet-register")
+async def wallet_register(
+    x_wallet_address: str = Header(..., alias="X-Wallet-Address"),
+    x_wallet_signature: str = Header(..., alias="X-Wallet-Signature"),
+    x_wallet_timestamp: str = Header(..., alias="X-Wallet-Timestamp"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Register or retrieve a user account via wallet signature.
+
+    Used by the Spredd CLI and other headless clients that authenticate
+    with an EVM keypair instead of Telegram. Creates a new User + Wallet
+    record if the address is not already registered, otherwise returns
+    the existing user info.
+
+    Auth: same EIP-191 signature as Chrome extension (no Telegram required).
+    """
+    verified_address = validate_wallet_signature(
+        x_wallet_address, x_wallet_signature, x_wallet_timestamp
+    )
+    if not verified_address:
+        raise HTTPException(status_code=401, detail="Invalid wallet signature")
+
+    # Check if a wallet with this address already exists
+    result = await session.execute(
+        select(Wallet).where(Wallet.public_key.ilike(verified_address))
+    )
+    existing_wallet = result.scalar_one_or_none()
+
+    if existing_wallet:
+        # Return existing user
+        result = await session.execute(
+            select(User).where(User.id == existing_wallet.user_id)
+        )
+        user = result.scalar_one_or_none()
+        return {
+            "success": True,
+            "message": "Wallet already registered",
+            "user_id": user.id if user else None,
+            "address": verified_address,
+            "is_new": False,
+        }
+
+    # Create new user (no telegram_id — CLI-only user)
+    user = User(
+        id=str(uuid.uuid4()),
+        telegram_id=0,  # Sentinel for CLI-registered users
+        username=f"cli_{verified_address[:8].lower()}",
+    )
+    session.add(user)
+    await session.flush()
+
+    # Create an EVM wallet record linked to this user
+    wallet = Wallet(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        chain_family=ChainFamily.EVM,
+        wallet_type="external",
+        public_key=verified_address,
+        encrypted_private_key=None,  # CLI manages its own key
+    )
+    session.add(wallet)
+    await session.commit()
+
+    return {
+        "success": True,
+        "message": "Account created",
+        "user_id": user.id,
+        "address": verified_address,
+        "is_new": True,
+    }
+
+
 # ===================
 # Feed Endpoint (PWA)
 # ===================

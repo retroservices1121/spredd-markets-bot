@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, text
 from sqlalchemy.orm import selectinload
 
 from src.db.models import (
@@ -76,13 +76,37 @@ async def init_db(database_url: str) -> None:
 
 
 async def create_tables() -> None:
-    """Create all database tables."""
+    """Create all database tables and run schema migrations."""
     if _engine is None:
         raise RuntimeError("Database not initialized")
-    
+
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    
+
+    # Migrate existing wallets table: add source/is_active columns, update index
+    async with _engine.begin() as conn:
+        try:
+            # Add source column if missing
+            await conn.execute(
+                text("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'generated'")
+            )
+            # Add is_active column if missing
+            await conn.execute(
+                text("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
+            )
+            # Drop old unique index if it exists, replace with new one
+            await conn.execute(
+                text("DROP INDEX IF EXISTS ix_wallets_user_chain")
+            )
+            await conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_wallets_user_chain_source "
+                    "ON wallets (user_id, chain_family, source)"
+                )
+            )
+        except Exception as e:
+            logger.warning("Wallet migration (may already be applied)", detail=str(e))
+
     logger.info("Database tables created")
 
 
@@ -269,6 +293,8 @@ async def create_wallet(
     export_pin_hash: Optional[str] = None,
     wallet_type: str = "legacy",
     privy_wallet_id: Optional[str] = None,
+    source: str = "generated",
+    is_active: bool = True,
 ) -> Wallet:
     """Create a new wallet for user.
 
@@ -281,6 +307,8 @@ async def create_wallet(
             user_id=user_id,
             chain_family=chain_family,
             wallet_type=wallet_type,
+            source=source,
+            is_active=is_active,
             privy_wallet_id=privy_wallet_id,
             public_key=public_key,
             encrypted_private_key=encrypted_private_key,
@@ -295,18 +323,20 @@ async def create_wallet(
             user_id=user_id,
             chain_family=chain_family.value,
             wallet_type=wallet_type,
+            source=source,
             has_export_pin=bool(export_pin_hash),
         )
         return wallet
 
 
 async def get_wallet(user_id: str, chain_family: ChainFamily) -> Optional[Wallet]:
-    """Get user's wallet for a chain family."""
+    """Get user's active wallet for a chain family."""
     async with get_session() as session:
         result = await session.execute(
             select(Wallet)
             .where(Wallet.user_id == user_id)
             .where(Wallet.chain_family == chain_family)
+            .where(Wallet.is_active == True)
         )
         return result.scalar_one_or_none()
 
@@ -334,6 +364,106 @@ async def delete_user_wallets(user_id: str) -> bool:
         await session.commit()
         logger.info("Deleted user wallets", user_id=user_id, count=len(wallets))
         return True
+
+
+async def delete_wallet_by_chain(
+    user_id: str, chain_family: ChainFamily, source: Optional[str] = None
+) -> bool:
+    """Delete wallet(s) for a specific chain family, optionally filtered by source."""
+    async with get_session() as session:
+        conditions = [
+            Wallet.user_id == user_id,
+            Wallet.chain_family == chain_family,
+        ]
+        if source:
+            conditions.append(Wallet.source == source)
+
+        result = await session.execute(select(Wallet).where(*conditions))
+        wallets = list(result.scalars().all())
+
+        for wallet in wallets:
+            await session.delete(wallet)
+
+        if wallets:
+            await session.commit()
+            logger.info(
+                "Deleted wallet by chain",
+                user_id=user_id,
+                chain_family=chain_family.value,
+                source=source,
+                count=len(wallets),
+            )
+            return True
+
+        return False
+
+
+async def get_inactive_wallet(user_id: str, chain_family: ChainFamily) -> Optional[Wallet]:
+    """Get user's inactive wallet for a chain family (if any)."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(Wallet)
+            .where(Wallet.user_id == user_id)
+            .where(Wallet.chain_family == chain_family)
+            .where(Wallet.is_active == False)
+        )
+        return result.scalar_one_or_none()
+
+
+async def deactivate_wallet(user_id: str, chain_family: ChainFamily) -> bool:
+    """Set is_active=False on the current active wallet for a chain family."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(Wallet).where(
+                Wallet.user_id == user_id,
+                Wallet.chain_family == chain_family,
+                Wallet.is_active == True,
+            )
+        )
+        wallet = result.scalar_one_or_none()
+        if wallet:
+            wallet.is_active = False
+            await session.commit()
+            return True
+        return False
+
+
+async def switch_active_wallet(user_id: str, chain_family: ChainFamily) -> Optional[Wallet]:
+    """Switch active wallet for a chain family.
+
+    Deactivates the current active wallet and activates the inactive one.
+    Returns the newly activated wallet, or None if no inactive wallet exists.
+    """
+    async with get_session() as session:
+        # Get both wallets in one query
+        result = await session.execute(
+            select(Wallet).where(
+                Wallet.user_id == user_id,
+                Wallet.chain_family == chain_family,
+            )
+        )
+        wallets = list(result.scalars().all())
+
+        active = next((w for w in wallets if w.is_active), None)
+        inactive = next((w for w in wallets if not w.is_active), None)
+
+        if not inactive:
+            return None
+
+        if active:
+            active.is_active = False
+        inactive.is_active = True
+
+        await session.commit()
+
+        logger.info(
+            "Switched active wallet",
+            user_id=user_id,
+            chain_family=chain_family.value,
+            new_source=inactive.source,
+            new_address=inactive.public_key[:8] + "...",
+        )
+        return inactive
 
 
 # ===================

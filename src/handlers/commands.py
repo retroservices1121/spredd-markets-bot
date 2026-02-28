@@ -789,8 +789,14 @@ Type /cancel to cancel.
             )
             return
 
-    # Has wallets - show them
-    wallets_dict = {w.chain_family: WalletInfo(chain_family=w.chain_family, public_key=w.public_key) for w in existing_wallets}
+    # Has wallets - show them (only active ones)
+    active_wallets = [w for w in existing_wallets if w.is_active]
+    wallets_dict = {w.chain_family: w for w in active_wallets}
+
+    # Check for inactive wallets (switchable)
+    from src.db.database import get_inactive_wallet
+    has_sol_alt = await get_inactive_wallet(user.id, ChainFamily.SOLANA) is not None
+    has_evm_alt = await get_inactive_wallet(user.id, ChainFamily.EVM) is not None
 
     # Get balances
     balances = await wallet_service.get_all_balances(user.id)
@@ -803,7 +809,8 @@ Type /cancel to cancel.
 
     # Solana wallet (for Kalshi)
     if solana_wallet:
-        text += f"<b>🟣 Solana</b> (Kalshi)\n"
+        source_label = " (imported)" if solana_wallet.source == "imported" else ""
+        text += f"<b>🟣 Solana</b> (Kalshi){source_label}\n"
         text += f"<code>{solana_wallet.public_key}</code>\n"
         sol_bals = [bal for bal in balances.get(ChainFamily.SOLANA, []) if bal.amount > 0]
         for bal in sol_bals:
@@ -814,7 +821,8 @@ Type /cancel to cancel.
 
     # EVM wallet (for Polymarket, Opinion, Limitless & Myriad)
     if evm_wallet:
-        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)\n"
+        source_label = " (imported)" if evm_wallet.source == "imported" else ""
+        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad){source_label}\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
         evm_bals = [bal for bal in balances.get(ChainFamily.EVM, []) if bal.amount > 0]
         for bal in evm_bals:
@@ -827,10 +835,20 @@ Type /cancel to cancel.
     # Buttons
     buttons = [
         [InlineKeyboardButton("🔄 Refresh Balances", callback_data="wallet:refresh")],
+    ]
+    # Switch buttons if alternative wallets exist
+    switch_buttons = []
+    if has_sol_alt:
+        switch_buttons.append(InlineKeyboardButton("🔀 Switch Solana", callback_data="wallet_switch:solana"))
+    if has_evm_alt:
+        switch_buttons.append(InlineKeyboardButton("🔀 Switch EVM", callback_data="wallet_switch:evm"))
+    if switch_buttons:
+        buttons.append(switch_buttons)
+    buttons.extend([
         [InlineKeyboardButton("🌉 Bridge USDC", callback_data="wallet:bridge")],
         [InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")],
         [InlineKeyboardButton("« Back", callback_data="menu:main")],
-    ]
+    ])
 
     keyboard = InlineKeyboardMarkup(buttons)
 
@@ -883,6 +901,322 @@ Type /cancel to cancel.
         text,
         parse_mode=ParseMode.HTML,
     )
+
+
+async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /import command - import an existing wallet by private key."""
+    if not update.effective_user or not update.message:
+        return
+
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Please /start first!")
+        return
+
+    text = """
+📥 <b>Import Wallet</b>
+
+Import an existing wallet by pasting your private key.
+This lets you trade with a wallet that already has funds.
+
+<b>Select the chain:</b>
+"""
+
+    buttons = [
+        [
+            InlineKeyboardButton("🟣 Solana", callback_data="import_chain:solana"),
+            InlineKeyboardButton("🔷 EVM", callback_data="import_chain:evm"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="menu:main")],
+    ]
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _route_import_chain(query, parts: list[str], telegram_id: int, context) -> None:
+    """Handle chain selection for wallet import."""
+    chain_type = parts[1] if len(parts) > 1 else ""
+    if chain_type not in ("solana", "evm"):
+        await query.edit_message_text("Invalid chain type.")
+        return
+
+    chain_name = "Solana" if chain_type == "solana" else "EVM"
+
+    if chain_type == "solana":
+        format_hint = "base58 encoded string"
+        example = "(e.g. 4wBqp...)"
+    else:
+        format_hint = "64-character hex string (with or without 0x prefix)"
+        example = "(e.g. 0xabcd1234...)"
+
+    # Check if wallet already exists for this chain
+    user = await get_user_by_telegram_id(telegram_id)
+    replace_warning = ""
+    if user:
+        from src.db.database import get_wallet as db_get_wallet
+        existing = await db_get_wallet(user.id, ChainFamily.SOLANA if chain_type == "solana" else ChainFamily.EVM)
+        if existing:
+            replace_warning = f"\n⚠️ <b>Warning:</b> You already have a {chain_name} wallet (<code>{existing.public_key[:8]}...</code>). Importing will replace it.\n"
+
+    context.user_data["pending_import"] = {
+        "phase": "key",
+        "chain": chain_type,
+    }
+
+    text = f"""
+🔑 <b>Import {chain_name} Wallet</b>
+{replace_warning}
+Paste your <b>{chain_name} private key</b> below.
+Format: {format_hint}
+{example}
+
+⚠️ Your message will be <b>deleted immediately</b> for security.
+
+Type /cancel to cancel.
+"""
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def _route_import_confirm(query, parts: list[str], telegram_id: int, context) -> None:
+    """Handle import confirmation (yes/no)."""
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == "no":
+        context.user_data.pop("pending_import", None)
+        await query.edit_message_text("Import cancelled.")
+        return
+
+    if action != "yes":
+        return
+
+    pending = context.user_data.get("pending_import")
+    if not pending or pending.get("phase") != "confirm":
+        await query.edit_message_text("No pending import. Use /import to start.")
+        return
+
+    # Move to PIN phase
+    pending["phase"] = "pin"
+    chain_name = "Solana" if pending["chain"] == "solana" else "EVM"
+
+    text = f"""
+🔐 <b>Set Export PIN for {chain_name} Wallet</b>
+
+Enter a <b>4-6 digit PIN</b> to protect key exports.
+<i>(PIN is only needed when exporting keys, not for trading)</i>
+
+⚠️ Your PIN message will be deleted immediately.
+
+Type /cancel to cancel.
+"""
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def handle_import_key(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    """Handle private key input during wallet import."""
+    if not update.effective_user or not update.message:
+        return
+
+    pending = context.user_data.get("pending_import")
+    if not pending or pending.get("phase") != "key":
+        return
+
+    # Delete the message containing the private key immediately
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    telegram_id = update.effective_user.id
+    chain_type = pending["chain"]
+    chain_family = ChainFamily.SOLANA if chain_type == "solana" else ChainFamily.EVM
+    chain_name = "Solana" if chain_type == "solana" else "EVM"
+
+    # Validate key format
+    key_str = text.strip()
+
+    if chain_type == "evm":
+        hex_str = key_str[2:] if key_str.startswith("0x") else key_str
+        if not all(c in "0123456789abcdefABCDEF" for c in hex_str) or len(hex_str) != 64:
+            await update.effective_chat.send_message(
+                "❌ <b>Invalid EVM private key</b>\n\n"
+                "Expected a 64-character hex string (with or without 0x prefix).\n\n"
+                "Please try again or type /cancel.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+    else:
+        # Solana: basic base58 character check
+        import base58
+        try:
+            decoded = base58.b58decode(key_str)
+            if len(decoded) != 64:
+                raise ValueError("Expected 64 bytes")
+        except Exception:
+            await update.effective_chat.send_message(
+                "❌ <b>Invalid Solana private key</b>\n\n"
+                "Expected a base58-encoded keypair (64 bytes decoded).\n\n"
+                "Please try again or type /cancel.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+    # Derive public address to show for confirmation
+    try:
+        if chain_type == "solana":
+            from solders.keypair import Keypair as SolanaKeypair
+            keypair = SolanaKeypair.from_base58_string(key_str)
+            derived_address = str(keypair.pubkey())
+        else:
+            from eth_account import Account as EthAccount
+            hex_key = key_str if key_str.startswith("0x") else "0x" + key_str
+            account = EthAccount.from_key(hex_key)
+            derived_address = account.address
+    except Exception as e:
+        await update.effective_chat.send_message(
+            f"❌ <b>Invalid private key</b>\n\nCould not derive address: {friendly_error(str(e))}\n\n"
+            "Please try again or type /cancel.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Store key temporarily and move to confirmation phase
+    pending["phase"] = "confirm"
+    pending["key"] = key_str
+    pending["address"] = derived_address
+
+    # Check if replacing existing wallet
+    user = await get_user_by_telegram_id(telegram_id)
+    replace_warning = ""
+    if user:
+        from src.db.database import get_wallet as db_get_wallet
+        existing = await db_get_wallet(user.id, chain_family)
+        if existing:
+            replace_warning = f"\n⚠️ This will <b>replace</b> your current {chain_name} wallet:\n<code>{existing.public_key}</code>\n"
+
+    confirm_text = f"""
+✅ <b>Key Validated!</b>
+
+<b>{chain_name} address derived:</b>
+<code>{derived_address}</code>
+{replace_warning}
+<b>Is this the correct address?</b>
+"""
+
+    buttons = [
+        [
+            InlineKeyboardButton("✅ Yes, import", callback_data="import_confirm:yes"),
+            InlineKeyboardButton("❌ Cancel", callback_data="import_confirm:no"),
+        ],
+    ]
+
+    await update.effective_chat.send_message(
+        confirm_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_import_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    """Handle PIN input during wallet import."""
+    if not update.effective_user or not update.message:
+        return
+
+    pending = context.user_data.get("pending_import")
+    if not pending or pending.get("phase") != "pin":
+        return
+
+    # Delete PIN message immediately
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    pin = text.strip()
+
+    # Validate PIN format
+    if not pin.isdigit() or len(pin) < 4 or len(pin) > 6:
+        await update.effective_chat.send_message(
+            "❌ PIN must be 4-6 digits. Please try again.\n\n"
+            "Type /cancel to cancel.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    telegram_id = update.effective_user.id
+    chain_type = pending["chain"]
+    chain_family = ChainFamily.SOLANA if chain_type == "solana" else ChainFamily.EVM
+    chain_name = "Solana" if chain_type == "solana" else "EVM"
+    private_key_str = pending["key"]
+    derived_address = pending["address"]
+
+    # Clear pending state before processing
+    del context.user_data["pending_import"]
+
+    status_msg = await update.effective_chat.send_message(
+        "🔐 Importing wallet...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        user = await get_user_by_telegram_id(telegram_id)
+        if not user:
+            await status_msg.edit_text("Please /start first!")
+            return
+
+        wallet_info = await wallet_service.import_wallet(
+            user_id=user.id,
+            telegram_id=telegram_id,
+            chain_family=chain_family,
+            private_key_str=private_key_str,
+            user_pin=pin,
+        )
+
+        success_text = f"""
+✅ <b>{chain_name} Wallet Imported!</b>
+
+<b>Address:</b>
+<code>{wallet_info.public_key}</code>
+
+🔐 Export PIN set — required only when using /export.
+Trading works without PIN.
+
+<i>Tap address to copy.</i>
+"""
+
+        buttons = [
+            [InlineKeyboardButton("📈 Browse Markets", callback_data="markets:refresh")],
+            [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+        ]
+
+        await status_msg.edit_text(
+            success_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except ValueError as e:
+        await status_msg.edit_text(
+            f"❌ <b>Import failed</b>\n\n{friendly_error(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        logger.error("Wallet import failed", error=str(e))
+        await status_msg.edit_text(
+            f"❌ <b>Import failed:</b> {friendly_error(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2571,6 +2905,8 @@ CALLBACK_ROUTES: dict[str, Callable] = {
     "arb_amount": _route_arb_amount,
     "cancel_arb": _route_cancel_arb,
     "view_market": _route_view_market,
+    "import_chain": _route_import_chain,
+    "import_confirm": _route_import_confirm,
 }
 
 
@@ -3748,6 +4084,11 @@ You haven't created your wallets yet.
     solana_wallet = wallets.get(ChainFamily.SOLANA)
     evm_wallet = wallets.get(ChainFamily.EVM)
 
+    # Check for inactive wallets (switchable)
+    from src.db.database import get_inactive_wallet
+    has_sol_alt = await get_inactive_wallet(user.id, ChainFamily.SOLANA) is not None
+    has_evm_alt = await get_inactive_wallet(user.id, ChainFamily.EVM) is not None
+
     # Get native token balances for gas display
     native_balances = {}
     if evm_wallet:
@@ -3770,7 +4111,8 @@ You haven't created your wallets yet.
     text = "💰 <b>Your Wallets</b>\n\n"
 
     if solana_wallet:
-        text += f"<b>🟣 Solana</b> (Kalshi)\n"
+        source_label = " (imported)" if solana_wallet.source == "imported" else ""
+        text += f"<b>🟣 Solana</b> (Kalshi){source_label}\n"
         text += f"<code>{solana_wallet.public_key}</code>\n"
         sol_bals = [bal for bal in balances.get(ChainFamily.SOLANA, []) if bal.amount > 0]
         for bal in sol_bals:
@@ -3780,7 +4122,8 @@ You haven't created your wallets yet.
         text += "\n"
 
     if evm_wallet:
-        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad)\n"
+        source_label = " (imported)" if evm_wallet.source == "imported" else ""
+        text += f"<b>🔷 EVM</b> (Polymarket + Opinion + Limitless + Myriad){source_label}\n"
         text += f"<code>{evm_wallet.public_key}</code>\n"
 
         # Show USDC balances (only chains with balance)
@@ -3816,10 +4159,20 @@ You haven't created your wallets yet.
     # Build buttons
     buttons = [
         [InlineKeyboardButton("🔄 Refresh", callback_data="wallet:refresh")],
+    ]
+    # Switch buttons if alternative wallets exist
+    switch_buttons = []
+    if has_sol_alt:
+        switch_buttons.append(InlineKeyboardButton("🔀 Switch Solana", callback_data="wallet_switch:solana"))
+    if has_evm_alt:
+        switch_buttons.append(InlineKeyboardButton("🔀 Switch EVM", callback_data="wallet_switch:evm"))
+    if switch_buttons:
+        buttons.append(switch_buttons)
+    buttons.extend([
         [InlineKeyboardButton("🌉 Bridge USDC", callback_data="wallet:bridge")],
         [InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")],
         [InlineKeyboardButton("« Back", callback_data="menu:main")],
-    ]
+    ])
 
     keyboard = InlineKeyboardMarkup(buttons)
 
@@ -10504,6 +10857,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif "pending_new_wallet" in context.user_data:
             del context.user_data["pending_new_wallet"]
             await update.message.reply_text("Wallet setup cancelled.")
+        elif "pending_import" in context.user_data:
+            del context.user_data["pending_import"]
+            await update.message.reply_text("Import cancelled.")
         elif "awaiting_broadcast" in context.user_data:
             del context.user_data["awaiting_broadcast"]
             await update.message.reply_text("Broadcast cancelled.")
@@ -10525,6 +10881,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if "pending_new_wallet" in context.user_data and not text.startswith("/"):
         await handle_new_wallet_with_pin(update, context, text)
         return
+
+    # Check if user has a pending wallet import (key or PIN input)
+    if "pending_import" in context.user_data and not text.startswith("/"):
+        pending = context.user_data["pending_import"]
+        if pending.get("phase") == "key":
+            await handle_import_key(update, context, text)
+            return
+        elif pending.get("phase") == "pin":
+            await handle_import_pin(update, context, text)
+            return
 
     # Check if user has a pending export (PIN required for security)
     if "pending_export" in context.user_data and not text.startswith("/"):

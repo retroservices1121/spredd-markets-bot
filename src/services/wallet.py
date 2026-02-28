@@ -25,6 +25,8 @@ from src.db.database import (
     get_wallet,
     create_wallet,
     get_user_wallets,
+    delete_wallet_by_chain,
+    deactivate_wallet,
 )
 from src.db.models import ChainFamily, Chain
 from src.services.signer import (
@@ -241,6 +243,87 @@ class WalletService(LoggerMixin):
             chain_family=chain_family.value,
             public_key=public_key[:8] + "...",
             has_export_pin=bool(export_pin_hash),
+        )
+
+        return WalletInfo(
+            chain_family=chain_family,
+            public_key=public_key,
+        )
+
+    async def import_wallet(
+        self,
+        user_id: str,
+        telegram_id: int,
+        chain_family: ChainFamily,
+        private_key_str: str,
+        user_pin: str,
+    ) -> WalletInfo:
+        """Import an existing wallet from a private key.
+
+        Args:
+            user_id: Database user ID
+            telegram_id: Telegram user ID
+            chain_family: SOLANA or EVM
+            private_key_str: Private key (hex for EVM, base58 for Solana)
+            user_pin: PIN for export verification (4-6 digits)
+
+        Returns:
+            WalletInfo with derived public key
+
+        Raises:
+            ValueError: If the private key is invalid
+        """
+        # Validate and parse the private key
+        if chain_family == ChainFamily.SOLANA:
+            try:
+                keypair = SolanaKeypair.from_base58_string(private_key_str)
+                public_key = str(keypair.pubkey())
+                private_key_bytes = bytes(keypair)
+            except Exception as e:
+                raise ValueError(f"Invalid Solana private key: {e}")
+        else:
+            try:
+                hex_key = private_key_str.strip()
+                if not hex_key.startswith("0x"):
+                    hex_key = "0x" + hex_key
+                account = EthAccount.from_key(hex_key)
+                public_key = account.address
+                private_key_bytes = account.key
+            except Exception as e:
+                raise ValueError(f"Invalid EVM private key: {e}")
+
+        # Delete any previous imported wallet for this chain, then deactivate the generated one
+        await delete_wallet_by_chain(user_id, chain_family, source="imported")
+        await deactivate_wallet(user_id, chain_family)
+
+        # Encrypt private key WITHOUT PIN - enables trading without PIN entry
+        encrypted_key = encrypt(
+            private_key_bytes,
+            settings.encryption_key,
+            telegram_id,
+            "",  # No PIN in encryption — matches existing pattern
+        )
+
+        # Hash the PIN for export verification
+        export_pin_hash = self._hash_export_pin(user_pin, telegram_id)
+
+        # Store in database as imported + active
+        await create_wallet(
+            user_id=user_id,
+            chain_family=chain_family,
+            public_key=public_key,
+            encrypted_private_key=encrypted_key,
+            pin_protected=False,  # Trading never requires PIN
+            export_pin_hash=export_pin_hash,
+            source="imported",
+            is_active=True,
+        )
+
+        self.log.info(
+            "Imported wallet",
+            user_id=user_id,
+            chain_family=chain_family.value,
+            public_key=public_key[:8] + "...",
         )
 
         return WalletInfo(

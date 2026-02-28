@@ -163,7 +163,7 @@ class User(Base):
 class Wallet(Base):
     """
     User wallets organized by chain family.
-    One Solana wallet + one EVM wallet per user.
+    Supports one generated + one imported wallet per chain, with is_active toggle.
     EVM wallet is shared between Polygon and BSC.
     """
 
@@ -177,6 +177,12 @@ class Wallet(Base):
 
     # Wallet type: "legacy" (local keys) or "privy" (server-managed)
     wallet_type: Mapped[str] = mapped_column(String(20), default="legacy")
+
+    # Source: "generated" (auto-created) or "imported" (user-provided key)
+    source: Mapped[str] = mapped_column(String(20), default="generated")
+
+    # Whether this wallet is the active one for its chain family
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Privy wallet ID (only for wallet_type="privy")
     privy_wallet_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True)
@@ -209,9 +215,9 @@ class Wallet(Base):
     # Relationships
     user: Mapped["User"] = relationship(back_populates="wallets")
 
-    # One wallet per chain family per user
+    # One wallet per chain family per source per user
     __table_args__ = (
-        Index("ix_wallets_user_chain", "user_id", "chain_family", unique=True),
+        Index("ix_wallets_user_chain_source", "user_id", "chain_family", "source", unique=True),
     )
 
 
