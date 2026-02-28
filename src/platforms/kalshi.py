@@ -162,16 +162,19 @@ class KalshiPlatform(BasePlatform):
             error_body = ""
             try:
                 error_body = e.response.text
-                logger.error("DFlow API error", status=e.response.status_code, body=error_body)
-            except:
+                logger.error("DFlow API error", status=e.response.status_code, body=error_body, url=str(e.request.url))
+            except Exception:
                 pass
             # Try to extract a meaningful message from the response
             detail = ""
             try:
                 error_json = e.response.json()
-                detail = error_json.get("message") or error_json.get("error") or error_json.get("detail") or ""
-            except:
-                detail = error_body[:200] if error_body else ""
+                detail = error_json.get("message") or error_json.get("error") or error_json.get("detail") or error_json.get("msg") or ""
+                # If still empty, stringify the whole response
+                if not detail and error_json:
+                    detail = str(error_json)[:300]
+            except Exception:
+                detail = error_body[:300] if error_body else ""
             raise PlatformError(
                 f"Kalshi API {e.response.status_code}: {detail}" if detail else f"Kalshi API error {e.response.status_code}",
                 Platform.KALSHI,
