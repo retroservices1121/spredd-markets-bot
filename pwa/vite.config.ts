@@ -17,7 +17,7 @@ export default defineConfig({
         background_color: "#0F0F1A",
         display: "standalone",
         orientation: "portrait",
-        start_url: "/pwa/",
+        start_url: "/",
         icons: [
           {
             src: "/pwa-192x192.png",
@@ -82,7 +82,7 @@ export default defineConfig({
       },
     },
   },
-  base: "/pwa/",
+  base: "/",
   build: {
     outDir: "dist",
     sourcemap: false,
