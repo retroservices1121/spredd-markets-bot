@@ -900,7 +900,17 @@ class KalshiPlatform(BasePlatform):
         }
 
         logger.debug("Quote request params", params=params)
-        data = await self._trading_request("GET", "/order", params=params)
+        try:
+            data = await self._trading_request("GET", "/order", params=params)
+        except PlatformError as e:
+            if "route" in str(e).lower() and "not found" in str(e).lower():
+                raise PlatformError(
+                    "No trading route available for this market. "
+                    "This can happen with low liquidity or near-expiration markets. "
+                    "Try a different amount or market.",
+                    Platform.KALSHI,
+                )
+            raise
 
         # Log quote response for debugging
         logger.debug(
