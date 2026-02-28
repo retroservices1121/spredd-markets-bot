@@ -4157,8 +4157,9 @@ You haven't created your wallets yet.
 
     balances = await wallet_service.get_all_balances(user.id)
 
-    # Convert existing_wallets list to dict by chain_family
-    wallets = {w.chain_family: w for w in existing_wallets}
+    # Convert to dict by chain_family (active wallets only)
+    active_wallets = [w for w in existing_wallets if w.is_active]
+    wallets = {w.chain_family: w for w in active_wallets}
 
     solana_wallet = wallets.get(ChainFamily.SOLANA)
     evm_wallet = wallets.get(ChainFamily.EVM)

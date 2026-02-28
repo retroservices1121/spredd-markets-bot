@@ -834,10 +834,12 @@ class WalletService(LoggerMixin):
             ChainFamily.EVM: [],
         }
 
-        # Collect all fetch tasks
+        # Collect active wallets only (skip inactive/switched-out ones)
         solana_wallet = None
         evm_wallet = None
         for wallet in wallets:
+            if not wallet.is_active:
+                continue
             if wallet.chain_family == ChainFamily.SOLANA:
                 solana_wallet = wallet
             elif wallet.chain_family == ChainFamily.EVM:
