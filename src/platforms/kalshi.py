@@ -155,7 +155,15 @@ class KalshiPlatform(BasePlatform):
                 raise RateLimitError("Rate limit exceeded", Platform.KALSHI)
 
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+
+            # DFlow sometimes returns HTTP 200 with error in body
+            if isinstance(data, dict) and data.get("error"):
+                error_msg = data["error"]
+                logger.error("DFlow API returned error in 200 body", error=error_msg, url=url)
+                raise PlatformError(f"Kalshi API: {error_msg}", Platform.KALSHI)
+
+            return data
 
         except httpx.HTTPStatusError as e:
             # Include response body in error for better debugging
