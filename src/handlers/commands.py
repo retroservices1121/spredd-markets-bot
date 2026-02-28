@@ -1023,6 +1023,50 @@ Type /cancel to cancel.
     )
 
 
+async def _route_wallet_switch(query, parts: list[str], telegram_id: int, context) -> None:
+    """Handle wallet_switch:solana / wallet_switch:evm callback."""
+    chain_type = parts[1] if len(parts) > 1 else ""
+    if chain_type not in ("solana", "evm"):
+        await query.edit_message_text("Invalid chain type.")
+        return
+
+    chain_family = ChainFamily.SOLANA if chain_type == "solana" else ChainFamily.EVM
+    chain_name = "Solana" if chain_type == "solana" else "EVM"
+
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    await query.edit_message_text(f"🔀 Switching {chain_name} wallet...")
+
+    from src.db.database import switch_active_wallet
+    new_wallet = await switch_active_wallet(user.id, chain_family)
+
+    if not new_wallet:
+        await query.edit_message_text(f"❌ No alternative {chain_name} wallet to switch to.")
+        return
+
+    source_label = " (imported)" if new_wallet.source == "imported" else ""
+    text = (
+        f"✅ <b>{chain_name} Wallet Switched!</b>\n\n"
+        f"<b>Active wallet{source_label}:</b>\n"
+        f"<code>{new_wallet.public_key}</code>\n\n"
+        f"<i>Tap address to copy.</i>"
+    )
+
+    buttons = [
+        [InlineKeyboardButton("💰 View Wallet", callback_data="wallet:refresh")],
+        [InlineKeyboardButton("« Back", callback_data="menu:main")],
+    ]
+
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
 async def handle_import_key(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     """Handle private key input during wallet import."""
     if not update.effective_user or not update.message:
@@ -2907,6 +2951,7 @@ CALLBACK_ROUTES: dict[str, Callable] = {
     "view_market": _route_view_market,
     "import_chain": _route_import_chain,
     "import_confirm": _route_import_confirm,
+    "wallet_switch": _route_wallet_switch,
 }
 
 
