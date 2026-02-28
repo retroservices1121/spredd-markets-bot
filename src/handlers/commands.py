@@ -992,7 +992,10 @@ async def _route_import_chain(query, parts: list[str], telegram_id: int, context
         from src.db.database import get_wallet as db_get_wallet
         existing = await db_get_wallet(user.id, ChainFamily.SOLANA if chain_type == "solana" else ChainFamily.EVM)
         if existing:
-            replace_warning = f"\n⚠️ <b>Warning:</b> You already have a {chain_name} wallet (<code>{existing.public_key[:8]}...</code>). Importing will replace it.\n"
+            replace_warning = (
+                f"\n💡 <b>Note:</b> Your current {chain_name} wallet (<code>{existing.public_key[:8]}...</code>) "
+                f"will be kept safe. The imported wallet becomes active, and you can switch back anytime using 🔀 Switch.\n"
+            )
 
     context.user_data["pending_import"] = {
         "phase": "key",
@@ -1172,21 +1175,24 @@ async def handle_import_key(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     pending["key"] = key_str
     pending["address"] = derived_address
 
-    # Check if replacing existing wallet
+    # Check if existing wallet will be kept
     user = await get_user_by_telegram_id(telegram_id)
-    replace_warning = ""
+    existing_note = ""
     if user:
         from src.db.database import get_wallet as db_get_wallet
         existing = await db_get_wallet(user.id, chain_family)
         if existing:
-            replace_warning = f"\n⚠️ This will <b>replace</b> your current {chain_name} wallet:\n<code>{existing.public_key}</code>\n"
+            existing_note = (
+                f"\n💡 Your current {chain_name} wallet (<code>{existing.public_key[:8]}...</code>) "
+                f"will <b>not</b> be deleted. It stays saved and you can switch back anytime using 🔀 Switch Wallet.\n"
+            )
 
     confirm_text = f"""
 ✅ <b>Key Validated!</b>
 
 <b>{chain_name} address derived:</b>
 <code>{derived_address}</code>
-{replace_warning}
+{existing_note}
 <b>Is this the correct address?</b>
 """
 
@@ -1262,11 +1268,13 @@ async def handle_import_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         success_text = f"""
 ✅ <b>{chain_name} Wallet Imported!</b>
 
-<b>Address:</b>
+<b>Active wallet:</b>
 <code>{wallet_info.public_key}</code>
 
 🔐 Export PIN set — required only when using /export.
 Trading works without PIN.
+
+💡 Your previous wallet is still saved. Use 🔀 <b>Switch {chain_name}</b> in the wallet screen to swap between them anytime.
 
 <i>Tap address to copy.</i>
 """
