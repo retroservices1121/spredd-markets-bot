@@ -387,35 +387,51 @@ class KalshiPlatform(BasePlatform):
                 break
             cursor = new_cursor
 
-        # Keep paginating until all three rapid types (5m, 15m, hourly) are
-        # found.  The old code stopped as soon as ANY rapid type appeared,
-        # which meant 15-min markets on later pages were silently skipped.
+        # Rapid markets are NOT included in /api/v1/markets — they're only
+        # available via the /api/v1/search endpoint with nested markets.
         all_rapid_types = {"5m", "15m", "hourly"}
-        if found_rapid_types < all_rapid_types and cursor:
-            extra_limit = 16
-            for page in range(extra_limit):
-                params = {"limit": 200, "status": "active", "cursor": cursor}
-                try:
-                    data = await self._metadata_request("GET", "/api/v1/markets", params=params)
-                except Exception as e:
-                    logger.warning("Failed to fetch extra page for rapid markets", error=str(e))
-                    break
+        missing_rapid_types = all_rapid_types - found_rapid_types
+        if missing_rapid_types:
+            search_prefixes = []
+            if "5m" in missing_rapid_types:
+                search_prefixes.extend(RAPID_5M)
+            if "15m" in missing_rapid_types:
+                search_prefixes.extend(RAPID_15M)
+            if "hourly" in missing_rapid_types:
+                search_prefixes.extend(RAPID_HOURLY)
 
-                page_markets = data.get("markets", data.get("data", []))
-                for item in page_markets:
-                    try:
-                        m = self._parse_market(item)
+            async def _search_rapid(prefix: str) -> list[Market]:
+                try:
+                    data = await self._metadata_request("GET", "/api/v1/search", params={
+                        "q": prefix,
+                        "limit": 20,
+                        "withNestedMarkets": True,
+                    })
+                    markets = []
+                    for event in data.get("events", []):
+                        image_url = event.get("imageUrl")
+                        for m_data in event.get("markets", []):
+                            m = self._parse_market(m_data)
+                            m.image_url = image_url
+                            markets.append(m)
+                    return markets
+                except Exception as e:
+                    logger.warning("Failed to search rapid markets", prefix=prefix, error=str(e))
+                    return []
+
+            rapid_results = await asyncio.gather(
+                *(_search_rapid(prefix) for prefix in search_prefixes)
+            )
+
+            existing_ids = {m.market_id for m in all_markets}
+            for batch in rapid_results:
+                for m in batch:
+                    if m.market_id not in existing_ids:
                         all_markets.append(m)
+                        existing_ids.add(m.market_id)
                         rt = _rapid_type(m.market_id)
                         if rt:
                             found_rapid_types.add(rt)
-                    except Exception as e:
-                        pass
-
-                new_cursor = data.get("cursor")
-                if not new_cursor or not page_markets or found_rapid_types >= all_rapid_types:
-                    break
-                cursor = new_cursor
 
         logger.info(
             "Fetched DFlow markets",
