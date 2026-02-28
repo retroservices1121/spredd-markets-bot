@@ -845,6 +845,7 @@ Type /cancel to cancel.
     if switch_buttons:
         buttons.append(switch_buttons)
     buttons.extend([
+        [InlineKeyboardButton("📥 Import Wallet", callback_data="wallet:import")],
         [InlineKeyboardButton("🌉 Bridge USDC", callback_data="wallet:bridge")],
         [InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")],
         [InlineKeyboardButton("« Back", callback_data="menu:main")],
@@ -931,6 +932,37 @@ This lets you trade with a wallet that already has funds.
     ]
 
     await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_wallet_import_menu(query, telegram_id: int, context) -> None:
+    """Show import wallet chain selection (from wallet screen button)."""
+    user = await get_user_by_telegram_id(telegram_id)
+    if not user:
+        await query.edit_message_text("Please /start first!")
+        return
+
+    text = """
+📥 <b>Import Wallet</b>
+
+Import an existing wallet by pasting your private key.
+This lets you trade with a wallet that already has funds.
+
+<b>Select the chain:</b>
+"""
+
+    buttons = [
+        [
+            InlineKeyboardButton("🟣 Solana", callback_data="import_chain:solana"),
+            InlineKeyboardButton("🔷 EVM", callback_data="import_chain:evm"),
+        ],
+        [InlineKeyboardButton("« Back", callback_data="wallet:refresh")],
+    ]
+
+    await query.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -2665,6 +2697,8 @@ async def _route_wallet(query, parts: list[str], telegram_id: int, context) -> N
         await handle_bridge_menu(query, telegram_id, context)
     elif parts[1] == "setup":
         await handle_wallet_setup(query, telegram_id, context)
+    elif parts[1] == "import":
+        await handle_wallet_import_menu(query, telegram_id, context)
 
 
 async def _route_bridge(query, parts: list[str], telegram_id: int, context) -> None:
@@ -4214,6 +4248,7 @@ You haven't created your wallets yet.
     if switch_buttons:
         buttons.append(switch_buttons)
     buttons.extend([
+        [InlineKeyboardButton("📥 Import Wallet", callback_data="wallet:import")],
         [InlineKeyboardButton("🌉 Bridge USDC", callback_data="wallet:bridge")],
         [InlineKeyboardButton("📤 Export Keys", callback_data="wallet:export")],
         [InlineKeyboardButton("« Back", callback_data="menu:main")],
