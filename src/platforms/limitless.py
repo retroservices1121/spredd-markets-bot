@@ -349,12 +349,38 @@ class LimitlessPlatform(BasePlatform):
             )
             return "", 300
 
-    def _get_order_client(self, private_key: LocalAccount) -> OrderClient:
-        """Get or create cached OrderClient for a wallet."""
+    async def _get_order_client(self, private_key: LocalAccount) -> OrderClient:
+        """Get or create cached OrderClient for a wallet.
+
+        Pre-populates the SDK's _cached_user_data via the public profile
+        endpoint so the SDK never calls the private /profiles/{address}
+        endpoint (which returns 403 for non-authenticated users).
+        """
         wallet = private_key.address
         if wallet in self._order_client_cache:
             return self._order_client_cache[wallet]
+
         client = OrderClient(http_client=self._sdk_client, wallet=private_key)
+
+        # Pre-populate user data from public profile to avoid 403 on /profiles/{address}
+        try:
+            from limitless_sdk.types import UserData
+            from limitless_sdk.orders.builder import OrderBuilder
+
+            profile = await self._sdk_get(f"/profiles/public/{wallet}")
+            user_id = profile.get("id", 0)
+            fee_rate_bps = profile.get("rank", {}).get("feeRateBps", 300) if profile.get("rank") else 300
+
+            client._cached_user_data = UserData(user_id=user_id, fee_rate_bps=fee_rate_bps)
+            client._builder = OrderBuilder(
+                maker_address=wallet,
+                fee_rate_bps=fee_rate_bps,
+                price_tick=0.001,
+            )
+            logger.debug("Pre-populated OrderClient user data", wallet=wallet[:8], user_id=user_id, fee_rate_bps=fee_rate_bps)
+        except Exception as e:
+            logger.warning("Could not pre-populate OrderClient user data, SDK will fetch itself", error=str(e))
+
         self._order_client_cache[wallet] = client
         return client
 
@@ -1566,7 +1592,7 @@ class LimitlessPlatform(BasePlatform):
                     # Continue anyway - the order might still work
 
             # Create order via SDK OrderClient
-            order_client = self._get_order_client(private_key)
+            order_client = await self._get_order_client(private_key)
 
             # Ensure venue is cached by fetching market via SDK
             if self._market_fetcher:
