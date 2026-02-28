@@ -991,7 +991,7 @@ class KalshiPlatform(BasePlatform):
                 )
             except PlatformError as e:
                 # If route not found with fee params, retry without fees
-                if "route_not_found" in str(e).lower() and fee_enabled:
+                if ("route" in str(e).lower() and "not found" in str(e).lower()) and fee_enabled:
                     logger.warning(
                         "Route not found with fee params, retrying without fees",
                         market_id=quote.market_id,
@@ -1071,13 +1071,21 @@ class KalshiPlatform(BasePlatform):
             )
             
         except Exception as e:
-            logger.error("Trade execution failed", error=str(e))
+            error_str = str(e)
+            logger.error("Trade execution failed", error=error_str)
+            # Friendlier message for route not found
+            if "route" in error_str.lower() and "not found" in error_str.lower():
+                error_str = (
+                    "No trading route found for this market. "
+                    "This can happen when there's insufficient liquidity or the market is near expiration. "
+                    "Try a different amount or market."
+                )
             return TradeResult(
                 success=False,
                 tx_hash=None,
                 input_amount=quote.input_amount,
                 output_amount=None,
-                error_message=str(e),
+                error_message=error_str,
                 explorer_url=None,
             )
 
@@ -1110,7 +1118,7 @@ class KalshiPlatform(BasePlatform):
             try:
                 response = await self._trading_request("GET", "/order", params=params)
             except PlatformError as e:
-                if "route_not_found" in str(e).lower() and fee_enabled:
+                if ("route" in str(e).lower() and "not found" in str(e).lower()) and fee_enabled:
                     params.pop("feeAccount", None)
                     params.pop("platformFeeScale", None)
                     response = await self._trading_request("GET", "/order", params=params)
