@@ -848,20 +848,22 @@ class KalshiPlatform(BasePlatform):
     ) -> Quote:
         """Get a quote for a trade via DFlow.
 
-        Note: token_id is accepted for API compatibility but ignored -
-        Kalshi determines tokens from market data.
+        token_id: If provided, used directly as the outcome token mint
+        (avoids market lookup which may 404 for expired/rapid markets).
         """
-        # Get market to find token addresses (include_closed so sells work on near-expiry markets)
-        market = await self.get_market(market_id, include_closed=True)
-        if not market:
-            raise MarketNotFoundError(f"Market {market_id} not found", Platform.KALSHI)
-        
-        # Determine tokens
-        if outcome == Outcome.YES:
-            output_token = market.yes_token
-        else:
-            output_token = market.no_token
-        
+        # Use token_id directly if provided (e.g. from position data for sells)
+        output_token = token_id
+        if not output_token:
+            # Fallback: look up market to find token addresses
+            market = await self.get_market(market_id, include_closed=True)
+            if not market:
+                raise MarketNotFoundError(f"Market {market_id} not found", Platform.KALSHI)
+
+            if outcome == Outcome.YES:
+                output_token = market.yes_token
+            else:
+                output_token = market.no_token
+
         if not output_token:
             raise PlatformError(
                 f"Token not found for {outcome.value}",
