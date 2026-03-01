@@ -844,6 +844,22 @@ class PolymarketPlatform(BasePlatform):
             description  # Polymarket description typically contains resolution rules
         )
 
+        # Extract custom outcome names (e.g., "Up"/"Down" instead of "Yes"/"No")
+        yes_outcome_name = None
+        no_outcome_name = None
+        outcomes_raw = m.get("outcomes", [])
+        if isinstance(outcomes_raw, str):
+            try:
+                outcomes_raw = json.loads(outcomes_raw)
+            except Exception:
+                outcomes_raw = []
+        if isinstance(outcomes_raw, list) and len(outcomes_raw) >= 2:
+            o1 = str(outcomes_raw[0]).strip()
+            o2 = str(outcomes_raw[1]).strip()
+            if o1.lower() not in ("yes", "no") or o2.lower() not in ("yes", "no"):
+                yes_outcome_name = o1
+                no_outcome_name = o2
+
         return Market(
             platform=Platform.POLYMARKET,
             chain=Chain.POLYGON,
@@ -865,6 +881,8 @@ class PolymarketPlatform(BasePlatform):
             is_multi_outcome=is_multi_outcome,
             related_market_count=len(event_markets) if is_multi_outcome else 0,
             resolution_criteria=resolution_criteria,
+            yes_outcome_name=yes_outcome_name,
+            no_outcome_name=no_outcome_name,
         )
     
     # ===================
