@@ -4088,9 +4088,15 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
             has_ou_keywords(question_text)
         )
 
-    # Use appropriate label
+    # Use appropriate label: outcome name > over/under > yes/no
     if is_player_prop:
         position_label = "OVER" if outcome == "yes" else "UNDER"
+    elif market and outcome == "yes" and market.yes_outcome_name:
+        position_label = market.yes_outcome_name
+    elif market and outcome == "no" and market.no_outcome_name:
+        position_label = market.no_outcome_name
+    elif market and market.outcome_name:
+        position_label = market.outcome_name
     else:
         position_label = outcome.upper()
 
@@ -4106,7 +4112,7 @@ async def handle_buy_start(query, platform_value: str, market_id: str, outcome: 
     }
 
     text = f"""
-💰 <b>Buy {position_label} Position</b>
+💰 <b>Buy {escape_html(position_label)} Position</b>
 
 Platform: {info['name']}
 Collateral: {collateral_symbol}{swap_note}
@@ -9132,14 +9138,20 @@ async def handle_balance_check_with_pin(update: Update, context: ContextTypes.DE
                 has_ou_keywords(question_text)
             )
 
-        # Use appropriate label
+        # Use appropriate label: outcome name > over/under > yes/no
         if is_player_prop:
             position_label = "OVER" if outcome == "yes" else "UNDER"
+        elif market and outcome == "yes" and market.yes_outcome_name:
+            position_label = market.yes_outcome_name
+        elif market and outcome == "no" and market.no_outcome_name:
+            position_label = market.no_outcome_name
+        elif market and market.outcome_name:
+            position_label = market.outcome_name
         else:
             position_label = outcome.upper()
 
         text = f"""
-💰 <b>Buy {position_label} Position</b>
+💰 <b>Buy {escape_html(position_label)} Position</b>
 
 Platform: {info['name']}
 Collateral: {collateral_symbol}{swap_note}
