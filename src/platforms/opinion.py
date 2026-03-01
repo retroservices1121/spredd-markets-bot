@@ -507,21 +507,28 @@ class OpinionPlatform(BasePlatform):
         yes_token = data.get("yesTokenId") or data.get("yes_token_id")
         no_token = data.get("noTokenId") or data.get("no_token_id")
 
-        # Extract pricing from tokens array if present
+        # Extract pricing and custom outcome names from tokens array if present
         tokens = data.get("tokens", [])
         yes_price = None
         no_price = None
+        yes_outcome_name = None
+        no_outcome_name = None
 
         for token in tokens:
             outcome = token.get("outcome", "").lower()
+            token_name = token.get("title") or token.get("name") or token.get("outcome", "")
             if outcome == "yes" or token.get("index") == 0:
                 if not yes_token:
                     yes_token = token.get("tokenId") or token.get("token_id")
                 yes_price = Decimal(str(token.get("price", 0.5)))
+                if token_name and token_name.strip().lower() not in ("yes", "no"):
+                    yes_outcome_name = token_name.strip()
             elif outcome == "no" or token.get("index") == 1:
                 if not no_token:
                     no_token = token.get("tokenId") or token.get("token_id")
                 no_price = Decimal(str(token.get("price", 0.5)))
+                if token_name and token_name.strip().lower() not in ("yes", "no"):
+                    no_outcome_name = token_name.strip()
 
         # Fallback to top-level prices (default to 0.5 if not available)
         if yes_price is None:
@@ -560,6 +567,8 @@ class OpinionPlatform(BasePlatform):
             no_token=no_token,
             raw_data=data,
             resolution_criteria=resolution_criteria,
+            yes_outcome_name=yes_outcome_name,
+            no_outcome_name=no_outcome_name,
         )
     
     # ===================

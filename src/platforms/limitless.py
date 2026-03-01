@@ -476,19 +476,37 @@ class LimitlessPlatform(BasePlatform):
         if no_price is not None and no_price > 1:
             no_price = no_price / Decimal("100")
 
-        # Extract token IDs
+        # Extract token IDs and custom outcome names
         outcomes = data.get("outcomes") or data.get("tokens") or []
         yes_token = None
         no_token = None
+        yes_outcome_name = None
+        no_outcome_name = None
         if outcomes:
             if isinstance(outcomes, list):
                 if len(outcomes) > 0:
-                    yes_token = outcomes[0].get("tokenId") if isinstance(outcomes[0], dict) else str(outcomes[0])
+                    if isinstance(outcomes[0], dict):
+                        yes_token = outcomes[0].get("tokenId")
+                        yes_outcome_name = outcomes[0].get("title") or outcomes[0].get("name")
+                    else:
+                        yes_token = str(outcomes[0])
                 if len(outcomes) > 1:
-                    no_token = outcomes[1].get("tokenId") if isinstance(outcomes[1], dict) else str(outcomes[1])
+                    if isinstance(outcomes[1], dict):
+                        no_token = outcomes[1].get("tokenId")
+                        no_outcome_name = outcomes[1].get("title") or outcomes[1].get("name")
+                    else:
+                        no_token = str(outcomes[1])
             elif isinstance(outcomes, dict):
                 yes_token = outcomes.get("yes") or outcomes.get("0")
                 no_token = outcomes.get("no") or outcomes.get("1")
+        # Only keep outcome names if they differ from default Yes/No
+        if yes_outcome_name and yes_outcome_name.strip().lower() in ("yes", "no"):
+            yes_outcome_name = None
+        if no_outcome_name and no_outcome_name.strip().lower() in ("yes", "no"):
+            no_outcome_name = None
+        if not yes_outcome_name and not no_outcome_name:
+            yes_outcome_name = None
+            no_outcome_name = None
 
         # Market ID - use numeric ID for shorter callbacks, keep slug in event_id for display
         # Numeric IDs are much shorter and fit within Telegram's 64-byte callback limit
@@ -576,6 +594,8 @@ class LimitlessPlatform(BasePlatform):
             is_multi_outcome=is_multi_outcome,
             related_market_count=related_count,
             outcome_name=outcome_name,
+            yes_outcome_name=yes_outcome_name,
+            no_outcome_name=no_outcome_name,
         )
 
     def _parse_group_markets(self, group_data: dict) -> list[Market]:
