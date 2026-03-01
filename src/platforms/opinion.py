@@ -661,6 +661,7 @@ class OpinionPlatform(BasePlatform):
         max_pages = 15
 
         all_data = []
+        seen_ids = set()
         for page_num in range(max_pages):
             params = {
                 "limit": api_page_size,
@@ -677,7 +678,17 @@ class OpinionPlatform(BasePlatform):
                     markets_data = data
                 if not markets_data:
                     break  # No more pages
-                all_data.extend(markets_data)
+
+                # Deduplicate: stop if this page is all duplicates (API recycling)
+                new_count = 0
+                for item in markets_data:
+                    mid = str(item.get("marketId") or item.get("market_id") or item.get("id"))
+                    if mid not in seen_ids:
+                        seen_ids.add(mid)
+                        all_data.append(item)
+                        new_count += 1
+                if new_count == 0:
+                    break  # All duplicates — no more unique markets
             except Exception as e:
                 logger.error("Failed to fetch markets page", page=page_num, error=str(e))
                 break

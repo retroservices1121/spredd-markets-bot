@@ -7097,11 +7097,12 @@ async def handle_category_view(query, category_id: str, telegram_id: int, page: 
     MARKETS_PER_PAGE = 10
 
     try:
-        # Fetch markets (Limitless API has max limit of 25)
         from src.services.cache import cache
         all_markets = await cache.get_category(user.active_platform.value, category_id)
         if all_markets is None:
-            all_markets = await platform.get_markets_by_category(category_id, limit=25)
+            # Limitless API caps at 25; other platforms can return more
+            cat_limit = 25 if user.active_platform == Platform.LIMITLESS else 100
+            all_markets = await platform.get_markets_by_category(category_id, limit=cat_limit)
             if all_markets:
                 await cache.set_category(user.active_platform.value, category_id, all_markets)
 
