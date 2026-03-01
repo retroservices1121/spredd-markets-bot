@@ -507,27 +507,41 @@ class OpinionPlatform(BasePlatform):
         yes_token = data.get("yesTokenId") or data.get("yes_token_id")
         no_token = data.get("noTokenId") or data.get("no_token_id")
 
-        # Extract pricing and custom outcome names from tokens array if present
-        tokens = data.get("tokens", [])
+        # Extract pricing and custom outcome names
         yes_price = None
         no_price = None
         yes_outcome_name = None
         no_outcome_name = None
 
+        # Custom outcome names from top-level yesLabel/noLabel (Opinion API native fields)
+        yes_label = data.get("yesLabel") or data.get("yes_label")
+        no_label = data.get("noLabel") or data.get("no_label")
+
+        if yes_label and yes_label.strip().lower() not in ("yes", "no", "y", "n"):
+            yes_outcome_name = yes_label.strip()
+        if no_label and no_label.strip().lower() not in ("yes", "no", "y", "n"):
+            no_outcome_name = no_label.strip()
+
+        # Also check tokens array as fallback for outcome names and token IDs
+        tokens = data.get("tokens", [])
         for token in tokens:
             outcome = token.get("outcome", "").lower()
             token_name = token.get("title") or token.get("name") or token.get("outcome", "")
             if outcome == "yes" or token.get("index") == 0:
                 if not yes_token:
                     yes_token = token.get("tokenId") or token.get("token_id")
-                yes_price = Decimal(str(token.get("price", 0.5)))
-                if token_name and token_name.strip().lower() not in ("yes", "no"):
+                if token.get("price") is not None:
+                    yes_price = Decimal(str(token.get("price", 0.5)))
+                # Use token name as outcome name fallback if yesLabel wasn't set
+                if not yes_outcome_name and token_name and token_name.strip().lower() not in ("yes", "no"):
                     yes_outcome_name = token_name.strip()
             elif outcome == "no" or token.get("index") == 1:
                 if not no_token:
                     no_token = token.get("tokenId") or token.get("token_id")
-                no_price = Decimal(str(token.get("price", 0.5)))
-                if token_name and token_name.strip().lower() not in ("yes", "no"):
+                if token.get("price") is not None:
+                    no_price = Decimal(str(token.get("price", 0.5)))
+                # Use token name as outcome name fallback if noLabel wasn't set
+                if not no_outcome_name and token_name and token_name.strip().lower() not in ("yes", "no"):
                     no_outcome_name = token_name.strip()
 
         # Fallback to top-level prices (default to 0.5 if not available)
@@ -549,11 +563,16 @@ class OpinionPlatform(BasePlatform):
         # Resolution criteria - Opinion uses 'rules' field for settlement rules
         resolution_criteria = data.get("rules") or data.get("resolutionRules") or data.get("description")
 
+        # Check for categorical market with child markets
+        market_type = data.get("marketType")  # 0=binary, 1=categorical
+        child_markets = data.get("childMarkets") or data.get("child_markets") or []
+        is_multi = market_type == 1 or len(child_markets) > 1
+
         return Market(
             platform=Platform.OPINION,
             chain=Chain.BSC,
             market_id=market_id,
-            event_id=data.get("eventId") or data.get("event_id"),
+            event_id=data.get("eventId") or data.get("event_id") or (market_id if is_multi else None),
             title=data.get("marketTitle") or data.get("market_title") or data.get("title") or "",
             description=data.get("rules") or data.get("description"),
             category=data.get("category") or data.get("topicType"),
@@ -569,6 +588,7 @@ class OpinionPlatform(BasePlatform):
             resolution_criteria=resolution_criteria,
             yes_outcome_name=yes_outcome_name,
             no_outcome_name=no_outcome_name,
+            is_multi_outcome=is_multi,
         )
     
     # ===================
@@ -648,6 +668,9 @@ class OpinionPlatform(BasePlatform):
 
         Fetches all markets and caches for 5 minutes to avoid
         repeated API calls.
+
+        Opinion API uses page-based pagination (1-indexed) with max 20 items per page.
+        marketType: 0=binary, 1=categorical, 2=all
         """
         import time
 
@@ -656,17 +679,18 @@ class OpinionPlatform(BasePlatform):
         if self._markets_cache and (now - self._markets_cache_time) < self.CACHE_TTL:
             return self._markets_cache[offset:offset + limit]
 
-        # Paginate through API (200 per page, fetch all available)
-        api_page_size = 200
-        max_pages = 15
+        # Opinion API: page (1-based), limit (max 20), marketType (2=all)
+        api_page_size = 20
+        max_pages = 50  # Up to 1000 markets
 
         all_data = []
         seen_ids = set()
-        for page_num in range(max_pages):
+        for page_num in range(1, max_pages + 1):
             params = {
                 "limit": api_page_size,
-                "offset": page_num * api_page_size,
-                "sortBy": 5,  # Sort by 24h volume
+                "page": page_num,
+                "sortBy": 5,  # Sort by 24h volume descending
+                "marketType": 2,  # All market types (binary + categorical)
             }
             if active_only:
                 params["status"] = "activated"
@@ -689,9 +713,15 @@ class OpinionPlatform(BasePlatform):
                         new_count += 1
                 if new_count == 0:
                     break  # All duplicates — no more unique markets
+
+                # If we got fewer than page size, this is the last page
+                if len(markets_data) < api_page_size:
+                    break
             except Exception as e:
                 logger.error("Failed to fetch markets page", page=page_num, error=str(e))
                 break
+
+        logger.info("Fetched Opinion markets", total_raw=len(all_data), pages_fetched=page_num)
 
         markets = []
         for item in all_data:
@@ -715,11 +745,13 @@ class OpinionPlatform(BasePlatform):
         limit: int = 50,
     ) -> list[Market]:
         """Search markets by query."""
-        # Opinion API uses keyword parameter for search
+        # Opinion API uses keyword parameter for search, max 20 per page
         params = {
             "keyword": query,
-            "limit": min(limit, 100),
+            "limit": min(limit, 20),
+            "page": 1,
             "status": "activated",
+            "marketType": 2,  # All market types (binary + categorical)
         }
 
         try:
@@ -752,43 +784,65 @@ class OpinionPlatform(BasePlatform):
                    (m.description and query_lower in m.description.lower())
             ][:limit]
 
-    async def get_market(self, market_id: str, search_title: Optional[str] = None, include_closed: bool = False) -> Optional[Market]:
-        """Get a specific market by ID.
+    async def _get_market_raw(self, market_id: str) -> Optional[Market]:
+        """Get a specific market by ID WITHOUT orderbook enrichment.
 
-        Note: search_title and include_closed are accepted for API compatibility but not used.
+        Used internally by get_orderbook() to avoid infinite recursion:
+        get_orderbook -> get_market -> enrich -> get_orderbook -> ...
         """
         try:
-            # Opinion uses /openapi/market/{market_id} or /openapi/market?marketId=X
             data = await self._api_request("GET", f"/openapi/market/{market_id}")
 
             market_data = data.get("result", {}).get("data", data)
             market = None
             if isinstance(market_data, dict) and market_data:
                 market = self._parse_market(market_data)
-            else:
+
+            if not market:
                 # Fallback: try with query param
                 data = await self._api_request("GET", "/openapi/market", params={"marketId": market_id})
                 market_data = data.get("result", {}).get("list", [])
                 if market_data:
                     market = self._parse_market(market_data[0])
 
-            # Enrich with orderbook prices (API often omits prices, defaulting to 0.5)
-            if market:
-                enriched = await self._enrich_markets_with_orderbook_prices([market])
-                market = enriched[0] if enriched else market
+            if not market:
+                # Try categorical endpoint (market might be a categorical event)
+                try:
+                    data = await self._api_request("GET", f"/openapi/market/categorical/{market_id}")
+                    market_data = data.get("result", {}).get("data", data)
+                    if isinstance(market_data, dict) and market_data:
+                        market = self._parse_market(market_data)
+                except PlatformError:
+                    pass
 
             return market
 
         except PlatformError:
             return None
 
+    async def get_market(self, market_id: str, search_title: Optional[str] = None, include_closed: bool = False) -> Optional[Market]:
+        """Get a specific market by ID.
+
+        Note: search_title and include_closed are accepted for API compatibility but not used.
+        """
+        market = await self._get_market_raw(market_id)
+
+        # Enrich with orderbook prices (API often omits prices, defaulting to 0.5)
+        if market:
+            enriched = await self._enrich_markets_with_orderbook_prices([market])
+            market = enriched[0] if enriched else market
+
+        return market
+
     async def get_trending_markets(self, limit: int = 50) -> list[Market]:
         """Get trending markets by volume."""
-        # sortBy: 5 = 24h volume descending
+        # sortBy: 5 = 24h volume descending, max 20 per page
         params = {
-            "limit": min(limit, 100),
+            "limit": min(limit, 20),
+            "page": 1,
             "sortBy": 5,
             "status": "activated",
+            "marketType": 2,  # All market types (binary + categorical)
         }
 
         try:
@@ -875,34 +929,43 @@ class OpinionPlatform(BasePlatform):
         # Hourly: filter by cutoffAt to find short-duration markets
         if category.lower() == "hourly":
             try:
-                # Fetch markets sorted by ending soon
-                params = {
-                    "limit": 200,
-                    "sortBy": 2,  # EndingSoon
-                    "status": "activated",
-                }
-                data = await self._api_request("GET", "/openapi/market", params=params)
-                markets_data = data.get("result", {}).get("list", [])
-                if not markets_data and isinstance(data, list):
-                    markets_data = data
-
                 from datetime import datetime, timezone
                 now = datetime.now(timezone.utc)
 
                 markets = []
-                for item in markets_data:
-                    try:
-                        cutoff = item.get("cutoffAt")
-                        if not cutoff:
-                            continue
-                        # cutoffAt is Unix timestamp
-                        end_time = datetime.fromtimestamp(cutoff, tz=timezone.utc)
-                        hours_remaining = (end_time - now).total_seconds() / 3600
-                        # Include markets ending within next 2 hours
-                        if 0 < hours_remaining <= 2:
-                            markets.append(self._parse_market(item))
-                    except Exception as e:
-                        logger.debug(f"Skipping market in hourly filter: {e}")
+                # Paginate through ending-soon markets (20 per page)
+                for page in range(1, 11):  # Up to 200 markets
+                    params = {
+                        "limit": 20,
+                        "page": page,
+                        "sortBy": 2,  # EndingSoon
+                        "status": "activated",
+                        "marketType": 2,
+                    }
+                    data = await self._api_request("GET", "/openapi/market", params=params)
+                    markets_data = data.get("result", {}).get("list", [])
+                    if not markets_data and isinstance(data, list):
+                        markets_data = data
+                    if not markets_data:
+                        break
+
+                    for item in markets_data:
+                        try:
+                            cutoff = item.get("cutoffAt")
+                            if not cutoff:
+                                continue
+                            end_time = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+                            hours_remaining = (end_time - now).total_seconds() / 3600
+                            if 0 < hours_remaining <= 2:
+                                markets.append(self._parse_market(item))
+                            elif hours_remaining > 2:
+                                # Sorted by ending soon, so all remaining are further out
+                                break
+                        except Exception as e:
+                            logger.debug(f"Skipping market in hourly filter: {e}")
+
+                    if len(markets) >= limit or len(markets_data) < 20:
+                        break
 
                 markets = await self._enrich_markets_with_orderbook_prices(markets)
                 return markets[:limit]
@@ -929,6 +992,45 @@ class OpinionPlatform(BasePlatform):
         return filtered[:limit]
 
     # ===================
+    # Related / Categorical Markets
+    # ===================
+
+    async def get_related_markets(self, event_id: str) -> list[Market]:
+        """Get child markets for a categorical (multi-outcome) event.
+
+        Opinion has a dedicated /market/categorical/{marketId} endpoint
+        that returns childMarkets for categorical events.
+        """
+        try:
+            data = await self._api_request("GET", f"/openapi/market/categorical/{event_id}")
+            market_data = data.get("result", {}).get("data", data)
+            if not isinstance(market_data, dict):
+                return []
+
+            child_markets_data = market_data.get("childMarkets") or market_data.get("child_markets") or []
+            if not child_markets_data:
+                return []
+
+            markets = []
+            for child in child_markets_data:
+                try:
+                    m = self._parse_market(child)
+                    # For child markets, use the title as outcome_name if not set
+                    if not m.outcome_name:
+                        m.outcome_name = m.title
+                    markets.append(m)
+                except Exception as e:
+                    logger.debug(f"Failed to parse child market: {e}")
+
+            # Enrich with orderbook prices
+            markets = await self._enrich_markets_with_orderbook_prices(markets)
+            return markets
+
+        except Exception as e:
+            logger.warning("Failed to get categorical market details", event_id=event_id, error=str(e))
+            return []
+
+    # ===================
     # Order Book
     # ===================
     
@@ -939,7 +1041,9 @@ class OpinionPlatform(BasePlatform):
         slug: str = None,  # Accepted for API compatibility, not used
     ) -> OrderBook:
         """Get order book from Opinion SDK or API."""
-        market = await self.get_market(market_id)
+        # Use _get_market_raw to avoid infinite recursion:
+        # get_orderbook -> get_market -> enrich -> _fetch_orderbook_price -> get_orderbook
+        market = await self._get_market_raw(market_id)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found", Platform.OPINION)
 
