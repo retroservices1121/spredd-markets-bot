@@ -132,7 +132,7 @@ class OpinionPlatform(BasePlatform):
         try:
             # Fetch quote tokens to get the CTF exchange address
             data = await self._api_request("GET", "/openapi/quoteToken", params={"chainId": "56"})
-            quote_tokens = data.get("result", {}).get("list", [])
+            quote_tokens = (data.get("result") or {}).get("list", [])
 
             for token in quote_tokens:
                 if token.get("quoteTokenAddress", "").lower() == self.USDT_ADDRESS.lower():
@@ -489,7 +489,7 @@ class OpinionPlatform(BasePlatform):
                 raise RateLimitError("Rate limit exceeded", Platform.OPINION)
             
             response.raise_for_status()
-            return response.json()
+            return response.json() or {}
             
         except httpx.HTTPStatusError as e:
             raise PlatformError(
@@ -697,7 +697,7 @@ class OpinionPlatform(BasePlatform):
 
             try:
                 data = await self._api_request("GET", "/openapi/market", params=params)
-                markets_data = data.get("result", {}).get("list", [])
+                markets_data = (data.get("result") or {}).get("list", [])
                 if not markets_data and isinstance(data, list):
                     markets_data = data
                 if not markets_data:
@@ -757,7 +757,7 @@ class OpinionPlatform(BasePlatform):
         try:
             data = await self._api_request("GET", "/openapi/market", params=params)
 
-            markets_data = data.get("result", {}).get("list", [])
+            markets_data = (data.get("result") or {}).get("list", [])
             if not markets_data and isinstance(data, list):
                 markets_data = data
 
@@ -793,7 +793,7 @@ class OpinionPlatform(BasePlatform):
         try:
             data = await self._api_request("GET", f"/openapi/market/{market_id}")
 
-            market_data = data.get("result", {}).get("data", data)
+            market_data = (data.get("result") or {}).get("data", data)
             market = None
             if isinstance(market_data, dict) and market_data:
                 market = self._parse_market(market_data)
@@ -801,7 +801,7 @@ class OpinionPlatform(BasePlatform):
             if not market:
                 # Fallback: try with query param
                 data = await self._api_request("GET", "/openapi/market", params={"marketId": market_id})
-                market_data = data.get("result", {}).get("list", [])
+                market_data = (data.get("result") or {}).get("list", [])
                 if market_data:
                     market = self._parse_market(market_data[0])
 
@@ -809,7 +809,7 @@ class OpinionPlatform(BasePlatform):
                 # Try categorical endpoint (market might be a categorical event)
                 try:
                     data = await self._api_request("GET", f"/openapi/market/categorical/{market_id}")
-                    market_data = data.get("result", {}).get("data", data)
+                    market_data = (data.get("result") or {}).get("data", data)
                     if isinstance(market_data, dict) and market_data:
                         market = self._parse_market(market_data)
                 except PlatformError:
@@ -848,7 +848,7 @@ class OpinionPlatform(BasePlatform):
         try:
             data = await self._api_request("GET", "/openapi/market", params=params)
 
-            markets_data = data.get("result", {}).get("list", [])
+            markets_data = (data.get("result") or {}).get("list", [])
             if not markets_data and isinstance(data, list):
                 markets_data = data
 
@@ -943,7 +943,7 @@ class OpinionPlatform(BasePlatform):
                         "marketType": 2,
                     }
                     data = await self._api_request("GET", "/openapi/market", params=params)
-                    markets_data = data.get("result", {}).get("list", [])
+                    markets_data = (data.get("result") or {}).get("list", [])
                     if not markets_data and isinstance(data, list):
                         markets_data = data
                     if not markets_data:
@@ -1003,7 +1003,7 @@ class OpinionPlatform(BasePlatform):
         """
         try:
             data = await self._api_request("GET", f"/openapi/market/categorical/{event_id}")
-            market_data = data.get("result", {}).get("data", data)
+            market_data = (data.get("result") or {}).get("data", data)
             if not isinstance(market_data, dict):
                 return []
 
@@ -1111,7 +1111,7 @@ class OpinionPlatform(BasePlatform):
                 logger.info("Fetching Opinion orderbook via REST API", token_id=token_id[:20] + "...", market_id=market_id)
                 data = await self._api_request("GET", f"/openapi/orderbook/{token_id}")
 
-                orderbook_data = data.get("result", data)
+                orderbook_data = data.get("result") or data
                 logger.info("Opinion REST orderbook response", has_bids=len(orderbook_data.get("bids", [])), has_asks=len(orderbook_data.get("asks", [])))
 
                 for bid in orderbook_data.get("bids", []):
