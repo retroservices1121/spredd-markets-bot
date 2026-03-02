@@ -16,14 +16,17 @@ export function formatUSD(amount: string | number): string {
   }).format(num);
 }
 
-export function formatPercent(price: number): string {
-  return `${Math.round(price * 100)}%`;
+export function formatPercent(price: number | string | undefined): string {
+  const num = typeof price === "string" ? parseFloat(price) : (price ?? 0);
+  return `${Math.round(num * 100)}%`;
 }
 
-export function formatVolume(volume: number): string {
-  if (volume >= 1_000_000) return `$${(volume / 1_000_000).toFixed(1)}M`;
-  if (volume >= 1_000) return `$${(volume / 1_000).toFixed(1)}K`;
-  return `$${volume.toFixed(0)}`;
+export function formatVolume(volume: number | string | undefined): string {
+  const num = typeof volume === "string" ? parseFloat(volume) : (volume ?? 0);
+  if (isNaN(num)) return "$0";
+  if (num >= 1_000_000) return `$${(num / 1_000_000).toFixed(1)}M`;
+  if (num >= 1_000) return `$${(num / 1_000).toFixed(1)}K`;
+  return `$${num.toFixed(0)}`;
 }
 
 export function timeUntil(dateStr: string): string {
