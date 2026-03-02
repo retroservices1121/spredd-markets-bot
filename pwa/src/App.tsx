@@ -12,7 +12,6 @@ import { AccountCreatingPage } from "@/pages/onboarding/AccountCreatingPage";
 // Pages
 import { HomePage } from "@/pages/HomePage";
 import { FeedPage } from "@/pages/FeedPage";
-import { CreateEventPage } from "@/pages/CreateEventPage";
 import { RankingPage } from "@/pages/RankingPage";
 import { ProfilePage } from "@/pages/ProfilePage";
 import { SearchPage } from "@/pages/SearchPage";
@@ -51,7 +50,6 @@ export default function App() {
         {/* Authenticated routes with bottom nav */}
         <Route element={<AppLayout />}>
           <Route path="/" element={<HomePage />} />
-          <Route path="/create" element={<CreateEventPage />} />
           <Route path="/ranking" element={<RankingPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/search" element={<SearchPage />} />
