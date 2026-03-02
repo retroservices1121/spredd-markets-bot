@@ -34,6 +34,14 @@ const apiProxy = createProxyMiddleware({
     },
     proxyRes: (proxyRes, req) => {
       console.log(`[proxy] Response: ${proxyRes.statusCode} for ${req.originalUrl}`);
+      // Log response body for debugging
+      const chunks = [];
+      proxyRes.on("data", (chunk) => chunks.push(chunk));
+      proxyRes.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        const preview = body.length > 500 ? body.slice(0, 500) + "..." : body;
+        console.log(`[proxy] Body for ${req.originalUrl}: ${preview}`);
+      });
     },
     error: (err, req, res) => {
       console.error(`[proxy] Error: ${err.message} for ${req.originalUrl}`);
