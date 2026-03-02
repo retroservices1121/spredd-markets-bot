@@ -6,7 +6,7 @@ import { dirname, join } from "path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_URL = process.env.API_URL || "http://localhost:8000";
+const API_URL = process.env.API_URL || "https://spredd-markets-bot-production.up.railway.app";
 
 console.log(`[config] API_URL = ${API_URL}`);
 console.log(`[config] PORT = ${PORT}`);
