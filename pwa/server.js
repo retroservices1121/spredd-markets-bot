@@ -16,32 +16,22 @@ app.get("/_debug", (req, res) => {
   res.json({ api_url: API_URL, port: PORT, status: "ok" });
 });
 
-// Request logger for /api routes
-app.use("/api", (req, res, next) => {
-  console.log(`[proxy] ${req.method} ${req.originalUrl} → ${API_URL}${req.originalUrl}`);
-  next();
-});
-
 // Proxy /api requests to the backend
+// NOTE: Use pathFilter instead of app.use("/api", proxy) because Express
+// strips the mount prefix from req.url, causing the backend to receive
+// /v1/markets/feed instead of /api/v1/markets/feed.
 const apiProxy = createProxyMiddleware({
   target: API_URL,
   changeOrigin: true,
+  pathFilter: "/api",
   timeout: 15000,
   proxyTimeout: 15000,
   on: {
     proxyReq: (proxyReq, req) => {
-      console.log(`[proxy] Forwarding: ${req.method} ${req.originalUrl}`);
+      console.log(`[proxy] Forwarding: ${req.method} ${req.originalUrl} → ${API_URL}${req.originalUrl}`);
     },
     proxyRes: (proxyRes, req) => {
       console.log(`[proxy] Response: ${proxyRes.statusCode} for ${req.originalUrl}`);
-      // Log response body for debugging
-      const chunks = [];
-      proxyRes.on("data", (chunk) => chunks.push(chunk));
-      proxyRes.on("end", () => {
-        const body = Buffer.concat(chunks).toString("utf8");
-        const preview = body.length > 500 ? body.slice(0, 500) + "..." : body;
-        console.log(`[proxy] Body for ${req.originalUrl}: ${preview}`);
-      });
     },
     error: (err, req, res) => {
       console.error(`[proxy] Error: ${err.message} for ${req.originalUrl}`);
@@ -50,12 +40,13 @@ const apiProxy = createProxyMiddleware({
   },
 });
 
-app.use("/api", apiProxy);
+app.use(apiProxy);
 
 // Also proxy the root-level platform endpoints used by the backend
 const platformProxy = createProxyMiddleware({
   target: API_URL,
   changeOrigin: true,
+  pathFilter: ["/polymarket", "/kalshi", "/platforms", "/arbitrage", "/health"],
   timeout: 15000,
   proxyTimeout: 15000,
   on: {
@@ -66,9 +57,7 @@ const platformProxy = createProxyMiddleware({
   },
 });
 
-for (const path of ["/polymarket", "/kalshi", "/platforms", "/arbitrage", "/health"]) {
-  app.use(path, platformProxy);
-}
+app.use(platformProxy);
 
 // Serve static files from dist/
 app.use(express.static(join(__dirname, "dist")));
