@@ -586,6 +586,23 @@ class KalshiPlatform(BasePlatform):
             except Exception as e:
                 logger.warning("Failed to parse market", error=str(e))
 
+        # Batch-fetch event images for markets that don't have one
+        event_ids = {m.event_id for m in markets if m.event_id and not m.image_url}
+        if event_ids:
+            event_results = await asyncio.gather(
+                *(self._fetch_event(eid) for eid in event_ids),
+                return_exceptions=True,
+            )
+            event_images = {}
+            for eid, result in zip(event_ids, event_results):
+                if isinstance(result, dict):
+                    img = result.get("imageUrl")
+                    if img:
+                        event_images[eid] = img
+            for m in markets:
+                if not m.image_url and m.event_id in event_images:
+                    m.image_url = event_images[m.event_id]
+
         return markets
 
     async def get_related_markets(self, event_id: str) -> list[Market]:

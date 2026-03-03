@@ -443,23 +443,7 @@ async def get_market_feed(
                     if plat_instance:
                         markets = await plat_instance.get_trending_markets(limit=50)
                         for m in markets:
-                            image = m.image_url
-                            if not image and m.raw_data:
-                                if "event" in m.raw_data:
-                                    image = m.raw_data["event"].get("image")
-                                elif "image" in m.raw_data:
-                                    image = m.raw_data["image"]
-                            _all.append({
-                                "id": m.market_id,
-                                "platform": plat_name,
-                                "title": m.title,
-                                "image": image,
-                                "yes_price": float(m.yes_price) if m.yes_price else 0.5,
-                                "no_price": float(m.no_price) if m.no_price else 0.5,
-                                "volume": float(m.volume_24h) if m.volume_24h else 0,
-                                "category": getattr(m, "category", None),
-                                "end_date": getattr(m, "end_date", None),
-                            })
+                            _all.append(_serialize_market(m, plat_name))
                 except Exception as e:
                     print(f"[Feed] Error fetching {plat_name}: {e}")
             return _all
@@ -816,38 +800,7 @@ async def get_all_markets(
             markets = await platform_instance.get_markets(limit=per_platform_limit, active_only=active)
             plat_results = []
             for m in markets:
-                image = m.image_url
-                if not image and plat == "polymarket" and m.raw_data:
-                    if "event" in m.raw_data:
-                        image = m.raw_data["event"].get("image")
-                    elif "image" in m.raw_data:
-                        image = m.raw_data["image"]
-
-                slug = m.event_id or m.market_id
-
-                plat_results.append({
-                    "id": m.market_id,
-                    "platform": plat,
-                    "question": m.title,
-                    "description": m.description,
-                    "image": image,
-                    "category": m.category or "OTHER",
-                    "outcomes": ["Yes", "No"],
-                    "outcomePrices": [
-                        str(float(m.yes_price)) if m.yes_price else "0.5",
-                        str(float(m.no_price)) if m.no_price else "0.5",
-                    ],
-                    "volume": float(m.volume_24h) if m.volume_24h else 0,
-                    "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
-                    "liquidity": float(m.liquidity) if m.liquidity else 0,
-                    "endDate": m.close_time,
-                    "slug": slug,
-                    "active": m.is_active,
-                    "event_id": m.event_id,
-                    "is_multi_outcome": m.is_multi_outcome,
-                    "outcome_name": m.outcome_name,
-                    "related_market_count": m.related_market_count,
-                })
+                plat_results.append(_serialize_market(m, plat))
             return plat_results
 
         if len(platforms_to_fetch) > 1:
@@ -916,6 +869,59 @@ _SEARCH_CACHE_TTL = 120  # 2 minutes
 _MARKETS_CACHE_TTL = 120  # 2 minutes
 _TRENDING_CACHE_TTL = 120  # 2 minutes
 
+def _serialize_market(m, platform_name: str = None) -> dict:
+    """Convert a Market object to a consistent API dict.
+
+    Emits both legacy and new field names for backward compatibility.
+    """
+    plat = platform_name or (m.platform.value if m.platform else "unknown")
+
+    image = m.image_url
+    if not image and m.raw_data:
+        if "event" in m.raw_data:
+            image = m.raw_data["event"].get("image")
+        elif "image" in m.raw_data:
+            image = m.raw_data["image"]
+
+    slug = m.event_id or m.market_id
+
+    vol = 0
+    if m.volume_24h is not None:
+        try:
+            vol = float(m.volume_24h)
+        except (TypeError, ValueError):
+            vol = 0
+
+    return {
+        "id": m.market_id,
+        "platform": plat,
+        "title": m.title,
+        "question": m.title,
+        "description": m.description,
+        "image": image,
+        "category": m.category or "OTHER",
+        "outcomes": ["Yes", "No"],
+        "outcomePrices": [
+            str(float(m.yes_price)) if m.yes_price else "0.5",
+            str(float(m.no_price)) if m.no_price else "0.5",
+        ],
+        "yes_price": float(m.yes_price) if m.yes_price else None,
+        "no_price": float(m.no_price) if m.no_price else None,
+        "volume": vol,
+        "volume24hr": vol,
+        "liquidity": float(m.liquidity) if m.liquidity else 0,
+        "end_date": m.close_time,
+        "endDate": m.close_time,
+        "slug": slug,
+        "active": m.is_active,
+        "is_active": m.is_active,
+        "event_id": m.event_id,
+        "is_multi_outcome": m.is_multi_outcome,
+        "outcome_name": m.outcome_name,
+        "related_market_count": m.related_market_count,
+    }
+
+
 # Redis cache import (lazy — module may not be loaded yet during import)
 _redis_cache = None
 
@@ -975,40 +981,7 @@ async def _warm_markets_cache() -> None:
                 continue
 
             markets = await platform_instance.get_markets(limit=1000, active_only=True)
-            results = []
-            for m in markets:
-                image = m.image_url
-                if not image and plat == "polymarket" and m.raw_data:
-                    if "event" in m.raw_data:
-                        image = m.raw_data["event"].get("image")
-                    elif "image" in m.raw_data:
-                        image = m.raw_data["image"]
-
-                slug = m.event_id or m.market_id
-
-                results.append({
-                    "id": m.market_id,
-                    "platform": plat,
-                    "question": m.title,
-                    "description": m.description,
-                    "image": image,
-                    "category": m.category or "OTHER",
-                    "outcomes": ["Yes", "No"],
-                    "outcomePrices": [
-                        str(float(m.yes_price)) if m.yes_price else "0.5",
-                        str(float(m.no_price)) if m.no_price else "0.5",
-                    ],
-                    "volume": float(m.volume_24h) if m.volume_24h else 0,
-                    "volume24hr": float(m.volume_24h) if m.volume_24h else 0,
-                    "liquidity": float(m.liquidity) if m.liquidity else 0,
-                    "endDate": m.close_time,
-                    "slug": slug,
-                    "active": m.is_active,
-                    "event_id": m.event_id,
-                    "is_multi_outcome": m.is_multi_outcome,
-                    "outcome_name": m.outcome_name,
-                    "related_market_count": m.related_market_count,
-                })
+            results = [_serialize_market(m, plat) for m in markets]
 
             # For Kalshi: boost rapid markets (5-min, 15-min, hourly) to the
             # top so they survive any limit truncation. They're sorted by
@@ -1057,15 +1030,7 @@ async def _warm_trending_cache() -> None:
                 continue
             markets = await platform_instance.get_trending_markets(limit=50)
             for m in markets:
-                results.append({
-                    "platform": plat,
-                    "id": m.market_id,
-                    "title": m.title,
-                    "yes_price": float(m.yes_price) if m.yes_price else None,
-                    "no_price": float(m.no_price) if m.no_price else None,
-                    "volume": str(m.volume_24h) if m.volume_24h else None,
-                    "is_active": m.is_active,
-                })
+                results.append(_serialize_market(m, plat))
         except Exception as e:
             print(f"[CacheWarmer] Error warming trending {plat}: {e}")
 
@@ -1285,23 +1250,7 @@ async def search_markets(
 
                 markets = await platform_instance.search_markets(q, limit=per_platform_limit)
                 for m in markets:
-                    image = m.image_url
-                    if not image and plat == "polymarket" and m.raw_data:
-                        if "event" in m.raw_data:
-                            image = m.raw_data["event"].get("image")
-                        elif "image" in m.raw_data:
-                            image = m.raw_data["image"]
-                    results.append({
-                        "platform": plat,
-                        "id": m.market_id,
-                        "title": m.title,
-                        "image": image,
-                        "yes_price": float(m.yes_price) if m.yes_price else None,
-                        "no_price": float(m.no_price) if m.no_price else None,
-                        "volume": str(m.volume_24h) if m.volume_24h else None,
-                        "is_active": m.is_active,
-                        "event_id": m.event_id,
-                    })
+                    results.append(_serialize_market(m, plat))
             except Exception as e:
                 print(f"Error searching {plat}: {e}")
 
@@ -1358,69 +1307,17 @@ async def get_trending_markets(
     async def _fetch_trending():
         results = []
 
-        if not platform or platform.lower() == "kalshi":
+        for plat_name in _ALL_PLATFORMS:
+            if platform and platform.lower() != plat_name:
+                continue
             try:
-                kalshi = platform_registry.get(Platform.KALSHI)
-                if kalshi:
-                    markets = await kalshi.get_trending_markets(limit=limit)
+                plat_instance = platform_registry.get(Platform(plat_name))
+                if plat_instance and hasattr(plat_instance, 'get_trending_markets'):
+                    markets = await plat_instance.get_trending_markets(limit=limit)
                     for m in markets:
-                        results.append({
-                            "platform": "kalshi",
-                            "id": m.market_id,
-                            "title": m.title,
-                            "image": m.image_url,
-                            "yes_price": float(m.yes_price) if m.yes_price else None,
-                            "no_price": float(m.no_price) if m.no_price else None,
-                            "volume": str(m.volume_24h) if m.volume_24h else None,
-                            "is_active": m.is_active,
-                        })
+                        results.append(_serialize_market(m, plat_name))
             except Exception as e:
-                print(f"Error getting Kalshi trending: {e}")
-
-        if not platform or platform.lower() == "polymarket":
-            try:
-                poly = platform_registry.get(Platform.POLYMARKET)
-                if poly:
-                    markets = await poly.get_trending_markets(limit=limit)
-                    for m in markets:
-                        image = m.image_url
-                        if not image and m.raw_data:
-                            if "event" in m.raw_data:
-                                image = m.raw_data["event"].get("image")
-                            elif "image" in m.raw_data:
-                                image = m.raw_data["image"]
-                        results.append({
-                            "platform": "polymarket",
-                            "id": m.market_id,
-                            "title": m.title,
-                            "image": image,
-                            "yes_price": float(m.yes_price) if m.yes_price else None,
-                            "no_price": float(m.no_price) if m.no_price else None,
-                            "volume": str(m.volume_24h) if m.volume_24h else None,
-                            "is_active": m.is_active,
-                        })
-            except Exception as e:
-                print(f"Error getting Polymarket trending: {e}")
-
-        for plat_name in ["opinion", "limitless", "myriad"]:
-            if not platform or platform.lower() == plat_name:
-                try:
-                    plat_instance = platform_registry.get(Platform(plat_name))
-                    if plat_instance and hasattr(plat_instance, 'get_trending_markets'):
-                        markets = await plat_instance.get_trending_markets(limit=limit)
-                        for m in markets:
-                            results.append({
-                                "platform": plat_name,
-                                "id": m.market_id,
-                                "title": m.title,
-                                "image": m.image_url,
-                                "yes_price": float(m.yes_price) if m.yes_price else None,
-                                "no_price": float(m.no_price) if m.no_price else None,
-                                "volume": str(m.volume_24h) if m.volume_24h else None,
-                                "is_active": m.is_active,
-                            })
-                except Exception as e:
-                    print(f"Error getting {plat_name} trending: {e}")
+                print(f"Error getting {plat_name} trending: {e}")
 
         _now = time.time()
         _trending_cache[plat_key] = (_now, results)
@@ -1523,18 +1420,7 @@ async def get_markets_by_category(
             raise HTTPException(status_code=400, detail="Polymarket not available")
 
         markets = await poly.get_markets_by_category(category, limit=100)
-        results = []
-        for m in markets:
-            results.append({
-                "platform": "polymarket",
-                "id": m.market_id,
-                "title": m.title,
-                "category": m.category,
-                "yes_price": float(m.yes_price) if m.yes_price else None,
-                "no_price": float(m.no_price) if m.no_price else None,
-                "volume": str(m.volume_24h) if m.volume_24h else None,
-                "is_active": m.is_active,
-            })
+        results = [_serialize_market(m, "polymarket") for m in markets]
         _rc = _get_redis_cache()
         if _rc and _rc.is_available:
             from src.config import settings as _s

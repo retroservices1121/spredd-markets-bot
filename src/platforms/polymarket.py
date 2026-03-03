@@ -876,6 +876,7 @@ class PolymarketPlatform(BasePlatform):
             close_time=m.get("endDate") or m.get("endDateIso") or data.get("endDate"),
             yes_token=yes_token,
             no_token=no_token,
+            image_url=data.get("image"),
             raw_data={"event": data, "market": m},
             outcome_name=outcome_name,
             is_multi_outcome=is_multi_outcome,
