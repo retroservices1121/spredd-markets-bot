@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Lock, Key, Plus, Loader2 } from "lucide-react";
+import { Lock, Key, Plus, Loader2, Eye, EyeOff } from "lucide-react";
 import { getAutoLock, setAutoLock } from "@/lib/messaging";
 import { decryptVault, encryptVault } from "@/core/vault";
 import type { DecryptedVault, VaultMeta } from "@/core/types";
@@ -34,6 +34,8 @@ export function SettingsPage({ onLock, vault, onVaultUpdated }: SettingsPageProp
   const [importError, setImportError] = useState("");
   const [importLoading, setImportLoading] = useState(false);
 
+  const [overlayEnabled, setOverlayEnabled] = useState(false);
+
   const missingEvm = vault && !vault.evmAddress;
   const missingSolana = vault && !vault.solanaAddress;
 
@@ -43,11 +45,24 @@ export function SettingsPage({ onLock, vault, onVaultUpdated }: SettingsPageProp
         setAutoLockMinutes(res.data.minutes);
       }
     });
+    // Load overlay toggle state
+    chrome.storage.local.get("preferences").then((result) => {
+      setOverlayEnabled(result.preferences?.overlayEnabled ?? false);
+    });
   }, []);
 
   async function handleAutoLockChange(minutes: number) {
     setAutoLockMinutes(minutes);
     await setAutoLock(minutes);
+  }
+
+  async function handleOverlayToggle() {
+    const newValue = !overlayEnabled;
+    setOverlayEnabled(newValue);
+    await chrome.runtime.sendMessage({
+      type: "SET_OVERLAY_ENABLED",
+      payload: { enabled: newValue },
+    });
   }
 
   async function handleExport() {
@@ -244,6 +259,28 @@ export function SettingsPage({ onLock, vault, onVaultUpdated }: SettingsPageProp
         </div>
       </div>
 
+      {/* Headline Overlay */}
+      <div>
+        <h3 className="text-sm font-medium text-foreground mb-2">
+          Headline Overlay
+        </h3>
+        <p className="text-xs text-muted-foreground mb-2">
+          Show prediction market probabilities on news headlines
+        </p>
+        <Button
+          variant={overlayEnabled ? "default" : "secondary"}
+          className={`w-full ${overlayEnabled ? "bg-spredd-green hover:bg-spredd-green/90" : ""}`}
+          onClick={handleOverlayToggle}
+        >
+          {overlayEnabled ? (
+            <Eye className="w-4 h-4" />
+          ) : (
+            <EyeOff className="w-4 h-4" />
+          )}
+          {overlayEnabled ? "Overlay Enabled" : "Overlay Disabled"}
+        </Button>
+      </div>
+
       {/* Lock now */}
       <div>
         <Button variant="outline" className="w-full" onClick={onLock}>
@@ -331,7 +368,7 @@ export function SettingsPage({ onLock, vault, onVaultUpdated }: SettingsPageProp
 
       {/* Version */}
       <div className="text-center">
-        <p className="text-xs text-muted-foreground">Spredd Markets v0.2.0</p>
+        <p className="text-xs text-muted-foreground">Spredd Markets v0.3.0</p>
       </div>
     </div>
   );

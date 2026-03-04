@@ -22,6 +22,7 @@ export default defineConfig({
       input: {
         popup: path.resolve(__dirname, "src/popup.html"),
         background: path.resolve(__dirname, "src/background.ts"),
+        "content-script": path.resolve(__dirname, "src/content/content-script.ts"),
       },
       output: {
         entryFileNames: "[name].js",

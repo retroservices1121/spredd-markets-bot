@@ -9,7 +9,7 @@
  * with builder codes and fee collection.
  */
 
-import type { DecryptedVault, Message, MessageResponse } from "./core/types";
+import type { DecryptedVault, Message, MessageResponse, HeadlineEntry, HeadlineMatch } from "./core/types";
 import { decryptVault } from "./core/vault";
 import { ethers } from "ethers";
 import { API_BASE } from "./services/polymarket";
@@ -432,6 +432,68 @@ async function checkWalletLinked(): Promise<boolean> {
     return false;
   }
 }
+
+// ──────────────────────────────────────────
+// Headline matching helpers
+// ──────────────────────────────────────────
+
+const STOP_WORDS = new Set([
+  "a","an","the","is","are","was","were","be","been","being","have","has","had",
+  "do","does","did","will","would","shall","should","may","might","must","can",
+  "could","to","of","in","for","on","with","at","by","from","as","into","about",
+  "between","through","during","before","after","above","below","up","down","out",
+  "off","over","under","again","further","then","once","here","there","when",
+  "where","why","how","all","each","every","both","few","more","most","other",
+  "some","such","no","not","only","own","same","so","than","too","very","just",
+  "but","and","or","if","it","its","this","that","these","those","what","which",
+  "who","whom","new","says","said","also","like","get","got","one","two",
+]);
+
+function extractSearchQuery(headline: string): string {
+  const words = headline
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+  return words.slice(0, 4).join(" ");
+}
+
+function jaccardSimilarity(a: string, b: string): number {
+  const setA = new Set(a.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean));
+  const setB = new Set(b.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean));
+  let intersection = 0;
+  for (const word of setA) {
+    if (setB.has(word)) intersection++;
+  }
+  const union = new Set([...setA, ...setB]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+interface MarketResult {
+  market_id?: string;
+  id?: string;
+  platform?: string;
+  question?: string;
+  title?: string;
+  yes_price?: number;
+  probability?: number;
+}
+
+function findBestMatch(headline: string, markets: MarketResult[]): { market: MarketResult; score: number } | null {
+  let best: { market: MarketResult; score: number } | null = null;
+  for (const m of markets) {
+    const question = m.question || m.title || "";
+    const score = jaccardSimilarity(headline, question);
+    if (score >= 0.2 && (!best || score > best.score)) {
+      best = { market: m, score };
+    }
+  }
+  return best;
+}
+
+// In-memory cache for headline matches (5 min TTL)
+const headlineCache = new Map<string, { match: HeadlineMatch | null; ts: number }>();
+const HEADLINE_CACHE_TTL = 5 * 60 * 1000;
 
 // ──────────────────────────────────────────
 // Message handler
@@ -878,6 +940,131 @@ async function handleMessage(message: Message): Promise<MessageResponse> {
         return {
           success: false,
           error: e instanceof Error ? e.message : "Swap failed",
+        };
+      }
+    }
+
+    // ── Headline Overlay ────────────────────────
+
+    case "MATCH_HEADLINES": {
+      if (!cachedVault) cachedVault = await loadSession();
+      if (!cachedVault) return { success: false, error: "Wallet is locked" };
+      await resetAutoLockAlarm();
+
+      try {
+        const { headlines } = message.payload as { headlines: HeadlineEntry[] };
+        const now = Date.now();
+        const results: HeadlineMatch[] = [];
+        const uncached: HeadlineEntry[] = [];
+
+        // Check cache first
+        for (const h of headlines) {
+          const cached = headlineCache.get(h.text);
+          if (cached && now - cached.ts < HEADLINE_CACHE_TTL) {
+            if (cached.match) {
+              results.push({ ...cached.match, elementId: h.elementId });
+            }
+          } else {
+            uncached.push(h);
+          }
+        }
+
+        // Deduplicate queries
+        const queryMap = new Map<string, HeadlineEntry[]>();
+        for (const h of uncached) {
+          const query = extractSearchQuery(h.text);
+          if (!query) continue;
+          const existing = queryMap.get(query) || [];
+          existing.push(h);
+          queryMap.set(query, existing);
+        }
+
+        // Batch search (max 5 parallel)
+        const queries = [...queryMap.entries()].slice(0, 5);
+        const searchResults = await Promise.allSettled(
+          queries.map(async ([query, entries]) => {
+            const raw = await botApiFetch<{ markets?: MarketResult[] }>(
+              `/api/v1/markets/search?q=${encodeURIComponent(query)}`,
+              { timeoutMs: 8000 }
+            );
+            const markets = (raw?.markets ?? raw) as MarketResult[];
+            return { entries, markets };
+          })
+        );
+
+        for (const result of searchResults) {
+          if (result.status !== "fulfilled") continue;
+          const { entries, markets } = result.value;
+          for (const entry of entries) {
+            const best = findBestMatch(entry.text, markets);
+            if (best) {
+              const match: HeadlineMatch = {
+                elementId: entry.elementId,
+                headline: entry.text,
+                marketId: String(best.market.market_id || best.market.id || ""),
+                platform: String(best.market.platform || ""),
+                question: String(best.market.question || best.market.title || ""),
+                yesPrice: best.market.yes_price ?? best.market.probability ?? 0,
+                score: best.score,
+              };
+              results.push(match);
+              headlineCache.set(entry.text, { match, ts: now });
+            } else {
+              headlineCache.set(entry.text, { match: null, ts: now });
+            }
+          }
+        }
+
+        return { success: true, data: results };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Headline matching failed",
+        };
+      }
+    }
+
+    case "GET_OVERLAY_ENABLED": {
+      try {
+        const result = await chrome.storage.local.get("preferences");
+        const enabled = result.preferences?.overlayEnabled ?? false;
+        return { success: true, data: { enabled } };
+      } catch {
+        return { success: true, data: { enabled: false } };
+      }
+    }
+
+    case "SET_OVERLAY_ENABLED": {
+      try {
+        const { enabled } = message.payload as { enabled: boolean };
+        const prefs = await chrome.storage.local.get("preferences");
+        const current = prefs.preferences || {};
+        await chrome.storage.local.set({
+          preferences: { ...current, overlayEnabled: enabled },
+        });
+        return { success: true };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to update setting",
+        };
+      }
+    }
+
+    case "OVERLAY_BADGE_CLICK": {
+      try {
+        const { platform, marketId } = message.payload as {
+          platform: string;
+          marketId: string;
+        };
+        await chrome.storage.session.set({
+          overlay_deeplink: { platform, marketId },
+        });
+        return { success: true };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to store deep-link",
         };
       }
     }

@@ -97,7 +97,12 @@ export type MessageType =
   | "EXECUTE_SWAP"
   | "GET_BRIDGE_QUOTE"
   | "EXECUTE_BRIDGE"
-  | "GET_BRIDGE_CHAINS";
+  | "GET_BRIDGE_CHAINS"
+  // Headline Overlay
+  | "MATCH_HEADLINES"
+  | "GET_OVERLAY_ENABLED"
+  | "SET_OVERLAY_ENABLED"
+  | "OVERLAY_BADGE_CLICK";
 
 export interface Message {
   type: MessageType;
@@ -114,4 +119,22 @@ export interface MessageResponse<T = unknown> {
 export interface Preferences {
   selectedChain: ChainId | "all";
   autoLockMinutes: number;
+  overlayEnabled: boolean;
+}
+
+/** A headline extracted from the page DOM */
+export interface HeadlineEntry {
+  text: string;
+  elementId: string;
+}
+
+/** A headline matched to a prediction market */
+export interface HeadlineMatch {
+  elementId: string;
+  headline: string;
+  marketId: string;
+  platform: string;
+  question: string;
+  yesPrice: number;
+  score: number;
 }
